@@ -39,58 +39,82 @@ class SalesEntryModule(QWidget):
 
     def init_ui(self):
         layout = QVBoxLayout(self)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
 
         header = QLabel("تسجيل المبيعات اليومية")
-        header.setStyleSheet("font-size: 24px; font-weight: 800; color: #1f3b57;")
+        header.setStyleSheet("font-size: 22px; font-weight: 800; color: #1f3b57;")
         layout.addWidget(header)
 
-        subtitle = QLabel(
-            "أدخل إجمالي التحصيل اليومي شامل الضريبة لكل طريقة دفع، وسيتم احتساب الضريبة "
-            "والترحيل المحاسبي (القيد المزدوج) تلقائياً بدون الحاجة لتسجيل كل طلب على حدة."
-        )
+        subtitle = QLabel("اكتب مبيعات اليوم شاملة الضريبة، والباقي يحسبه البرنامج لوحده.")
         subtitle.setWordWrap(True)
         subtitle.setStyleSheet("color: #64748b;")
         layout.addWidget(subtitle)
 
         form_box = QGroupBox("مبيعات اليوم")
-        form_layout = QFormLayout(form_box)
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form_layout.setSpacing(12)
+        form_outer = QVBoxLayout(form_box)
+        form_outer.setSpacing(10)
 
         self.branch_input = QComboBox()
         for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.branch_input.addItem(branch["name"], branch["id"])
-
         self.date_input = QDateEdit(QDate.currentDate())
-        self.date_input.setCalendarPopup(True)
 
-        self.cash_input = QLineEdit()
-        self.cash_input.setPlaceholderText("0.00")
-        self.network_input = QLineEdit()
-        self.network_input.setPlaceholderText("0.00")
-        self.transfer_input = QLineEdit()
-        self.transfer_input.setPlaceholderText("0.00")
+        top_row = QHBoxLayout()
+        top_row.setSpacing(10)
+        top_row.addWidget(self._field_label("الفرع"))
+        top_row.addWidget(self.branch_input, 1)
+        top_row.addSpacing(18)
+        top_row.addWidget(self._field_label("التاريخ"))
+        top_row.addWidget(self.date_input, 1)
+        top_row.addStretch()
+        form_outer.addLayout(top_row)
 
-        for field in (self.branch_input, self.date_input, self.cash_input, self.network_input, self.transfer_input):
-            field.setMinimumHeight(38)
-            field.setMinimumWidth(220)
+        # The three payment amounts sit side by side, like the end-of-day cash
+        # sheet they are copied from - one glance shows all three at once and it
+        # frees a lot of vertical space for the history table underneath.
+        self.cash_input = self._amount_input()
+        self.network_input = self._amount_input()
+        self.transfer_input = self._amount_input()
 
-        form_layout.addRow("الفرع:", self.branch_input)
-        form_layout.addRow("التاريخ:", self.date_input)
-        form_layout.addRow("كاش (شامل الضريبة):", self.cash_input)
-        form_layout.addRow("شبكة - مدى/فيزا (شامل الضريبة):", self.network_input)
-        form_layout.addRow("تحويل بنكي (شامل الضريبة):", self.transfer_input)
+        amounts_row = QHBoxLayout()
+        amounts_row.setSpacing(14)
+        for caption, field in (
+            ("كاش", self.cash_input),
+            ("شبكة (مدى / فيزا)", self.network_input),
+            ("تحويل بنكي", self.transfer_input),
+        ):
+            column = QVBoxLayout()
+            column.setSpacing(4)
+            column.addWidget(self._field_label(caption))
+            column.addWidget(field)
+            wrapper = QWidget()
+            wrapper.setLayout(column)
+            amounts_row.addWidget(wrapper, 1)
+        form_outer.addLayout(amounts_row)
 
-        save_btn = QPushButton("تسجيل مبيعات اليوم")
-        save_btn.setMinimumHeight(44)
+        hint = QLabel("المبالغ المدخلة شاملة ضريبة القيمة المضافة (15%)")
+        hint.setStyleSheet("color:#94a3b8; font-size:12px;")
+        form_outer.addWidget(hint)
+
+        # Live preview so the user can sanity-check before saving.
+        self.preview_label = QLabel()
+        self.preview_label.setStyleSheet(
+            "background:#eef6ff; border:1px solid #cfe0f5; border-radius:10px;"
+            "padding:10px; font-weight:800; color:#1f3b57;"
+        )
+        form_outer.addWidget(self.preview_label)
+        for field in (self.cash_input, self.network_input, self.transfer_input):
+            field.textChanged.connect(self.update_preview)
+
+        save_btn = QPushButton("حفظ مبيعات اليوم")
+        save_btn.setMinimumHeight(46)
         save_btn.clicked.connect(self.save_daily_sales)
-        form_layout.addRow(save_btn)
+        form_outer.addWidget(save_btn)
 
         layout.addWidget(form_box)
 
         history_label = QLabel("سجل المبيعات اليومية (حسب الفرع):")
-        history_label.setStyleSheet("font-size: 15px; font-weight: 600; color: #334155;")
+        history_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #334155;")
         layout.addWidget(history_label)
 
         self.table = QTableWidget()
@@ -101,9 +125,36 @@ class SalesEntryModule(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setMinimumHeight(240)
         layout.addWidget(self.table, 1)
 
+        self.update_preview()
         self.load_history()
+
+    def _field_label(self, text):
+        label = QLabel(text)
+        label.setStyleSheet("font-weight:700; color:#334155;")
+        return label
+
+    def _amount_input(self):
+        field = QLineEdit()
+        field.setPlaceholderText("0.00")
+        field.setMinimumHeight(40)
+        field.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        field.setStyleSheet("font-size:17px; font-weight:700;")
+        return field
+
+    def update_preview(self):
+        total = 0.0
+        for field in (self.cash_input, self.network_input, self.transfer_input):
+            try:
+                total += float(field.text().strip() or 0)
+            except ValueError:
+                pass
+        net, vat = self.accounting.reverse_vat(total) if total else (0.0, 0.0)
+        self.preview_label.setText(
+            f"إجمالي اليوم: {total:,.2f} ريال     |     قبل الضريبة: {net:,.2f}     |     الضريبة: {vat:,.2f}"
+        )
 
     def _parse_amount(self, line_edit):
         text = line_edit.text().strip()

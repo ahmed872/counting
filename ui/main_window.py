@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QFrame,
     QDateEdit,
+    QScrollArea,
     QSizePolicy,
 )
 from PyQt6.QtCore import Qt
@@ -144,21 +145,38 @@ class MainWindow(QMainWindow):
         line.setStyleSheet("color: rgba(255, 255, 255, 0.15);")
         return line
 
-    def add_page(self, label, widget):
-        index = self.content_stack.addWidget(widget)
+    def add_page(self, label, widget, scrollable=True):
+        """Pages are wrapped in a scroll area so content can never be cut off at
+        the bottom of the window - on a short screen the user would otherwise
+        have no way to reach it, and no hint that it exists. Pages that already
+        manage their own scrolling internally pass scrollable=False."""
+        if scrollable:
+            container = QScrollArea()
+            container.setWidgetResizable(True)
+            container.setFrameShape(QScrollArea.Shape.NoFrame)
+            container.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            container.setWidget(widget)
+        else:
+            container = widget
+
+        index = self.content_stack.addWidget(container)
         button = getattr(self, f"btn_{label}", None)
         if button is None:
             button = self.create_nav_btn(label)
         button.clicked.connect(lambda checked=False, page_index=index: self.set_active_page(page_index))
-        self.nav_entries.append({"label": label, "button": button, "index": index})
+        self.nav_entries.append({"label": label, "button": button, "index": index, "page": widget})
         return index
 
     def set_active_page(self, index):
         self.content_stack.setCurrentIndex(index)
-        for entry in self.nav_entries:
-            entry["button"].setChecked(entry["index"] == index)
-        widget = self.content_stack.widget(index)
-        refresh = getattr(widget, "refresh_on_show", None)
+        entry = None
+        for item in self.nav_entries:
+            item["button"].setChecked(item["index"] == index)
+            if item["index"] == index:
+                entry = item
+        if entry is None:
+            return
+        refresh = getattr(entry["page"], "refresh_on_show", None)
         if callable(refresh):
             refresh()
 
@@ -182,7 +200,9 @@ class MainWindow(QMainWindow):
 
         self.add_page("dashboard", self.dashboard)
         self.add_page("sales", self.sales)
-        self.add_page("hr", self.hr)
+        # HR and Suppliers scroll internally already - wrapping them again would
+        # produce two nested scrollbars on the same page.
+        self.add_page("hr", self.hr, scrollable=False)
         self.add_page("purchases", self.purchases)
-        self.add_page("suppliers", self.suppliers)
+        self.add_page("suppliers", self.suppliers, scrollable=False)
         self.add_page("accounting", self.accounting)

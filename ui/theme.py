@@ -16,9 +16,9 @@ APP_STYLESHEET = """
     QLineEdit, QComboBox, QDateEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
         background-color: white;
         border: 1px solid #d6dbe3;
-        border-radius: 10px;
-        padding: 9px 12px;
-        min-height: 32px;
+        border-radius: 8px;
+        padding: 5px 10px;
+        min-height: 24px;
     }
     QLineEdit:focus, QComboBox:focus, QDateEdit:focus, QTextEdit:focus,
     QSpinBox:focus, QDoubleSpinBox:focus {
@@ -39,8 +39,8 @@ APP_STYLESHEET = """
         font-weight: 700;
         border: 1px solid #d8e0ea;
         border-radius: 12px;
-        margin-top: 16px;
-        padding: 20px 12px 12px 12px;
+        margin-top: 14px;
+        padding: 16px 10px 10px 10px;
         background-color: #fbfcfe;
     }
     QGroupBox::title {
@@ -114,6 +114,50 @@ APP_STYLESHEET = """
     QTableCornerButton::section {
         background-color: #1f3b57;
         border: 0px;
+    }
+    /* Scrollbars are deliberately wide and high-contrast: the people using this
+       app need an obvious signal that there is more content below the fold. */
+    QScrollBar:vertical {
+        background: #eef2f7;
+        width: 16px;
+        margin: 0;
+        border-radius: 8px;
+    }
+    QScrollBar::handle:vertical {
+        background: #90a4bd;
+        min-height: 40px;
+        border-radius: 8px;
+        border: 2px solid #eef2f7;
+    }
+    QScrollBar::handle:vertical:hover {
+        background: #6b83a3;
+    }
+    QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+        height: 0px;
+    }
+    QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+        background: transparent;
+    }
+    QScrollBar:horizontal {
+        background: #eef2f7;
+        height: 16px;
+        margin: 0;
+        border-radius: 8px;
+    }
+    QScrollBar::handle:horizontal {
+        background: #90a4bd;
+        min-width: 40px;
+        border-radius: 8px;
+        border: 2px solid #eef2f7;
+    }
+    QScrollBar::handle:horizontal:hover {
+        background: #6b83a3;
+    }
+    QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+        width: 0px;
+    }
+    QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+        background: transparent;
     }
 """
 
