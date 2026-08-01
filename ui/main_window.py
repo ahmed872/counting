@@ -114,21 +114,25 @@ class MainWindow(QMainWindow):
         btn.setCheckable(True)
         btn.setAutoExclusive(True)
         btn.setFixedHeight(48)
+        # Explicit transparent border rather than `border: none` - see the note
+        # on QPushButton in ui/theme.py.
         btn.setStyleSheet("""
             QPushButton {
                 background-color: transparent;
-                color: white;
-                border: none;
+                color: #ffffff;
+                border: 1px solid transparent;
                 border-radius: 10px;
                 text-align: right;
                 padding-right: 16px;
                 font-size: 14px;
             }
             QPushButton:hover {
-                background-color: rgba(255, 255, 255, 0.08);
+                background-color: rgba(255, 255, 255, 0.10);
+                border: 1px solid rgba(255, 255, 255, 0.10);
             }
             QPushButton:checked {
                 background-color: #4f78a8;
+                border: 1px solid #4f78a8;
                 font-weight: bold;
             }
         """)

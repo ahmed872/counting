@@ -53,19 +53,32 @@ APP_STYLESHEET = """
         border: 1px solid #d8e0ea;
         border-radius: 6px;
     }
+    /* NOTE: use an explicit solid border, never `border: none`. With no border
+       set, Qt can leave the button frame to the native style and then never
+       paints `background-color` - the button falls back to the palette's light
+       button colour while `color: white` still applies, i.e. white-on-white
+       and effectively invisible. */
     QPushButton {
         background-color: #4f78a8;
-        color: white;
-        border: none;
+        color: #ffffff;
+        border: 1px solid #3f6996;
         border-radius: 10px;
         padding: 10px 18px;
-        font-weight: 600;
+        min-height: 22px;
+        font-weight: 700;
     }
     QPushButton:hover {
         background-color: #3f6996;
+        border: 1px solid #36577d;
     }
     QPushButton:pressed {
         background-color: #36577d;
+        border: 1px solid #2c4763;
+    }
+    QPushButton:disabled {
+        background-color: #cbd5e1;
+        color: #64748b;
+        border: 1px solid #b6c2d1;
     }
     QTabWidget::pane {
         border: 0;
@@ -123,8 +136,13 @@ def _force_light_palette(app):
     palette.setColor(QPalette.ColorRole.ToolTipBase, QColor("#ffffff"))
     palette.setColor(QPalette.ColorRole.ToolTipText, QColor("#1f2937"))
     palette.setColor(QPalette.ColorRole.Text, QColor("#1f2937"))
-    palette.setColor(QPalette.ColorRole.Button, QColor("#f3f4f6"))
-    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#1f2937"))
+    # Button/ButtonText deliberately mirror the stylesheet's primary button
+    # colours. If a platform ever fails to paint the QSS background, the palette
+    # still yields white-on-blue rather than white-on-light-grey (an invisible
+    # button). Inputs are unaffected: the stylesheet sets their background
+    # explicitly, so they stay white.
+    palette.setColor(QPalette.ColorRole.Button, QColor("#4f78a8"))
+    palette.setColor(QPalette.ColorRole.ButtonText, QColor("#ffffff"))
     palette.setColor(QPalette.ColorRole.BrightText, QColor("#dc2626"))
     palette.setColor(QPalette.ColorRole.Highlight, QColor("#4f78a8"))
     palette.setColor(QPalette.ColorRole.HighlightedText, QColor("#ffffff"))
