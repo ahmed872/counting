@@ -59,8 +59,7 @@ class MainWindow(QMainWindow):
         self.role_hint.setStyleSheet("color: rgba(255,255,255,0.75); font-size: 12px; padding: 4px 2px 8px 2px;")
         sidebar_layout.addWidget(self.role_hint)
 
-        self.btn_pos = self.create_nav_btn("نقطة البيع")
-        self.btn_menu = self.create_nav_btn("إدارة المنيو")
+        self.btn_sales = self.create_nav_btn("المبيعات اليومية")
         self.btn_dashboard = self.create_nav_btn("لوحة التحكم")
         self.btn_hr = self.create_nav_btn("الموارد البشرية")
         self.btn_purchases = self.create_nav_btn("المشتريات")
@@ -68,8 +67,7 @@ class MainWindow(QMainWindow):
         self.btn_accounting = self.create_nav_btn("المحاسبة")
 
         sidebar_layout.addWidget(self.btn_dashboard)
-        sidebar_layout.addWidget(self.btn_pos)
-        sidebar_layout.addWidget(self.btn_menu)
+        sidebar_layout.addWidget(self.btn_sales)
         sidebar_layout.addWidget(self.btn_hr)
         sidebar_layout.addWidget(self.btn_purchases)
         sidebar_layout.addWidget(self.btn_suppliers)
@@ -167,7 +165,7 @@ class MainWindow(QMainWindow):
     def set_role(self, role):
         self.current_role = role
         self.apply_role_visibility()
-        preferred_label = "dashboard" if role == "admin" else "pos"
+        preferred_label = "dashboard" if role == "admin" else "sales"
         preferred_page = next((entry for entry in self.nav_entries if entry["label"] == preferred_label and role in entry["roles"]), None)
         if preferred_page:
             self.set_active_page(preferred_page["index"])
@@ -184,8 +182,7 @@ class MainWindow(QMainWindow):
     def init_modules(self):
         from ui.dashboard import DashboardModule
         from ui.hr_module import HRModule
-        from ui.pos_module import POSModule
-        from ui.menu_management_module import MenuManagementModule
+        from ui.sales_entry_module import SalesEntryModule
         from ui.purchase_module import PurchaseModule
         from ui.suppliers_module import SuppliersModule
         from ui.accounting_module import AccountingModule
@@ -194,16 +191,14 @@ class MainWindow(QMainWindow):
         self.hr_logic = HRLogic(self.db)
 
         self.dashboard = DashboardModule(self.db)
-        self.pos = POSModule(self.db)
-        self.menu_management = MenuManagementModule(self.db)
+        self.sales = SalesEntryModule(self.db)
         self.hr = HRModule(self.db, self.hr_logic)
         self.purchases = PurchaseModule(self.db)
         self.suppliers = SuppliersModule(self.db)
         self.accounting = AccountingModule(self.db)
 
-        self.add_page("pos", self.pos, roles=("admin", "cashier"))
-        self.add_page("menu", self.menu_management, roles=("admin",))
         self.add_page("dashboard", self.dashboard, roles=("admin",))
+        self.add_page("sales", self.sales, roles=("admin", "cashier"))
         self.add_page("hr", self.hr, roles=("admin",))
         self.add_page("purchases", self.purchases, roles=("admin",))
         self.add_page("suppliers", self.suppliers, roles=("admin",))

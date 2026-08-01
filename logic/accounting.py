@@ -10,6 +10,13 @@ class AccountingLogic:
         total = amount + vat
         return vat, total
 
+    def reverse_vat(self, total_amount, rate=0.15):
+        """Given a VAT-inclusive total (e.g. the actual cash collected end-of-day),
+        back out the pre-tax amount and the VAT portion."""
+        amount = total_amount / (1 + rate)
+        vat = total_amount - amount
+        return amount, vat
+
     def generate_zatca_qr(self, seller_name, tax_no, timestamp, total_amount, vat_amount):
         """
         ZATCA QR Code TLV (Tag-Length-Value) format:

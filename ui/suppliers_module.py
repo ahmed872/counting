@@ -5,7 +5,6 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QGridLayout,
     QGroupBox,
     QFormLayout,
     QLabel,
@@ -45,23 +44,22 @@ class SuppliersModule(QWidget):
 
         form_box = QGroupBox("إضافة مورد جديد")
         form_box.setStyleSheet("QGroupBox { font-weight: 700; border: 1px solid #d8e0ea; border-radius: 12px; margin-top: 10px; padding-top: 16px; }")
-        form_layout = QGridLayout(form_box)
+        form_layout = QFormLayout(form_box)
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form_layout.setSpacing(12)
         self.name_input = QLineEdit()
         self.tax_id_input = QLineEdit()
         self.phone_input = QLineEdit()
         self.opening_balance_input = QLineEdit()
         self.opening_balance_input.setPlaceholderText("0.00")
-        form_layout.addWidget(QLabel("اسم المورد"), 0, 0)
-        form_layout.addWidget(self.name_input, 1, 0)
-        form_layout.addWidget(QLabel("الرقم الضريبي"), 0, 1)
-        form_layout.addWidget(self.tax_id_input, 1, 1)
-        form_layout.addWidget(QLabel("رقم الجوال"), 0, 2)
-        form_layout.addWidget(self.phone_input, 1, 2)
-        form_layout.addWidget(QLabel("الرصيد الافتتاحي (دائن للمورد)"), 0, 3)
-        form_layout.addWidget(self.opening_balance_input, 1, 3)
+        form_layout.addRow("اسم المورد:", self.name_input)
+        form_layout.addRow("الرقم الضريبي:", self.tax_id_input)
+        form_layout.addRow("رقم الجوال:", self.phone_input)
+        form_layout.addRow("الرصيد الافتتاحي (دائن للمورد):", self.opening_balance_input)
         add_btn = QPushButton("حفظ المورد")
         add_btn.clicked.connect(self.add_supplier)
-        form_layout.addWidget(add_btn, 1, 4)
+        add_btn.setMinimumHeight(42)
+        form_layout.addRow(add_btn)
         layout.addWidget(form_box)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
