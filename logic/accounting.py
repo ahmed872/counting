@@ -259,3 +259,163 @@ class AccountingLogic:
             statement = self.get_supplier_statement(s['id'])
             results.append({'id': s['id'], 'name': s['name'], 'phone': s['phone'], 'balance': statement['balance']})
         return results
+
+    # ------------------------------------------------------------------
+    # Reporting helpers
+    # ------------------------------------------------------------------
+
+    def _branch_clause(self, branch_id, alias):
+        if branch_id:
+            return f" AND {alias}.branch_id = ?", (branch_id,)
+        return "", ()
+
+    def get_sales_by_method(self, start_date, end_date, branch_id=None):
+        clause, params = self._branch_clause(branch_id, "s")
+        rows = self.db.fetch_all(
+            f"""SELECT s.payment_method as method,
+                       COALESCE(SUM(s.total_amount), 0) as total,
+                       COALESCE(SUM(s.vat_amount), 0) as vat
+                FROM sales s
+                WHERE date(s.date) BETWEEN date(?) AND date(?){clause}
+                GROUP BY s.payment_method""",
+            (start_date, end_date) + params,
+        )
+        result = {m: {'total': 0.0, 'vat': 0.0} for m in ('Cash', 'POS', 'Transfer')}
+        for row in rows:
+            result.setdefault(row['method'], {'total': 0.0, 'vat': 0.0})
+            result[row['method']]['total'] = row['total'] or 0
+            result[row['method']]['vat'] = row['vat'] or 0
+        result['grand_total'] = sum(v['total'] for k, v in result.items() if isinstance(v, dict))
+        result['grand_vat'] = sum(v['vat'] for k, v in result.items() if isinstance(v, dict))
+        result['net_sales'] = result['grand_total'] - result['grand_vat']
+        return result
+
+    def get_purchases_by_category(self, start_date, end_date, branch_id=None):
+        clause, params = self._branch_clause(branch_id, "p")
+        rows = self.db.fetch_all(
+            f"""SELECT COALESCE(p.category, 'raw_material') as category,
+                       COALESCE(SUM(p.amount), 0) as net,
+                       COALESCE(SUM(p.vat_amount), 0) as vat,
+                       COALESCE(SUM(p.total_amount), 0) as total
+                FROM purchases p
+                WHERE date(p.date) BETWEEN date(?) AND date(?){clause}
+                GROUP BY COALESCE(p.category, 'raw_material')""",
+            (start_date, end_date) + params,
+        )
+        result = {c: {'net': 0.0, 'vat': 0.0, 'total': 0.0}
+                  for c in ('raw_material', 'purchase_expense', 'operating_expense')}
+        for row in rows:
+            result.setdefault(row['category'], {'net': 0.0, 'vat': 0.0, 'total': 0.0})
+            result[row['category']] = {'net': row['net'] or 0, 'vat': row['vat'] or 0, 'total': row['total'] or 0}
+        result['grand_net'] = sum(v['net'] for k, v in result.items() if isinstance(v, dict))
+        result['grand_vat'] = sum(v['vat'] for k, v in result.items() if isinstance(v, dict))
+        result['grand_total'] = sum(v['total'] for k, v in result.items() if isinstance(v, dict))
+        return result
+
+    def get_returns_summary(self, start_date, end_date, branch_id=None):
+        sales_clause, sales_params = self._branch_clause(branch_id, "sr")
+        purchase_clause, purchase_params = self._branch_clause(branch_id, "pr")
+        sales_returns = self.db.fetch_one(
+            f"""SELECT COALESCE(SUM(amount), 0) as net, COALESCE(SUM(vat_amount), 0) as vat
+                FROM sales_returns sr
+                WHERE date(sr.date) BETWEEN date(?) AND date(?){sales_clause}""",
+            (start_date, end_date) + sales_params,
+        )
+        purchase_returns = self.db.fetch_one(
+            f"""SELECT COALESCE(SUM(amount), 0) as net, COALESCE(SUM(vat_amount), 0) as vat
+                FROM purchase_returns pr
+                WHERE date(pr.date) BETWEEN date(?) AND date(?){purchase_clause}""",
+            (start_date, end_date) + purchase_params,
+        )
+        return {
+            'sales_returns': sales_returns['net'] or 0,
+            'sales_returns_vat': sales_returns['vat'] or 0,
+            'purchase_returns': purchase_returns['net'] or 0,
+            'purchase_returns_vat': purchase_returns['vat'] or 0,
+        }
+
+    def get_daily_breakdown(self, start_date, end_date, branch_id=None):
+        """Day-by-day sales / purchases / VAT, used for the period report table."""
+        sales_clause, sales_params = self._branch_clause(branch_id, "s")
+        purchase_clause, purchase_params = self._branch_clause(branch_id, "p")
+
+        sales_rows = self.db.fetch_all(
+            f"""SELECT date(s.date) as day,
+                       COALESCE(SUM(CASE WHEN s.payment_method='Cash' THEN s.total_amount ELSE 0 END), 0) as cash,
+                       COALESCE(SUM(CASE WHEN s.payment_method='POS' THEN s.total_amount ELSE 0 END), 0) as pos,
+                       COALESCE(SUM(CASE WHEN s.payment_method='Transfer' THEN s.total_amount ELSE 0 END), 0) as transfer,
+                       COALESCE(SUM(s.total_amount), 0) as total,
+                       COALESCE(SUM(s.vat_amount), 0) as vat
+                FROM sales s
+                WHERE date(s.date) BETWEEN date(?) AND date(?){sales_clause}
+                GROUP BY date(s.date)""",
+            (start_date, end_date) + sales_params,
+        )
+        purchase_rows = self.db.fetch_all(
+            f"""SELECT date(p.date) as day,
+                       COALESCE(SUM(p.amount), 0) as net,
+                       COALESCE(SUM(p.vat_amount), 0) as vat
+                FROM purchases p
+                WHERE date(p.date) BETWEEN date(?) AND date(?){purchase_clause}
+                GROUP BY date(p.date)""",
+            (start_date, end_date) + purchase_params,
+        )
+
+        days = {}
+        for row in sales_rows:
+            days[row['day']] = {
+                'day': row['day'], 'cash': row['cash'] or 0, 'pos': row['pos'] or 0,
+                'transfer': row['transfer'] or 0, 'sales_total': row['total'] or 0,
+                'output_vat': row['vat'] or 0, 'purchases': 0.0, 'input_vat': 0.0,
+            }
+        for row in purchase_rows:
+            entry = days.setdefault(row['day'], {
+                'day': row['day'], 'cash': 0.0, 'pos': 0.0, 'transfer': 0.0,
+                'sales_total': 0.0, 'output_vat': 0.0, 'purchases': 0.0, 'input_vat': 0.0,
+            })
+            entry['purchases'] = row['net'] or 0
+            entry['input_vat'] = row['vat'] or 0
+
+        result = []
+        for day in sorted(days):
+            entry = days[day]
+            net_sales = entry['sales_total'] - entry['output_vat']
+            entry['net_sales'] = net_sales
+            entry['profit'] = net_sales - entry['purchases']
+            entry['net_vat'] = entry['output_vat'] - entry['input_vat']
+            result.append(entry)
+        return result
+
+    def get_period_report(self, start_date, end_date, branch_id=None):
+        """Everything the period report needs, in one call."""
+        sales = self.get_sales_by_method(start_date, end_date, branch_id)
+        purchases = self.get_purchases_by_category(start_date, end_date, branch_id)
+        returns = self.get_returns_summary(start_date, end_date, branch_id)
+
+        net_sales = sales['net_sales'] - returns['sales_returns']
+        output_vat = sales['grand_vat'] - returns['sales_returns_vat']
+        input_vat = purchases['grand_vat'] - returns['purchase_returns_vat']
+
+        cost_of_sales = purchases['raw_material']['net'] + purchases['purchase_expense']['net'] \
+            - returns['purchase_returns']
+        operating_expenses = purchases['operating_expense']['net']
+
+        gross_profit = net_sales - cost_of_sales
+        net_profit = gross_profit - operating_expenses
+
+        return {
+            'start_date': start_date,
+            'end_date': end_date,
+            'sales': sales,
+            'purchases': purchases,
+            'returns': returns,
+            'net_sales': net_sales,
+            'cost_of_sales': cost_of_sales,
+            'operating_expenses': operating_expenses,
+            'gross_profit': gross_profit,
+            'net_profit': net_profit,
+            'output_vat': output_vat,
+            'input_vat': input_vat,
+            'net_vat': output_vat - input_vat,
+            'daily': self.get_daily_breakdown(start_date, end_date, branch_id),
+        }

@@ -59,6 +59,7 @@ class MainWindow(QMainWindow):
         self.btn_hr = self.create_nav_btn("الموارد البشرية")
         self.btn_purchases = self.create_nav_btn("المشتريات")
         self.btn_suppliers = self.create_nav_btn("الموردون")
+        self.btn_reports = self.create_nav_btn("التقارير")
         self.btn_accounting = self.create_nav_btn("المحاسبة")
 
         sidebar_layout.addWidget(self.btn_dashboard)
@@ -66,6 +67,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_hr)
         sidebar_layout.addWidget(self.btn_purchases)
         sidebar_layout.addWidget(self.btn_suppliers)
+        sidebar_layout.addWidget(self.btn_reports)
         sidebar_layout.addWidget(self.btn_accounting)
         sidebar_layout.addStretch()
 
@@ -186,6 +188,7 @@ class MainWindow(QMainWindow):
         from ui.sales_entry_module import SalesEntryModule
         from ui.purchase_module import PurchaseModule
         from ui.suppliers_module import SuppliersModule
+        from ui.reports_module import ReportsModule
         from ui.accounting_module import AccountingModule
         from logic.hr import HRLogic
 
@@ -196,6 +199,7 @@ class MainWindow(QMainWindow):
         self.hr = HRModule(self.db, self.hr_logic)
         self.purchases = PurchaseModule(self.db)
         self.suppliers = SuppliersModule(self.db)
+        self.reports = ReportsModule(self.db)
         self.accounting = AccountingModule(self.db)
 
         self.add_page("dashboard", self.dashboard)
@@ -205,4 +209,5 @@ class MainWindow(QMainWindow):
         self.add_page("hr", self.hr, scrollable=False)
         self.add_page("purchases", self.purchases)
         self.add_page("suppliers", self.suppliers, scrollable=False)
+        self.add_page("reports", self.reports)
         self.add_page("accounting", self.accounting)

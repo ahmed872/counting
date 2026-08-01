@@ -103,8 +103,6 @@ class HRModule(QWidget):
         form_outer.addWidget(add_btn)
         setup_layout.addWidget(form_group)
 
-        action_row = QHBoxLayout()
-        action_row.setSpacing(12)
         attendance_group = QGroupBox("تسجيل الحضور والغياب")
         attendance_layout = QFormLayout(attendance_group)
         attendance_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
@@ -122,7 +120,6 @@ class HRModule(QWidget):
         attendance_layout.addRow("الحالة:", self.attendance_status)
         attendance_layout.addRow("ملاحظات:", self.attendance_note)
         attendance_layout.addRow(attendance_btn)
-        action_row.addWidget(attendance_group)
 
         deduction_group = QGroupBox("سلف / خصومات / مكافآت")
         deduction_layout = QFormLayout(deduction_group)
@@ -145,8 +142,33 @@ class HRModule(QWidget):
         deduction_layout.addRow("المبلغ:", self.deduction_amount)
         deduction_layout.addRow("ملاحظات:", self.deduction_notes)
         deduction_layout.addRow(deduction_btn)
-        action_row.addWidget(deduction_group)
-        setup_layout.addLayout(action_row)
+        setup_scroll.setWidget(setup_scroll_widget)
+        tabs.addTab(setup_scroll, "الموظفون")
+
+        # --- Attendance / deductions get their own tab: cramming them under the
+        # employee form pushed the payroll controls off the bottom of the window.
+        daily_scroll = QScrollArea()
+        daily_scroll.setWidgetResizable(True)
+        daily_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        daily_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        daily_widget = QWidget()
+        daily_layout = QVBoxLayout(daily_widget)
+        daily_layout.setContentsMargins(6, 6, 6, 6)
+        daily_layout.setSpacing(12)
+        daily_layout.addWidget(attendance_group)
+        daily_layout.addWidget(deduction_group)
+        daily_layout.addStretch()
+        daily_scroll.setWidget(daily_widget)
+        tabs.addTab(daily_scroll, "الحضور والسلف")
+
+        payroll_scroll = QScrollArea()
+        payroll_scroll.setWidgetResizable(True)
+        payroll_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        payroll_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        payroll_widget = QWidget()
+        payroll_tab_layout = QVBoxLayout(payroll_widget)
+        payroll_tab_layout.setContentsMargins(6, 6, 6, 6)
+        payroll_tab_layout.setSpacing(12)
 
         payroll_group = QGroupBox("تشغيل وترحيل الرواتب الشهرية")
         payroll_layout = QFormLayout(payroll_group)
@@ -167,19 +189,7 @@ class HRModule(QWidget):
         payroll_layout.addRow("الشهر:", self.payroll_month)
         payroll_layout.addRow("السنة:", self.payroll_year)
         payroll_layout.addRow(buttons_row)
-        setup_layout.addWidget(payroll_group)
-
-        setup_scroll.setWidget(setup_scroll_widget)
-        tabs.addTab(setup_scroll, "البيانات والحضور")
-
-        tables_scroll = QScrollArea()
-        tables_scroll.setWidgetResizable(True)
-        tables_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        tables_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        tables_widget = QWidget()
-        tables_layout = QVBoxLayout(tables_widget)
-        tables_layout.setContentsMargins(0, 0, 0, 0)
-        tables_layout.setSpacing(12)
+        payroll_tab_layout.addWidget(payroll_group)
 
         self.payroll_table = QTableWidget()
         self.payroll_table.setColumnCount(10)
@@ -196,7 +206,18 @@ class HRModule(QWidget):
         payroll_box = QGroupBox("ملخص الرواتب")
         payroll_box_layout = QVBoxLayout(payroll_box)
         payroll_box_layout.addWidget(self.payroll_table)
-        tables_layout.addWidget(payroll_box)
+        payroll_tab_layout.addWidget(payroll_box, 1)
+        payroll_scroll.setWidget(payroll_widget)
+        tabs.addTab(payroll_scroll, "الرواتب")
+
+        tables_scroll = QScrollArea()
+        tables_scroll.setWidgetResizable(True)
+        tables_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        tables_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        tables_widget = QWidget()
+        tables_layout = QVBoxLayout(tables_widget)
+        tables_layout.setContentsMargins(6, 6, 6, 6)
+        tables_layout.setSpacing(12)
 
         self.table = QTableWidget()
         self.table.setColumnCount(12)
@@ -210,10 +231,10 @@ class HRModule(QWidget):
         employees_box = QGroupBox("قائمة العاملين والوثائق")
         employees_box_layout = QVBoxLayout(employees_box)
         employees_box_layout.addWidget(self.table)
-        tables_layout.addWidget(employees_box)
+        tables_layout.addWidget(employees_box, 1)
 
         tables_scroll.setWidget(tables_widget)
-        tabs.addTab(tables_scroll, "القوائم")
+        tabs.addTab(tables_scroll, "قائمة العاملين")
 
         self.load_employees()
 
