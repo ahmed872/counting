@@ -1,0 +1,243 @@
+from datetime import datetime
+
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QGridLayout,
+    QGroupBox,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QComboBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QHeaderView,
+    QMessageBox,
+    QSplitter,
+)
+
+from logic.accounting import AccountingLogic
+
+
+class SuppliersModule(QWidget):
+    def __init__(self, db_manager):
+        super().__init__()
+        self.db = db_manager
+        self.accounting = AccountingLogic(db_manager)
+        self.selected_supplier_id = None
+        self.init_ui()
+
+    def init_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setSpacing(14)
+
+        header = QLabel("إدارة الموردين")
+        header.setStyleSheet("font-size: 22px; font-weight: bold; color: #1f3b57; margin-bottom: 8px;")
+        layout.addWidget(header)
+
+        subtitle = QLabel("إضافة الموردين، متابعة الرصيد الدائن لكل مورد على حدة، وتسجيل السداد")
+        subtitle.setStyleSheet("color:#64748b;")
+        subtitle.setWordWrap(True)
+        layout.addWidget(subtitle)
+
+        form_box = QGroupBox("إضافة مورد جديد")
+        form_box.setStyleSheet("QGroupBox { font-weight: 700; border: 1px solid #d8e0ea; border-radius: 12px; margin-top: 10px; padding-top: 16px; }")
+        form_layout = QGridLayout(form_box)
+        self.name_input = QLineEdit()
+        self.tax_id_input = QLineEdit()
+        self.phone_input = QLineEdit()
+        self.opening_balance_input = QLineEdit()
+        self.opening_balance_input.setPlaceholderText("0.00")
+        form_layout.addWidget(QLabel("اسم المورد"), 0, 0)
+        form_layout.addWidget(self.name_input, 1, 0)
+        form_layout.addWidget(QLabel("الرقم الضريبي"), 0, 1)
+        form_layout.addWidget(self.tax_id_input, 1, 1)
+        form_layout.addWidget(QLabel("رقم الجوال"), 0, 2)
+        form_layout.addWidget(self.phone_input, 1, 2)
+        form_layout.addWidget(QLabel("الرصيد الافتتاحي (دائن للمورد)"), 0, 3)
+        form_layout.addWidget(self.opening_balance_input, 1, 3)
+        add_btn = QPushButton("حفظ المورد")
+        add_btn.clicked.connect(self.add_supplier)
+        form_layout.addWidget(add_btn, 1, 4)
+        layout.addWidget(form_box)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        list_label = QLabel("قائمة الموردين والأرصدة الحالية")
+        list_label.setStyleSheet("font-weight: 700; color: #334155;")
+        left_layout.addWidget(list_label)
+
+        self.suppliers_table = QTableWidget()
+        self.suppliers_table.setColumnCount(4)
+        self.suppliers_table.setHorizontalHeaderLabels(["المورد", "الجوال", "الرصيد الحالي", "الحالة"])
+        self.suppliers_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.suppliers_table.verticalHeader().setVisible(False)
+        self.suppliers_table.setAlternatingRowColors(True)
+        self.suppliers_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.suppliers_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.suppliers_table.itemSelectionChanged.connect(self.on_supplier_selected)
+        left_layout.addWidget(self.suppliers_table)
+
+        total_box = QLabel("إجمالي أرصدة الموردين الدائنة: 0.00 ريال")
+        total_box.setStyleSheet("font-weight: 700; color: #e67e22; padding: 6px;")
+        self.total_balance_label = total_box
+        left_layout.addWidget(total_box)
+
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+
+        payment_box = QGroupBox("تسجيل سداد لمورد")
+        payment_layout = QFormLayout(payment_box)
+        self.payment_supplier_label = QLabel("اختر مورداً من القائمة أولاً")
+        self.payment_supplier_label.setStyleSheet("font-weight: 700; color: #1f3b57;")
+        self.payment_amount = QLineEdit()
+        self.payment_method = QComboBox()
+        self.payment_method.addItems(["Cash", "Bank"])
+        self.payment_notes = QLineEdit()
+        pay_btn = QPushButton("تسجيل السداد")
+        pay_btn.clicked.connect(self.record_payment)
+        payment_layout.addRow(self.payment_supplier_label)
+        payment_layout.addRow("المبلغ:", self.payment_amount)
+        payment_layout.addRow("طريقة السداد:", self.payment_method)
+        payment_layout.addRow("ملاحظات:", self.payment_notes)
+        payment_layout.addRow(pay_btn)
+        right_layout.addWidget(payment_box)
+
+        statement_label = QLabel("كشف حساب المورد")
+        statement_label.setStyleSheet("font-weight: 700; color: #334155;")
+        right_layout.addWidget(statement_label)
+
+        self.statement_table = QTableWidget()
+        self.statement_table.setColumnCount(5)
+        self.statement_table.setHorizontalHeaderLabels(["التاريخ", "البيان", "مدين (سداد)", "دائن (مستحق)", "الرصيد"])
+        self.statement_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.statement_table.verticalHeader().setVisible(False)
+        self.statement_table.setAlternatingRowColors(True)
+        self.statement_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        right_layout.addWidget(self.statement_table, 1)
+
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 1)
+        layout.addWidget(splitter, 1)
+
+        self.load_suppliers()
+
+    def add_supplier(self):
+        name = self.name_input.text().strip()
+        if not name:
+            QMessageBox.warning(self, "تنبيه", "ادخل اسم المورد")
+            return
+        tax_id = self.tax_id_input.text().strip()
+        phone = self.phone_input.text().strip()
+        try:
+            opening_balance = float(self.opening_balance_input.text() or 0)
+        except ValueError:
+            QMessageBox.warning(self, "تنبيه", "الرصيد الافتتاحي غير صحيح")
+            return
+
+        supplier_id = self.db.insert_and_return_id(
+            "INSERT INTO suppliers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
+            (name, tax_id, opening_balance, phone),
+        )
+
+        if opening_balance:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            items = [
+                {'account_code': '3900', 'debit': opening_balance, 'credit': 0},
+                {'account_code': '2000', 'debit': 0, 'credit': opening_balance},
+            ]
+            self.db.add_journal_entry(timestamp, f"رصيد افتتاحي لمورد - {name}", None, items)
+
+        QMessageBox.information(self, "نجاح", "تم إضافة المورد بنجاح")
+        self.name_input.clear()
+        self.tax_id_input.clear()
+        self.phone_input.clear()
+        self.opening_balance_input.clear()
+        self.load_suppliers()
+
+    def load_suppliers(self):
+        balances = self.accounting.get_all_supplier_balances()
+        self.suppliers_table.setRowCount(len(balances))
+        total = 0
+        for row, s in enumerate(balances):
+            total += s['balance']
+            self.suppliers_table.setItem(row, 0, QTableWidgetItem(s['name']))
+            self.suppliers_table.setItem(row, 1, QTableWidgetItem(s['phone'] or ""))
+            self.suppliers_table.setItem(row, 2, QTableWidgetItem(f"{s['balance']:.2f}"))
+            status = "له رصيد مستحق" if s['balance'] > 0.01 else ("مسدد بالكامل" if s['balance'] > -0.01 else "رصيد لصالحنا")
+            item = QTableWidgetItem(status)
+            self.suppliers_table.setItem(row, 3, item)
+            self.suppliers_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, s['id'])
+        self.total_balance_label.setText(f"إجمالي أرصدة الموردين الدائنة: {total:.2f} ريال")
+
+    def on_supplier_selected(self):
+        rows = self.suppliers_table.selectionModel().selectedRows()
+        if not rows:
+            return
+        row = rows[0].row()
+        supplier_id = self.suppliers_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        name = self.suppliers_table.item(row, 0).text()
+        self.selected_supplier_id = supplier_id
+        self.payment_supplier_label.setText(f"المورد المحدد: {name}")
+        self.refresh_statement()
+
+    def refresh_statement(self):
+        if not self.selected_supplier_id:
+            self.statement_table.setRowCount(0)
+            return
+        statement = self.accounting.get_supplier_statement(self.selected_supplier_id)
+        entries = statement['entries']
+        self.statement_table.setRowCount(len(entries))
+        for row, e in enumerate(entries):
+            self.statement_table.setItem(row, 0, QTableWidgetItem(str(e['date'] or "")))
+            self.statement_table.setItem(row, 1, QTableWidgetItem(e['type']))
+            self.statement_table.setItem(row, 2, QTableWidgetItem(f"{e['debit']:.2f}" if e['debit'] else ""))
+            self.statement_table.setItem(row, 3, QTableWidgetItem(f"{e['credit']:.2f}" if e['credit'] else ""))
+            self.statement_table.setItem(row, 4, QTableWidgetItem(f"{e['balance']:.2f}"))
+
+    def record_payment(self):
+        if not self.selected_supplier_id:
+            QMessageBox.warning(self, "تنبيه", "اختر مورداً من القائمة أولاً")
+            return
+        try:
+            amount = float(self.payment_amount.text())
+            if amount <= 0:
+                raise ValueError
+        except ValueError:
+            QMessageBox.warning(self, "تنبيه", "ادخل مبلغاً صحيحاً")
+            return
+
+        method = self.payment_method.currentText()
+        notes = self.payment_notes.text().strip()
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        self.db.execute_query(
+            "INSERT INTO supplier_payments (supplier_id, date, amount, method, notes) VALUES (?, ?, ?, ?, ?)",
+            (self.selected_supplier_id, timestamp, amount, method, notes),
+        )
+
+        cash_account = '1000' if method == 'Cash' else '1001'
+        items = [
+            {'account_code': '2000', 'debit': amount, 'credit': 0},
+            {'account_code': cash_account, 'debit': 0, 'credit': amount},
+        ]
+        self.db.add_journal_entry(timestamp, "سداد لمورد", None, items)
+
+        QMessageBox.information(self, "نجاح", "تم تسجيل السداد وتحديث رصيد المورد")
+        self.payment_amount.clear()
+        self.payment_notes.clear()
+        self.load_suppliers()
+        self.refresh_statement()
+
+    def refresh_on_show(self):
+        self.load_suppliers()
+        self.refresh_statement()

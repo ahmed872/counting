@@ -17,7 +17,26 @@ def seed():
         ('شركة الموارد الغذائية', '310123456700003', 5000, '0501234567'),
         ('مؤسسة التجهيزات الحديثة', '310987654300003', 0, '0507654321')
     ]
-    cursor.executemany("INSERT OR IGNORE INTO suppliers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)", suppliers)
+    for name, tax_id, opening_balance, phone in suppliers:
+        cursor.execute(
+            "INSERT OR IGNORE INTO suppliers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
+            (name, tax_id, opening_balance, phone),
+        )
+        if cursor.rowcount and opening_balance:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute(
+                "INSERT INTO journal_entries (date, description, branch_id) VALUES (?, ?, ?)",
+                (timestamp, f"رصيد افتتاحي لمورد - {name}", None),
+            )
+            entry_id = cursor.lastrowid
+            cursor.execute(
+                "INSERT INTO journal_items (entry_id, account_code, debit, credit) VALUES (?, ?, ?, ?)",
+                (entry_id, '3900', opening_balance, 0),
+            )
+            cursor.execute(
+                "INSERT INTO journal_items (entry_id, account_code, debit, credit) VALUES (?, ?, ?, ?)",
+                (entry_id, '2000', 0, opening_balance),
+            )
 
     # Add Employees
     employees = [

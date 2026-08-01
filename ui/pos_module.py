@@ -7,15 +7,18 @@ from PyQt6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFileDialog,
+    QFormLayout,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QPushButton,
     QScrollArea,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -47,20 +50,33 @@ class POSModule(QWidget):
         root.addWidget(header)
         root.addWidget(subtitle)
 
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        root.addWidget(tabs, 1)
+
+        pos_tab = QWidget()
+        pos_layout = QVBoxLayout(pos_tab)
+        pos_layout.setContentsMargins(0, 0, 0, 0)
+        pos_layout.setSpacing(12)
+        tabs.addTab(pos_tab, "الكاشير")
+        tabs.addTab(self.build_returns_tab(), "مرتجعات المبيعات")
+
         top_row = QHBoxLayout()
         top_row.setSpacing(12)
 
         self.branch_input = QComboBox()
-        self.branch_input.addItem("فرع الرياض", 1)
-        self.branch_input.addItem("فرع جدة", 2)
+        for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.branch_input.addItem(branch["name"], branch["id"])
         self.branch_input.setCurrentIndex(0)
-        
+
         self.cashier_input = QComboBox()
         self.cashier_input.addItems(["الكاشير", "مشرف الصالة", "مدير الفرع"])
         self.cashier_input.setCurrentIndex(0)
         
         self.payment_method = QComboBox()
-        self.payment_method.addItems(["نقد - Cash", "بطاقة - POS", "تحويل - Transfer"])
+        self.payment_method.addItem("نقد - Cash", "Cash")
+        self.payment_method.addItem("بطاقة - POS", "POS")
+        self.payment_method.addItem("تحويل - Transfer", "Transfer")
         self.payment_method.setCurrentIndex(0)
         
         for widget in (self.branch_input, self.cashier_input, self.payment_method):
@@ -79,7 +95,7 @@ class POSModule(QWidget):
         top_row.addWidget(QLabel("الدفع:"))
         top_row.addWidget(self.payment_method)
         top_row.addStretch()
-        root.addLayout(top_row)
+        pos_layout.addLayout(top_row)
 
         body = QHBoxLayout()
         body.setSpacing(12)
@@ -203,7 +219,7 @@ class POSModule(QWidget):
 
         body.addWidget(left_panel, 3)
         body.addWidget(right_panel, 2)
-        root.addLayout(body, 1)
+        pos_layout.addLayout(body, 1)
 
         self.load_categories()
         self.load_menu_items()
@@ -339,7 +355,8 @@ class POSModule(QWidget):
 
         branch_id = self.branch_input.currentData()
         cashier_name = self.cashier_input.currentText()
-        payment_method = self.payment_method.currentText()
+        payment_method = self.payment_method.currentData()
+        payment_method_label = self.payment_method.currentText()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         order_no = datetime.now().strftime("POS-%Y%m%d-%H%M%S")
 
@@ -371,7 +388,7 @@ class POSModule(QWidget):
         ]
         self.db.add_journal_entry(timestamp, f"مبيعات POS - {order_no}", branch_id, journal_items)
 
-        receipt = self.build_receipt(order_no, timestamp, payment_method, subtotal, vat, total, qr_code)
+        receipt = self.build_receipt(order_no, timestamp, payment_method_label, subtotal, vat, total, qr_code)
         self.show_receipt(receipt)
         self.clear_cart()
         QMessageBox.information(self, "تم", "تم إتمام الطلب وترحيل المبيعات للمحاسبة")
@@ -409,3 +426,104 @@ class POSModule(QWidget):
         buttons.accepted.connect(dialog.accept)
         layout.addWidget(buttons)
         dialog.exec()
+
+    def build_returns_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(12)
+
+        note = QLabel("تسجيل مرتجع مبيعات (طلب أُلغي أو أُعيد جزئياً بعد إصداره) يخصم من إيراد اليوم وضريبته تلقائياً")
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#64748b;")
+        layout.addWidget(note)
+
+        form_layout = QFormLayout()
+        self.return_branch_input = QComboBox()
+        for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.return_branch_input.addItem(branch["name"], branch["id"])
+
+        self.return_amount_input = QLineEdit()
+        self.return_method_input = QComboBox()
+        self.return_method_input.addItem("نقد - Cash", "Cash")
+        self.return_method_input.addItem("بطاقة - POS", "POS")
+        self.return_method_input.addItem("تحويل - Transfer", "Transfer")
+        self.return_notes_input = QLineEdit()
+
+        form_layout.addRow("الفرع:", self.return_branch_input)
+        form_layout.addRow("المبلغ (قبل الضريبة):", self.return_amount_input)
+        form_layout.addRow("طريقة الاسترداد:", self.return_method_input)
+        form_layout.addRow("ملاحظات:", self.return_notes_input)
+
+        save_btn = QPushButton("تسجيل مرتجع مبيعات")
+        save_btn.clicked.connect(self.save_sales_return)
+        form_layout.addRow(save_btn)
+        layout.addLayout(form_layout)
+
+        self.sales_returns_table = QTableWidget()
+        self.sales_returns_table.setColumnCount(5)
+        self.sales_returns_table.setHorizontalHeaderLabels(["التاريخ", "الفرع", "المبلغ", "الضريبة", "طريقة الاسترداد"])
+        self.sales_returns_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.sales_returns_table.verticalHeader().setVisible(False)
+        self.sales_returns_table.setAlternatingRowColors(True)
+        self.sales_returns_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.sales_returns_table, 1)
+
+        self.load_sales_returns()
+        return widget
+
+    def save_sales_return(self):
+        try:
+            branch_id = self.return_branch_input.currentData()
+            amount_text = self.return_amount_input.text().strip()
+            if not amount_text:
+                raise ValueError("يرجى إدخال مبلغ المرتجع")
+            amount = float(amount_text)
+            if amount <= 0:
+                raise ValueError("يجب أن يكون المبلغ أكبر من صفر")
+
+            method = self.return_method_input.currentData()
+            notes = self.return_notes_input.text().strip()
+            vat, total = self.accounting.calculate_vat(amount)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            self.db.execute_query(
+                """INSERT INTO sales_returns (branch_id, date, amount, vat_amount, refund_method, notes)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (branch_id, timestamp, amount, vat, method, notes),
+            )
+
+            account_credit = "1000" if method == "Cash" else "1001"
+            journal_items = [
+                {"account_code": "4000", "debit": amount, "credit": 0},
+                {"account_code": "2100", "debit": vat, "credit": 0},
+                {"account_code": account_credit, "debit": 0, "credit": total},
+            ]
+            self.db.add_journal_entry(timestamp, f"مرتجع مبيعات - {notes or ''}", branch_id, journal_items)
+
+            QMessageBox.information(self, "نجاح", "تم تسجيل مرتجع المبيعات")
+            self.return_amount_input.clear()
+            self.return_notes_input.clear()
+            self.load_sales_returns()
+        except Exception as e:
+            QMessageBox.critical(self, "خطأ", str(e))
+
+    def load_sales_returns(self):
+        query = """
+            SELECT sr.*, b.name as branch_name
+            FROM sales_returns sr
+            LEFT JOIN branches b ON sr.branch_id = b.id
+            ORDER BY sr.date DESC
+        """
+        rows = self.db.fetch_all(query)
+        self.sales_returns_table.setRowCount(len(rows))
+        for row, r in enumerate(rows):
+            self.sales_returns_table.setItem(row, 0, QTableWidgetItem(str(r["date"])))
+            self.sales_returns_table.setItem(row, 1, QTableWidgetItem(r["branch_name"] or ""))
+            self.sales_returns_table.setItem(row, 2, QTableWidgetItem(f"{r['amount']:.2f}"))
+            self.sales_returns_table.setItem(row, 3, QTableWidgetItem(f"{r['vat_amount']:.2f}"))
+            method_labels = {"Cash": "نقد", "POS": "بطاقة", "Transfer": "تحويل"}
+            self.sales_returns_table.setItem(row, 4, QTableWidgetItem(method_labels.get(r["refund_method"], r["refund_method"])))
+
+    def refresh_on_show(self):
+        self.load_categories()
+        self.load_menu_items()

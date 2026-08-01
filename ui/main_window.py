@@ -64,6 +64,7 @@ class MainWindow(QMainWindow):
         self.btn_dashboard = self.create_nav_btn("لوحة التحكم")
         self.btn_hr = self.create_nav_btn("الموارد البشرية")
         self.btn_purchases = self.create_nav_btn("المشتريات")
+        self.btn_suppliers = self.create_nav_btn("الموردون")
         self.btn_accounting = self.create_nav_btn("المحاسبة")
 
         sidebar_layout.addWidget(self.btn_dashboard)
@@ -71,6 +72,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_menu)
         sidebar_layout.addWidget(self.btn_hr)
         sidebar_layout.addWidget(self.btn_purchases)
+        sidebar_layout.addWidget(self.btn_suppliers)
         sidebar_layout.addWidget(self.btn_accounting)
         sidebar_layout.addStretch()
 
@@ -174,6 +176,10 @@ class MainWindow(QMainWindow):
         self.content_stack.setCurrentIndex(index)
         for entry in self.nav_entries:
             entry["button"].setChecked(entry["index"] == index)
+        widget = self.content_stack.widget(index)
+        refresh = getattr(widget, "refresh_on_show", None)
+        if callable(refresh):
+            refresh()
 
     def init_modules(self):
         from ui.dashboard import DashboardModule
@@ -181,16 +187,18 @@ class MainWindow(QMainWindow):
         from ui.pos_module import POSModule
         from ui.menu_management_module import MenuManagementModule
         from ui.purchase_module import PurchaseModule
+        from ui.suppliers_module import SuppliersModule
         from ui.accounting_module import AccountingModule
         from logic.hr import HRLogic
 
         self.hr_logic = HRLogic(self.db)
-        
+
         self.dashboard = DashboardModule(self.db)
         self.pos = POSModule(self.db)
         self.menu_management = MenuManagementModule(self.db)
         self.hr = HRModule(self.db, self.hr_logic)
         self.purchases = PurchaseModule(self.db)
+        self.suppliers = SuppliersModule(self.db)
         self.accounting = AccountingModule(self.db)
 
         self.add_page("pos", self.pos, roles=("admin", "cashier"))
@@ -198,4 +206,5 @@ class MainWindow(QMainWindow):
         self.add_page("dashboard", self.dashboard, roles=("admin",))
         self.add_page("hr", self.hr, roles=("admin",))
         self.add_page("purchases", self.purchases, roles=("admin",))
+        self.add_page("suppliers", self.suppliers, roles=("admin",))
         self.add_page("accounting", self.accounting, roles=("admin",))

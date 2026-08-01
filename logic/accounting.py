@@ -111,10 +111,144 @@ class AccountingLogic:
         balance = {row['type']: {'debit': row['total_debit'] or 0, 'credit': row['total_credit'] or 0} for row in rows}
         assets = balance.get('Asset', {}).get('debit', 0) - balance.get('Asset', {}).get('credit', 0)
         liabilities = balance.get('Liability', {}).get('credit', 0) - balance.get('Liability', {}).get('debit', 0)
-        equity = balance.get('Equity', {}).get('credit', 0) - balance.get('Equity', {}).get('debit', 0)
+
+        revenue = balance.get('Revenue', {}).get('credit', 0) - balance.get('Revenue', {}).get('debit', 0)
+        expense = balance.get('Expense', {}).get('debit', 0) - balance.get('Expense', {}).get('credit', 0)
+        retained_earnings = revenue - expense
+        equity = balance.get('Equity', {}).get('credit', 0) - balance.get('Equity', {}).get('debit', 0) + retained_earnings
+
         return {
             'assets': assets,
             'liabilities': liabilities,
             'equity': equity,
+            'retained_earnings': retained_earnings,
             'balanced': abs(assets - (liabilities + equity)) < 0.01,
         }
+
+    def get_balance_sheet_detail(self):
+        """Per-account balances grouped under Assets / Liabilities / Equity for the قائمة المركز المالي view.
+        Net profit-to-date (Revenue - Expense) is folded into Equity as 'الأرباح المرحّلة' to keep
+        Assets = Liabilities + Equity even though the underlying ledger never closes Revenue/Expense."""
+        query = """
+            SELECT coa.code, coa.name, coa.type,
+                   COALESCE(SUM(ji.debit), 0) as total_debit,
+                   COALESCE(SUM(ji.credit), 0) as total_credit
+            FROM chart_of_accounts coa
+            LEFT JOIN journal_items ji ON coa.code = ji.account_code
+            GROUP BY coa.code
+            ORDER BY coa.code
+        """
+        rows = self.db.fetch_all(query)
+        result = []
+        revenue_total = 0
+        expense_total = 0
+        for row in rows:
+            debit = row['total_debit'] or 0
+            credit = row['total_credit'] or 0
+            if row['type'] == 'Asset' and (debit or credit):
+                result.append({'section': 'أصول', 'name': f"{row['code']} - {row['name']}", 'debit': debit - credit, 'credit': 0})
+            elif row['type'] == 'Liability' and (debit or credit):
+                result.append({'section': 'التزامات', 'name': f"{row['code']} - {row['name']}", 'debit': 0, 'credit': credit - debit})
+            elif row['type'] == 'Equity' and (debit or credit):
+                result.append({'section': 'حقوق ملكية', 'name': f"{row['code']} - {row['name']}", 'debit': 0, 'credit': credit - debit})
+            elif row['type'] == 'Revenue':
+                revenue_total += credit - debit
+            elif row['type'] == 'Expense':
+                expense_total += debit - credit
+
+        retained_earnings = revenue_total - expense_total
+        result.append({'section': 'حقوق ملكية', 'name': 'الأرباح المرحّلة (صافي الربح حتى تاريخه)', 'debit': 0, 'credit': retained_earnings})
+        return result
+
+    def get_trading_account(self, start_date, end_date, opening_inventory=0, closing_inventory=0):
+        """حساب المتاجرة: opening inventory + purchases + purchase-related expenses - purchase returns
+        = cost of goods available for sale; minus closing inventory = cost of goods sold."""
+        purchases = self.db.fetch_one(
+            """SELECT COALESCE(SUM(amount), 0) as v FROM purchases
+               WHERE category = 'raw_material' AND date(date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )['v'] or 0
+        purchase_related_expenses = self.db.fetch_one(
+            """SELECT COALESCE(SUM(amount), 0) as v FROM purchases
+               WHERE category = 'purchase_expense' AND date(date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )['v'] or 0
+        purchase_returns = self.db.fetch_one(
+            """SELECT COALESCE(SUM(amount), 0) as v FROM purchase_returns
+               WHERE date(date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )['v'] or 0
+        sales_returns = self.db.fetch_one(
+            """SELECT COALESCE(SUM(amount), 0) as v FROM sales_returns
+               WHERE date(date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )['v'] or 0
+
+        summary = self.get_financial_summary(start_date, end_date)
+        net_sales = summary['revenue']
+
+        cogs_available = opening_inventory + purchases + purchase_related_expenses - purchase_returns
+        cost_of_goods_sold = cogs_available - closing_inventory
+        gross_profit = net_sales - cost_of_goods_sold
+
+        return {
+            'opening_inventory': opening_inventory,
+            'purchases': purchases,
+            'purchase_related_expenses': purchase_related_expenses,
+            'purchase_returns': purchase_returns,
+            'cogs_available': cogs_available,
+            'closing_inventory': closing_inventory,
+            'cost_of_goods_sold': cost_of_goods_sold,
+            'net_sales': net_sales,
+            'sales_returns': sales_returns,
+            'gross_profit': gross_profit,
+        }
+
+    def get_supplier_statement(self, supplier_id):
+        """Running ledger for a single supplier: opening balance + purchases (credit) - payments (debit) - purchase returns (debit)."""
+        supplier = self.db.fetch_one("SELECT * FROM suppliers WHERE id = ?", (supplier_id,))
+        if not supplier:
+            return None
+
+        entries = []
+        opening_balance = supplier['opening_balance'] or 0
+        if opening_balance:
+            entries.append({'date': '', 'type': 'رصيد افتتاحي', 'debit': 0, 'credit': opening_balance})
+
+        purchases = self.db.fetch_all(
+            "SELECT date, total_amount FROM purchases WHERE supplier_id = ? AND payment_status = 'Credit' ORDER BY date",
+            (supplier_id,),
+        )
+        for p in purchases:
+            entries.append({'date': p['date'], 'type': 'فاتورة مشتريات آجلة', 'debit': 0, 'credit': p['total_amount'] or 0})
+
+        payments = self.db.fetch_all(
+            "SELECT date, amount, method FROM supplier_payments WHERE supplier_id = ? ORDER BY date",
+            (supplier_id,),
+        )
+        for pay in payments:
+            entries.append({'date': pay['date'], 'type': f"سداد ({pay['method']})", 'debit': pay['amount'] or 0, 'credit': 0})
+
+        returns = self.db.fetch_all(
+            "SELECT date, amount, vat_amount FROM purchase_returns WHERE supplier_id = ? AND refund_method = 'CreditNote' ORDER BY date",
+            (supplier_id,),
+        )
+        for r in returns:
+            entries.append({'date': r['date'], 'type': 'مرتجع مشتريات', 'debit': (r['amount'] or 0) + (r['vat_amount'] or 0), 'credit': 0})
+
+        entries.sort(key=lambda e: e['date'] or '')
+
+        balance = 0
+        for e in entries:
+            balance += e['credit'] - e['debit']
+            e['balance'] = balance
+
+        return {'supplier': supplier, 'entries': entries, 'balance': balance}
+
+    def get_all_supplier_balances(self):
+        suppliers = self.db.fetch_all("SELECT * FROM suppliers ORDER BY name")
+        results = []
+        for s in suppliers:
+            statement = self.get_supplier_statement(s['id'])
+            results.append({'id': s['id'], 'name': s['name'], 'phone': s['phone'], 'balance': statement['balance']})
+        return results

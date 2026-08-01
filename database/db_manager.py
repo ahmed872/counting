@@ -80,6 +80,21 @@ class DBManager:
             if 'line_total' not in sales_order_items_columns:
                 cursor.execute("ALTER TABLE sales_order_items ADD COLUMN line_total REAL DEFAULT 0")
 
+        purchases_columns = table_columns('purchases') if self.table_exists(cursor, 'purchases') else set()
+        if 'purchases' in self.get_existing_tables(cursor):
+            if 'category' not in purchases_columns:
+                cursor.execute("ALTER TABLE purchases ADD COLUMN category TEXT DEFAULT 'raw_material'")
+            if 'description' not in purchases_columns:
+                cursor.execute("ALTER TABLE purchases ADD COLUMN description TEXT")
+            if 'amount' not in purchases_columns:
+                cursor.execute("ALTER TABLE purchases ADD COLUMN amount REAL DEFAULT 0")
+                cursor.execute("UPDATE purchases SET amount = COALESCE(total_amount, 0) - COALESCE(vat_amount, 0) WHERE amount = 0")
+
+        employee_deductions_columns = table_columns('employee_deductions') if self.table_exists(cursor, 'employee_deductions') else set()
+        if 'employee_deductions' in self.get_existing_tables(cursor):
+            if 'settled_run_id' not in employee_deductions_columns:
+                cursor.execute("ALTER TABLE employee_deductions ADD COLUMN settled_run_id INTEGER")
+
     def get_existing_tables(self, cursor):
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return {row[0] for row in cursor.fetchall()}
