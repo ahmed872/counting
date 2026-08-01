@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import QDate, Qt
 from logic.accounting import AccountingLogic
+from ui.common_widgets import create_stat_card
 
 
 class AccountingModule(QWidget):
@@ -72,10 +73,10 @@ class AccountingModule(QWidget):
 
         summary_row = QHBoxLayout()
         summary_row.setSpacing(10)
-        self.sales_card = self.make_summary_card("المبيعات", "0.00")
-        self.purchases_card = self.make_summary_card("المشتريات", "0.00")
-        self.profit_card = self.make_summary_card("صافي الربح", "0.00")
-        self.vat_card = self.make_summary_card("صافي الضريبة", "0.00")
+        self.sales_card = create_stat_card("المبيعات", "0.00", "#27ae60")
+        self.purchases_card = create_stat_card("المشتريات", "0.00", "#8e44ad")
+        self.profit_card = create_stat_card("صافي الربح", "0.00", "#2c7be5")
+        self.vat_card = create_stat_card("صافي الضريبة", "0.00", "#e67e22")
         summary_row.addWidget(self.sales_card)
         summary_row.addWidget(self.purchases_card)
         summary_row.addWidget(self.profit_card)
@@ -205,21 +206,6 @@ class AccountingModule(QWidget):
             self.start_date.setDate(QDate.currentDate())
             self.end_date.setDate(QDate.currentDate())
         self.refresh_data()
-
-    def make_summary_card(self, title, value):
-        frame = QFrame()
-        frame.setStyleSheet("background:#1f3b57; color:white; border-radius:14px; padding:14px;")
-        frame.setMinimumHeight(92)
-        frame.setMinimumWidth(180)
-        box = QVBoxLayout(frame)
-        title_label = QLabel(title)
-        title_label.setStyleSheet("color:rgba(255,255,255,0.9); font-weight:600;")
-        value_label = QLabel(value)
-        value_label.setStyleSheet("font-size:20px; font-weight:700; color:white;")
-        box.addWidget(title_label)
-        box.addWidget(value_label)
-        frame.value_label = value_label
-        return frame
 
     def resolve_period(self):
         period = self.period_input.currentText()

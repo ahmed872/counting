@@ -16,12 +16,11 @@ class MainWindow(QMainWindow):
     def __init__(self, db_manager):
         super().__init__()
         self.db = db_manager
-        self.current_role = "admin"
         self.nav_entries = []
         self.setWindowTitle("نظام إدارة المطعم - Mini ERP")
         self.setMinimumSize(1200, 760)
         self.resize(1440, 900)
-        
+
         # Main Layout
         main_widget = QWidget()
         self.setCentralWidget(main_widget)
@@ -37,31 +36,17 @@ class MainWindow(QMainWindow):
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(16, 20, 16, 16)
         sidebar_layout.setSpacing(10)
-        
+
         title_label = QLabel("إدارة المطعم")
         title_label.setFont(QFont("Arial", 16, QFont.Weight.Bold))
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         title_label.setStyleSheet("padding: 8px 0; color: white;")
         sidebar_layout.addWidget(title_label)
         sidebar_layout.addWidget(self.create_divider())
+        sidebar_layout.addSpacing(6)
 
-        role_row = QHBoxLayout()
-        role_row.setSpacing(8)
-        self.btn_admin_role = self.create_role_btn("وضع الإدارة")
-        self.btn_cashier_role = self.create_role_btn("وضع الكاشير")
-        self.btn_admin_role.clicked.connect(lambda: self.set_role("admin"))
-        self.btn_cashier_role.clicked.connect(lambda: self.set_role("cashier"))
-        role_row.addWidget(self.btn_admin_role)
-        role_row.addWidget(self.btn_cashier_role)
-        sidebar_layout.addLayout(role_row)
-
-        self.role_hint = QLabel("الصفحات الإدارية مخفية في وضع الكاشير")
-        self.role_hint.setWordWrap(True)
-        self.role_hint.setStyleSheet("color: rgba(255,255,255,0.75); font-size: 12px; padding: 4px 2px 8px 2px;")
-        sidebar_layout.addWidget(self.role_hint)
-
-        self.btn_sales = self.create_nav_btn("المبيعات اليومية")
         self.btn_dashboard = self.create_nav_btn("لوحة التحكم")
+        self.btn_sales = self.create_nav_btn("المبيعات اليومية")
         self.btn_hr = self.create_nav_btn("الموارد البشرية")
         self.btn_purchases = self.create_nav_btn("المشتريات")
         self.btn_suppliers = self.create_nav_btn("الموردون")
@@ -90,21 +75,10 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(self.content_stack)
         layout.addWidget(self.content_wrapper)
 
-        # Initialize Modules (Placeholders for now)
+        # Initialize Modules
         self.init_modules()
 
-        self.set_role("admin")
-
-    def create_role_btn(self, text):
-        btn = QPushButton(text)
-        btn.setCheckable(True)
-        btn.setMinimumHeight(36)
-        btn.setStyleSheet(
-            "QPushButton { background: rgba(255,255,255,0.08); color: white; border: 1px solid rgba(255,255,255,0.15); border-radius: 10px; padding: 8px 10px; font-size: 12px; }"
-            "QPushButton:checked { background: #4f78a8; border-color: #4f78a8; font-weight: 700; }"
-            "QPushButton:hover { background: rgba(255,255,255,0.14); }"
-        )
-        return btn
+        self.set_active_page(0)
 
     def create_nav_btn(self, text):
         btn = QPushButton(text)
@@ -137,39 +111,14 @@ class MainWindow(QMainWindow):
         line.setStyleSheet("color: rgba(255, 255, 255, 0.15);")
         return line
 
-    def add_page(self, label, widget, roles):
+    def add_page(self, label, widget):
         index = self.content_stack.addWidget(widget)
         button = getattr(self, f"btn_{label}", None)
         if button is None:
             button = self.create_nav_btn(label)
         button.clicked.connect(lambda checked=False, page_index=index: self.set_active_page(page_index))
-        self.nav_entries.append({"label": label, "button": button, "index": index, "roles": set(roles)})
+        self.nav_entries.append({"label": label, "button": button, "index": index})
         return index
-
-    def visible_pages(self):
-        return [entry for entry in self.nav_entries if self.current_role in entry["roles"]]
-
-    def apply_role_visibility(self):
-        for entry in self.nav_entries:
-            visible = self.current_role in entry["roles"]
-            entry["button"].setVisible(visible)
-        self.btn_admin_role.setChecked(self.current_role == "admin")
-        self.btn_cashier_role.setChecked(self.current_role == "cashier")
-        self.role_hint.setText("الصفحات الإدارية مخفية في وضع الكاشير" if self.current_role == "cashier" else "كل صفحات الإدارة متاحة")
-
-        visible = self.visible_pages()
-        if visible:
-            current_index = self.content_stack.currentIndex()
-            if not any(entry["index"] == current_index for entry in visible):
-                return
-
-    def set_role(self, role):
-        self.current_role = role
-        self.apply_role_visibility()
-        preferred_label = "dashboard" if role == "admin" else "sales"
-        preferred_page = next((entry for entry in self.nav_entries if entry["label"] == preferred_label and role in entry["roles"]), None)
-        if preferred_page:
-            self.set_active_page(preferred_page["index"])
 
     def set_active_page(self, index):
         self.content_stack.setCurrentIndex(index)
@@ -198,9 +147,9 @@ class MainWindow(QMainWindow):
         self.suppliers = SuppliersModule(self.db)
         self.accounting = AccountingModule(self.db)
 
-        self.add_page("dashboard", self.dashboard, roles=("admin",))
-        self.add_page("sales", self.sales, roles=("admin", "cashier"))
-        self.add_page("hr", self.hr, roles=("admin",))
-        self.add_page("purchases", self.purchases, roles=("admin",))
-        self.add_page("suppliers", self.suppliers, roles=("admin",))
-        self.add_page("accounting", self.accounting, roles=("admin",))
+        self.add_page("dashboard", self.dashboard)
+        self.add_page("sales", self.sales)
+        self.add_page("hr", self.hr)
+        self.add_page("purchases", self.purchases)
+        self.add_page("suppliers", self.suppliers)
+        self.add_page("accounting", self.accounting)

@@ -6,6 +6,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
 from logic.hr import HRLogic
 from logic.accounting import AccountingLogic
+from ui.common_widgets import create_stat_card
 
 
 class DashboardModule(QWidget):
@@ -30,11 +31,11 @@ class DashboardModule(QWidget):
         stats_layout = QGridLayout()
         stats_layout.setHorizontalSpacing(14)
         stats_layout.setVerticalSpacing(14)
-        self.sales_card = self.create_card("إجمالي المبيعات اليوم", "0.00 ريال", "#27ae60")
-        self.purchases_card = self.create_card("إجمالي المشتريات اليوم", "0.00 ريال", "#8e44ad")
-        self.profit_card = self.create_card("صافي الربح اليوم", "0.00 ريال", "#2c7be5")
-        self.vat_card = self.create_card("صافي الضريبة المستحقة اليوم", "0.00 ريال", "#e67e22")
-        self.emp_card = self.create_card("عدد الموظفين", "0", "#2980b9")
+        self.sales_card = create_stat_card("إجمالي المبيعات اليوم", "0.00 ريال", "#27ae60")
+        self.purchases_card = create_stat_card("إجمالي المشتريات اليوم", "0.00 ريال", "#8e44ad")
+        self.profit_card = create_stat_card("صافي الربح اليوم", "0.00 ريال", "#2c7be5")
+        self.vat_card = create_stat_card("صافي الضريبة المستحقة اليوم", "0.00 ريال", "#e67e22")
+        self.emp_card = create_stat_card("عدد الموظفين", "0", "#2980b9")
 
         cards = [self.sales_card, self.purchases_card, self.profit_card, self.vat_card, self.emp_card]
         columns = 3
@@ -76,25 +77,6 @@ class DashboardModule(QWidget):
         layout.addWidget(self.alerts_table)
 
         self.refresh_dashboard()
-
-    def create_card(self, title, value, color):
-        frame = QFrame()
-        frame.setMinimumHeight(130)
-        frame.setMinimumWidth(220)
-        frame.setStyleSheet(f"background-color: {color}; color: white; border-radius: 16px; padding: 18px;")
-        lay = QVBoxLayout(frame)
-        lay.setSpacing(8)
-        t_label = QLabel(title)
-        t_label.setWordWrap(True)
-        v_label = QLabel(value)
-        t_label.setStyleSheet("font-size: 14px; font-weight: 600; color: rgba(255, 255, 255, 0.95);")
-        v_label.setStyleSheet("font-size: 22px; font-weight: bold; color: white;")
-        lay.addStretch()
-        lay.addWidget(t_label)
-        lay.addWidget(v_label)
-        lay.addStretch()
-        frame.value_label = v_label
-        return frame
 
     def refresh_dashboard(self):
         today = datetime.now().strftime("%Y-%m-%d")

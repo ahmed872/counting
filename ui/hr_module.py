@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
                              QGroupBox, QTabWidget, QScrollArea, QSizePolicy)
 from PyQt6.QtCore import QDate, Qt
+from ui.common_widgets import create_stat_card
 
 
 class HRModule(QWidget):
@@ -41,10 +42,10 @@ class HRModule(QWidget):
 
         cards_row = QHBoxLayout()
         cards_row.setSpacing(12)
-        self.total_employees_card = self.info_card("إجمالي العاملين", "0")
-        self.doc_alerts_card = self.info_card("تنبيهات الوثائق (30 يوم)", "0")
-        self.absent_card = self.info_card("الغياب هذا الشهر", "0")
-        self.advances_card = self.info_card("سلف قائمة (غير مسددة)", "0.00")
+        self.total_employees_card = create_stat_card("إجمالي العاملين", "0", "#2980b9")
+        self.doc_alerts_card = create_stat_card("تنبيهات الوثائق (30 يوم)", "0", "#e67e22")
+        self.absent_card = create_stat_card("الغياب هذا الشهر", "0", "#c0392b")
+        self.advances_card = create_stat_card("سلف قائمة (غير مسددة)", "0.00", "#8e44ad")
         cards_row.addWidget(self.total_employees_card)
         cards_row.addWidget(self.doc_alerts_card)
         cards_row.addWidget(self.absent_card)
@@ -228,19 +229,6 @@ class HRModule(QWidget):
         row.addWidget(date_field)
         return wrapper
 
-    def info_card(self, title, value):
-        frame = QGroupBox()
-        frame.setStyleSheet("QGroupBox { background:#f8fbff; border:1px solid #dbe3ec; border-radius:12px; padding:10px; font-weight:600; }")
-        frame.setMinimumHeight(88)
-        layout = QVBoxLayout(frame)
-        title_label = QLabel(title)
-        title_label.setStyleSheet("color:#64748b;")
-        value_label = QLabel(value)
-        value_label.setStyleSheet("font-size:22px; font-weight:700; color:#1f3b57;")
-        layout.addWidget(title_label)
-        layout.addWidget(value_label)
-        frame.value_label = value_label
-        return frame
 
     def load_branch_options(self):
         self.branch_input.clear()
