@@ -74,8 +74,8 @@ def main():
             background-color: white;
             border: 1px solid #d6dbe3;
             border-radius: 10px;
-            padding: 8px 10px;
-            min-height: 28px;
+            padding: 9px 12px;
+            min-height: 32px;
         }
         QComboBox::drop-down {
             border: 0px;

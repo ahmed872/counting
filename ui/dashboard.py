@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QTableWidget,
                              QTableWidgetItem, QLabel, QHeaderView, QFrame, QComboBox)
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QColor
@@ -25,20 +25,21 @@ class DashboardModule(QWidget):
         header.setStyleSheet("font-size: 24px; font-weight: bold; color: #1f3b57;")
         layout.addWidget(header)
 
-        # Stats Cards
-        stats_layout = QHBoxLayout()
-        stats_layout.setSpacing(12)
+        # Stats Cards - a grid (3 columns) wraps more gracefully than one long row of 5
+        # cards, which gets squeezed uncomfortably tight on smaller/narrower windows.
+        stats_layout = QGridLayout()
+        stats_layout.setHorizontalSpacing(14)
+        stats_layout.setVerticalSpacing(14)
         self.sales_card = self.create_card("إجمالي المبيعات اليوم", "0.00 ريال", "#27ae60")
         self.purchases_card = self.create_card("إجمالي المشتريات اليوم", "0.00 ريال", "#8e44ad")
         self.profit_card = self.create_card("صافي الربح اليوم", "0.00 ريال", "#2c7be5")
         self.vat_card = self.create_card("صافي الضريبة المستحقة اليوم", "0.00 ريال", "#e67e22")
         self.emp_card = self.create_card("عدد الموظفين", "0", "#2980b9")
 
-        stats_layout.addWidget(self.sales_card)
-        stats_layout.addWidget(self.purchases_card)
-        stats_layout.addWidget(self.profit_card)
-        stats_layout.addWidget(self.vat_card)
-        stats_layout.addWidget(self.emp_card)
+        cards = [self.sales_card, self.purchases_card, self.profit_card, self.vat_card, self.emp_card]
+        columns = 3
+        for index, card in enumerate(cards):
+            stats_layout.addWidget(card, index // columns, index % columns)
         layout.addLayout(stats_layout)
 
         # Alerts Section
@@ -79,10 +80,12 @@ class DashboardModule(QWidget):
     def create_card(self, title, value, color):
         frame = QFrame()
         frame.setMinimumHeight(130)
+        frame.setMinimumWidth(220)
         frame.setStyleSheet(f"background-color: {color}; color: white; border-radius: 16px; padding: 18px;")
         lay = QVBoxLayout(frame)
         lay.setSpacing(8)
         t_label = QLabel(title)
+        t_label.setWordWrap(True)
         v_label = QLabel(value)
         t_label.setStyleSheet("font-size: 14px; font-weight: 600; color: rgba(255, 255, 255, 0.95);")
         v_label.setStyleSheet("font-size: 22px; font-weight: bold; color: white;")

@@ -19,7 +19,8 @@ class MainWindow(QMainWindow):
         self.current_role = "admin"
         self.nav_entries = []
         self.setWindowTitle("نظام إدارة المطعم - Mini ERP")
-        self.resize(1200, 800)
+        self.setMinimumSize(1200, 760)
+        self.resize(1440, 900)
         
         # Main Layout
         main_widget = QWidget()

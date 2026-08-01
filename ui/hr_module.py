@@ -52,10 +52,8 @@ class HRModule(QWidget):
         setup_layout.addLayout(cards_row)
 
         form_group = QGroupBox("بيانات العامل")
-        form_group.setStyleSheet("QGroupBox { font-weight: 700; border: 1px solid #d8e0ea; border-radius: 12px; margin-top: 10px; padding-top: 16px; }")
         form_outer = QVBoxLayout(form_group)
-        form_columns = QHBoxLayout()
-        form_columns.setSpacing(24)
+        form_outer.setContentsMargins(6, 10, 6, 14)
 
         self.name_input = QLineEdit()
         self.job_input = QLineEdit()
@@ -78,38 +76,30 @@ class HRModule(QWidget):
 
         self._apply_field_widths()
 
-        left_form = QFormLayout()
-        left_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        left_form.setSpacing(12)
-        left_form.addRow("الاسم:", self.name_input)
-        left_form.addRow("الوظيفة:", self.job_input)
-        left_form.addRow("الفرع:", self.branch_input)
-        left_form.addRow("الراتب الأساسي:", self.salary_input)
-        left_form.addRow("البدلات:", self.allowance_input)
+        # A single vertical form (one field per row) is far more robust across different
+        # fonts/DPI settings than packing multiple columns side by side - a long label in
+        # a narrower column is what causes cramped, hard-to-read forms on some systems.
+        employee_form = QFormLayout()
+        employee_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        employee_form.setSpacing(16)
+        employee_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
 
-        right_form = QFormLayout()
-        right_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        right_form.setSpacing(12)
-        right_form.addRow("رقم الإقامة:", self.iqama_input)
-        right_form.addRow("تاريخ انتهاء الإقامة:", self.iqama_expiry)
-        right_form.addRow("رقم الجواز:", self.passport_input)
-        right_form.addRow("تاريخ انتهاء الجواز:", self.passport_expiry)
-        right_form.addRow("رقم تصريح العمل:", self.work_permit_input)
-        right_form.addRow("تاريخ انتهاء تصريح العمل:", self.work_permit_expiry)
-        right_form.addRow("رقم كرت العمل:", self.work_card_input)
-        right_form.addRow("تاريخ انتهاء كرت العمل:", self.work_card_expiry)
+        employee_form.addRow("الاسم:", self.name_input)
+        employee_form.addRow("الوظيفة:", self.job_input)
+        employee_form.addRow("الفرع:", self.branch_input)
+        employee_form.addRow("الراتب الأساسي:", self.salary_input)
+        employee_form.addRow("البدلات:", self.allowance_input)
+        employee_form.addRow("رقم الإقامة وتاريخ الانتهاء:", self._document_row(self.iqama_input, self.iqama_expiry))
+        employee_form.addRow("رقم الجواز وتاريخ الانتهاء:", self._document_row(self.passport_input, self.passport_expiry))
+        employee_form.addRow("رقم تصريح العمل وتاريخ الانتهاء:", self._document_row(self.work_permit_input, self.work_permit_expiry))
+        employee_form.addRow("رقم كرت العمل وتاريخ الانتهاء:", self._document_row(self.work_card_input, self.work_card_expiry))
 
-        left_wrap = QWidget()
-        left_wrap.setLayout(left_form)
-        right_wrap = QWidget()
-        right_wrap.setLayout(right_form)
-        form_columns.addWidget(left_wrap, 1)
-        form_columns.addWidget(right_wrap, 1)
-        form_outer.addLayout(form_columns)
+        form_outer.addLayout(employee_form)
 
         add_btn = QPushButton("إضافة موظف")
         add_btn.clicked.connect(self.add_employee)
-        add_btn.setMinimumHeight(42)
+        add_btn.setMinimumHeight(44)
+        form_outer.addSpacing(6)
         form_outer.addWidget(add_btn)
         setup_layout.addWidget(form_group)
 
@@ -226,6 +216,17 @@ class HRModule(QWidget):
         tabs.addTab(tables_scroll, "القوائم")
 
         self.load_employees()
+
+    def _document_row(self, number_field, date_field):
+        wrapper = QWidget()
+        row = QHBoxLayout(wrapper)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(10)
+        number_field.setMinimumWidth(160)
+        date_field.setMinimumWidth(150)
+        row.addWidget(number_field, 1)
+        row.addWidget(date_field)
+        return wrapper
 
     def info_card(self, title, value):
         frame = QGroupBox()
