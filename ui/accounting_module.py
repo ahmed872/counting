@@ -43,9 +43,6 @@ class AccountingModule(QWidget):
         layout.addWidget(subtitle)
 
         controls_box = QGroupBox("تحديد الفترة")
-        controls_box.setStyleSheet(
-            "QGroupBox { font-weight: 700; border: 1px solid #d8e0ea; border-radius: 12px; margin-top: 10px; padding-top: 16px; }"
-        )
         controls = QGridLayout(controls_box)
         controls.setHorizontalSpacing(10)
         controls.setVerticalSpacing(10)
@@ -265,11 +262,18 @@ class AccountingModule(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem(f"{debit:.2f}"))
             self.table.setItem(row, 4, QTableWidgetItem(f"{credit:.2f}"))
 
-        self.tb_totals_label.setText(f"إجمالي مدين: {total_debit:.2f}   |   إجمالي دائن: {total_credit:.2f}")
-        if abs(total_debit - total_credit) < 0.01:
-            self.table.setStyleSheet("border: 2px solid green;")
-        else:
-            self.table.setStyleSheet("border: 2px solid red;")
+        # Show the balanced/unbalanced state on the totals label rather than as a
+        # border on the table: a bare "border: ..." stylesheet on a QTableWidget
+        # also leaks onto its header and scrollbars.
+        balanced = abs(total_debit - total_credit) < 0.01
+        status = "متوازن ✓" if balanced else "غير متوازن ✗"
+        color = "#16a34a" if balanced else "#dc2626"
+        self.tb_totals_label.setText(
+            f"إجمالي مدين: {total_debit:.2f}   |   إجمالي دائن: {total_credit:.2f}   |   {status}"
+        )
+        self.tb_totals_label.setStyleSheet(
+            f"font-weight: 800; padding: 8px; color: {color}; background: transparent; border: none;"
+        )
 
         self.refresh_trading_account()
 

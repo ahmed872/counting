@@ -52,7 +52,6 @@ class SuppliersModule(QWidget):
         layout.setSpacing(14)
 
         form_box = QGroupBox("إضافة مورد جديد")
-        form_box.setStyleSheet("QGroupBox { font-weight: 700; border: 1px solid #d8e0ea; border-radius: 12px; margin-top: 10px; padding-top: 16px; }")
         form_layout = QFormLayout(form_box)
         form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
         form_layout.setSpacing(12)

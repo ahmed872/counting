@@ -26,8 +26,8 @@ class DashboardModule(QWidget):
         header.setStyleSheet("font-size: 24px; font-weight: bold; color: #1f3b57;")
         layout.addWidget(header)
 
-        # Stats Cards - a grid (3 columns) wraps more gracefully than one long row of 5
-        # cards, which gets squeezed uncomfortably tight on smaller/narrower windows.
+        # Six cards in a 3-column grid fills exactly two rows with no ragged gap,
+        # and wraps better than one long row when the window is narrow.
         stats_layout = QGridLayout()
         stats_layout.setHorizontalSpacing(14)
         stats_layout.setVerticalSpacing(14)
@@ -36,8 +36,12 @@ class DashboardModule(QWidget):
         self.profit_card = create_stat_card("صافي الربح اليوم", "0.00 ريال", "#2c7be5")
         self.vat_card = create_stat_card("صافي الضريبة المستحقة اليوم", "0.00 ريال", "#e67e22")
         self.emp_card = create_stat_card("عدد الموظفين", "0", "#2980b9")
+        self.alerts_card = create_stat_card("وثائق تقترب من الانتهاء", "0", "#dc2626")
 
-        cards = [self.sales_card, self.purchases_card, self.profit_card, self.vat_card, self.emp_card]
+        cards = [
+            self.sales_card, self.purchases_card, self.profit_card,
+            self.vat_card, self.emp_card, self.alerts_card,
+        ]
         columns = 3
         for index, card in enumerate(cards):
             stats_layout.addWidget(card, index // columns, index % columns)
@@ -74,7 +78,7 @@ class DashboardModule(QWidget):
         self.alerts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.alerts_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.alerts_table.setMinimumHeight(210)
-        layout.addWidget(self.alerts_table)
+        layout.addWidget(self.alerts_table, 1)
 
         self.refresh_dashboard()
 
@@ -92,6 +96,7 @@ class DashboardModule(QWidget):
 
         threshold_days = self.threshold_input.currentData() or 30
         alerts = self.hr_logic.get_document_alerts(days=threshold_days)
+        self.alerts_card.value_label.setText(str(len(alerts)))
         self.alerts_table.setVisible(bool(alerts))
         self.alerts_empty.setVisible(not alerts)
         self.alerts_table.setRowCount(len(alerts))

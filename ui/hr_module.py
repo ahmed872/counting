@@ -28,7 +28,6 @@ class HRModule(QWidget):
 
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
-        tabs.setStyleSheet("QTabWidget::pane { border: 0; } QTabBar::tab { padding: 10px 16px; } QTabBar::tab:selected { font-weight: 700; }")
         root_layout.addWidget(tabs)
 
         setup_scroll = QScrollArea()

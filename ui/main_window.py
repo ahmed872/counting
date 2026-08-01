@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (
     QStackedWidget,
     QLabel,
     QFrame,
+    QDateEdit,
     QSizePolicy,
 )
 from PyQt6.QtCore import Qt
@@ -27,12 +28,19 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(main_widget)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(16)
-        main_widget.setStyleSheet("background-color: #edf1f5;")
+        # Scope every container rule by objectName. A bare "background: ...;
+        # border-radius: ...;" stylesheet is inherited by *all* descendants,
+        # which paints stray borders/rounded corners onto the widgets inside.
+        main_widget.setObjectName("appRoot")
+        main_widget.setStyleSheet("QWidget#appRoot { background-color: #edf1f5; }")
 
         # Sidebar
         self.sidebar = QFrame()
+        self.sidebar.setObjectName("sidebar")
         self.sidebar.setFixedWidth(230)
-        self.sidebar.setStyleSheet("background-color: #243447; color: white; border-radius: 18px;")
+        self.sidebar.setStyleSheet(
+            "QFrame#sidebar { background-color: #243447; border-radius: 18px; }"
+        )
         sidebar_layout = QVBoxLayout(self.sidebar)
         sidebar_layout.setContentsMargins(16, 20, 16, 16)
         sidebar_layout.setSpacing(10)
@@ -64,21 +72,42 @@ class MainWindow(QMainWindow):
 
         # Content Area
         self.content_wrapper = QFrame()
-        self.content_wrapper.setStyleSheet("background-color: white; border-radius: 18px;")
+        self.content_wrapper.setObjectName("contentWrapper")
+        self.content_wrapper.setStyleSheet(
+            "QFrame#contentWrapper { background-color: white; border-radius: 18px; }"
+        )
         content_layout = QVBoxLayout(self.content_wrapper)
         content_layout.setContentsMargins(20, 20, 20, 20)
         content_layout.setSpacing(0)
 
         self.content_stack = QStackedWidget()
-        self.content_stack.setStyleSheet("background: transparent;")
+        self.content_stack.setObjectName("contentStack")
+        self.content_stack.setStyleSheet("QStackedWidget#contentStack { background: transparent; }")
         self.content_stack.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         content_layout.addWidget(self.content_stack)
         layout.addWidget(self.content_wrapper)
 
         # Initialize Modules
         self.init_modules()
+        self.normalize_date_fields()
 
         self.set_active_page(0)
+
+    def normalize_date_fields(self):
+        """Qt's default short-date display is locale-dependent and renders as an
+        ambiguous "2026 08 1" here. Pin every date field to ISO format in one
+        place instead of at each call site.
+
+        The fields are also forced LTR: under RTL the bidi algorithm reorders
+        the hyphen-separated parts, so 2026-08-01 visually reads "01-08-2026",
+        which invites real data-entry mistakes on expiry dates."""
+        for date_edit in self.findChildren(QDateEdit):
+            # Order matters: QDateTimeEdit reverses the section order of the
+            # display format for RTL widgets, so the direction must be set to
+            # LTR *before* the format, otherwise 2026-08-01 comes out 01-08-2026.
+            date_edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
+            date_edit.setDisplayFormat("yyyy-MM-dd")
+            date_edit.setCalendarPopup(True)
 
     def create_nav_btn(self, text):
         btn = QPushButton(text)
