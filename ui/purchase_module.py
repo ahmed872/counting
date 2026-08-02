@@ -93,11 +93,44 @@ class PurchaseModule(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+
+        table_header = QHBoxLayout()
+        table_label = QLabel("الفواتير المسجلة:")
+        table_label.setStyleSheet("font-weight:700; color:#334155;")
+        table_header.addWidget(table_label)
+        table_header.addStretch()
+        delete_btn = QPushButton("حذف الفاتورة المحددة")
+        delete_btn.setStyleSheet(
+            "QPushButton { background-color:#dc2626; border:1px solid #b91c1c; }"
+            "QPushButton:hover { background-color:#b91c1c; border:1px solid #991b1b; }"
+        )
+        delete_btn.clicked.connect(self.delete_selected_purchase)
+        table_header.addWidget(delete_btn)
+        layout.addLayout(table_header)
         layout.addWidget(self.table, 1)
 
         self.on_category_changed()
         self.load_purchases()
         return widget
+
+    def delete_selected_purchase(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "تنبيه", "اختر فاتورة من الجدول أولاً")
+            return
+        purchase_id, entry_id = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        description = self.table.item(row, 3).text() or self.table.item(row, 1).text()
+        amount = self.table.item(row, 4).text()
+        answer = QMessageBox.question(
+            self, "حذف فاتورة",
+            f"سيتم حذف الفاتورة «{description}» بمبلغ {amount} وقيدها المحاسبي نهائياً.\n\nمتابعة؟",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.db.execute_query("DELETE FROM purchases WHERE id = ?", (purchase_id,))
+        self.db.delete_journal_entry(entry_id)
+        QMessageBox.information(self, "تم", "تم حذف الفاتورة وقيدها المحاسبي")
+        self.load_purchases()
 
     def build_returns_tab(self):
         widget = QWidget()
@@ -198,13 +231,6 @@ class PurchaseModule(QWidget):
             vat, total = self.accounting.calculate_vat(amount)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-            self.db.execute_query(
-                """INSERT INTO purchases
-                   (branch_id, supplier_id, amount, total_amount, vat_amount, payment_status, category, description, date)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (branch_id, supplier_id, amount, total, vat, status, category, description, timestamp),
-            )
-
             account_credit = '1000' if status == 'Cash' else '2000'
             if category == 'raw_material':
                 debit_account = '1100'
@@ -219,7 +245,18 @@ class PurchaseModule(QWidget):
                 {'account_code': account_credit, 'debit': 0, 'credit': total},
             ]
             label = CATEGORY_LABELS.get(category, category)
-            self.db.add_journal_entry(timestamp, f"{label} - {description or status}", branch_id, items)
+            entry_id = self.db.add_journal_entry(
+                timestamp, f"{label} - {description or status}", branch_id, items
+            )
+
+            self.db.execute_query(
+                """INSERT INTO purchases
+                   (branch_id, supplier_id, amount, total_amount, vat_amount, payment_status,
+                    category, description, date, journal_entry_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (branch_id, supplier_id, amount, total, vat, status, category,
+                 description, timestamp, entry_id),
+            )
 
             QMessageBox.information(self, "نجاح", "تم تسجيل الفاتورة بنجاح")
             self.amount_input.clear()
@@ -233,12 +270,17 @@ class PurchaseModule(QWidget):
             SELECT p.*, s.name as supplier_name
             FROM purchases p
             LEFT JOIN suppliers s ON p.supplier_id = s.id
-            ORDER BY p.date DESC
+            -- id breaks ties: rows saved in the same second would otherwise
+            -- come back in an arbitrary order, and the user could delete
+            -- a different invoice from the one highlighted in the table.
+            ORDER BY p.date DESC, p.id DESC
         """
         purchases = self.db.fetch_all(query)
         self.table.setRowCount(len(purchases))
         for row, p in enumerate(purchases):
-            self.table.setItem(row, 0, QTableWidgetItem(str(p['date'])))
+            date_item = QTableWidgetItem(str(p['date']))
+            date_item.setData(Qt.ItemDataRole.UserRole, (p['id'], p['journal_entry_id']))
+            self.table.setItem(row, 0, date_item)
             self.table.setItem(row, 1, QTableWidgetItem(CATEGORY_LABELS.get(p['category'] or 'raw_material', p['category'] or "")))
             self.table.setItem(row, 2, QTableWidgetItem(p['supplier_name'] or "مصروف عام"))
             self.table.setItem(row, 3, QTableWidgetItem(p['description'] or ""))
@@ -289,7 +331,7 @@ class PurchaseModule(QWidget):
             SELECT pr.*, s.name as supplier_name
             FROM purchase_returns pr
             LEFT JOIN suppliers s ON pr.supplier_id = s.id
-            ORDER BY pr.date DESC
+            ORDER BY pr.date DESC, pr.id DESC
         """
         rows = self.db.fetch_all(query)
         self.returns_table.setRowCount(len(rows))

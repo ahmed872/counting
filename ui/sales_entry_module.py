@@ -113,9 +113,19 @@ class SalesEntryModule(QWidget):
 
         layout.addWidget(form_box)
 
+        history_row = QHBoxLayout()
         history_label = QLabel("سجل المبيعات اليومية (حسب الفرع):")
         history_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #334155;")
-        layout.addWidget(history_label)
+        history_row.addWidget(history_label)
+        history_row.addStretch()
+        delete_btn = QPushButton("حذف اليوم المحدد")
+        delete_btn.setStyleSheet(
+            "QPushButton { background-color:#dc2626; border:1px solid #b91c1c; }"
+            "QPushButton:hover { background-color:#b91c1c; border:1px solid #991b1b; }"
+        )
+        delete_btn.clicked.connect(self.delete_selected_day)
+        history_row.addWidget(delete_btn)
+        layout.addLayout(history_row)
 
         self.table = QTableWidget()
         self.table.setColumnCount(7)
@@ -165,11 +175,27 @@ class SalesEntryModule(QWidget):
             raise ValueError("لا يمكن إدخال مبلغ سالب")
         return value
 
+    def existing_day(self, branch_id, date_str):
+        return self.db.fetch_all(
+            "SELECT id, journal_entry_id FROM sales WHERE branch_id = ? AND date = ?",
+            (branch_id, date_str),
+        )
+
+    def clear_day(self, branch_id, date_str):
+        """Removes a day's sales rows together with the journal entry they
+        produced, so replacing a day cannot leave a stale entry in the ledger."""
+        rows = self.existing_day(branch_id, date_str)
+        entry_ids = {r["journal_entry_id"] for r in rows if r["journal_entry_id"]}
+        self.db.execute_query(
+            "DELETE FROM sales WHERE branch_id = ? AND date = ?", (branch_id, date_str)
+        )
+        for entry_id in entry_ids:
+            self.db.delete_journal_entry(entry_id)
+
     def save_daily_sales(self):
         try:
             branch_id = self.branch_input.currentData()
             date_str = self.date_input.date().toString("yyyy-MM-dd")
-            timestamp = f"{date_str} {datetime.now().strftime('%H:%M:%S')}"
 
             channel_totals = {
                 "Cash": self._parse_amount(self.cash_input),
@@ -184,19 +210,32 @@ class SalesEntryModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "ادخل مبلغاً واحداً على الأقل")
             return
 
+        branch_name = self.branch_input.currentText()
+
+        # Saving the same day twice used to double that day's revenue and VAT.
+        # Now it asks, and replaces the day rather than adding to it.
+        if self.existing_day(branch_id, date_str):
+            answer = QMessageBox.question(
+                self,
+                "هذا اليوم مسجل من قبل",
+                f"يوجد تسجيل مبيعات بالفعل ليوم {date_str} - {branch_name}.\n\n"
+                "هل تريد استبداله بالمبالغ الجديدة؟",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
+            self.clear_day(branch_id, date_str)
+
         cash_debit = 0.0
         bank_debit = 0.0
         revenue_credit = 0.0
         vat_credit = 0.0
+        saved_methods = []
 
         for method, total in channel_totals.items():
             if total <= 0:
                 continue
             amount, vat = self.accounting.reverse_vat(total)
-            self.db.execute_query(
-                "INSERT INTO sales (branch_id, date, total_amount, vat_amount, payment_method) VALUES (?, ?, ?, ?, ?)",
-                (branch_id, timestamp, total, vat, method),
-            )
+            saved_methods.append((method, total, vat))
             revenue_credit += amount
             vat_credit += vat
             if method == "Cash":
@@ -212,19 +251,47 @@ class SalesEntryModule(QWidget):
         journal_items.append({"account_code": "4000", "debit": 0, "credit": revenue_credit})
         journal_items.append({"account_code": "2100", "debit": 0, "credit": vat_credit})
 
-        branch_name = self.branch_input.currentText()
-        self.db.add_journal_entry(timestamp, f"مبيعات يومية - {branch_name} - {date_str}", branch_id, journal_items)
+        entry_id = self.db.add_journal_entry(
+            date_str, f"مبيعات يومية - {branch_name} - {date_str}", branch_id, journal_items
+        )
+
+        for method, total, vat in saved_methods:
+            self.db.execute_query(
+                """INSERT INTO sales (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (branch_id, date_str, total, vat, method, entry_id),
+            )
 
         QMessageBox.information(self, "تم", "تم تسجيل مبيعات اليوم وترحيلها للمحاسبة")
         self.cash_input.clear()
         self.network_input.clear()
         self.transfer_input.clear()
+        self.update_preview()
+        self.load_history()
+
+    def delete_selected_day(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "تنبيه", "اختر يوماً من الجدول أولاً")
+            return
+        day = self.table.item(row, 0).text()
+        branch_id = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        branch_name = self.table.item(row, 1).text()
+        answer = QMessageBox.question(
+            self, "حذف مبيعات يوم",
+            f"سيتم حذف مبيعات يوم {day} - {branch_name} وقيدها المحاسبي نهائياً.\nمتابعة؟",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.clear_day(branch_id, day)
+        QMessageBox.information(self, "تم", "تم حذف مبيعات اليوم وقيدها المحاسبي")
         self.load_history()
 
     def load_history(self):
         query = """
             SELECT
                 date(s.date) as day,
+                s.branch_id as branch_id,
                 b.name as branch_name,
                 SUM(CASE WHEN s.payment_method = 'Cash' THEN s.total_amount ELSE 0 END) as cash_total,
                 SUM(CASE WHEN s.payment_method = 'POS' THEN s.total_amount ELSE 0 END) as pos_total,
@@ -239,7 +306,9 @@ class SalesEntryModule(QWidget):
         rows = self.db.fetch_all(query)
         self.table.setRowCount(len(rows))
         for row, r in enumerate(rows):
-            self.table.setItem(row, 0, QTableWidgetItem(r["day"]))
+            day_item = QTableWidgetItem(r["day"])
+            day_item.setData(Qt.ItemDataRole.UserRole, r["branch_id"])
+            self.table.setItem(row, 0, day_item)
             self.table.setItem(row, 1, QTableWidgetItem(r["branch_name"]))
             self.table.setItem(row, 2, QTableWidgetItem(f"{r['cash_total']:.2f}"))
             self.table.setItem(row, 3, QTableWidgetItem(f"{r['pos_total']:.2f}"))

@@ -96,11 +96,42 @@ class HRModule(QWidget):
 
         form_outer.addLayout(employee_form)
 
-        add_btn = QPushButton("إضافة موظف")
-        add_btn.clicked.connect(self.add_employee)
-        add_btn.setMinimumHeight(44)
+        # Editing existing employees matters as much as adding them: a salary
+        # typed wrong would otherwise be uncorrectable without wiping the database.
+        self.employee_picker = QComboBox()
+        self.employee_picker.currentIndexChanged.connect(self.on_employee_picked)
+        picker_row = QHBoxLayout()
+        picker_row.setSpacing(8)
+        picker_label = QLabel("تعديل موظف موجود:")
+        picker_label.setStyleSheet("font-weight:700; color:#334155;")
+        picker_row.addWidget(picker_label)
+        picker_row.addWidget(self.employee_picker, 1)
+        form_outer.insertLayout(0, picker_row)
+
+        buttons_row = QHBoxLayout()
+        buttons_row.setSpacing(8)
+        self.save_btn = QPushButton("إضافة موظف")
+        self.save_btn.clicked.connect(self.save_employee)
+        self.save_btn.setMinimumHeight(44)
+        self.new_btn = QPushButton("موظف جديد")
+        self.new_btn.clicked.connect(self.clear_employee_form)
+        self.new_btn.setMinimumHeight(44)
+        self.new_btn.setStyleSheet(
+            "QPushButton { background-color:#64748b; border:1px solid #475569; }"
+            "QPushButton:hover { background-color:#475569; border:1px solid #334155; }"
+        )
+        self.deactivate_btn = QPushButton("إنهاء خدمة الموظف")
+        self.deactivate_btn.clicked.connect(self.deactivate_employee)
+        self.deactivate_btn.setMinimumHeight(44)
+        self.deactivate_btn.setStyleSheet(
+            "QPushButton { background-color:#dc2626; border:1px solid #b91c1c; }"
+            "QPushButton:hover { background-color:#b91c1c; border:1px solid #991b1b; }"
+        )
+        buttons_row.addWidget(self.save_btn, 2)
+        buttons_row.addWidget(self.new_btn, 1)
+        buttons_row.addWidget(self.deactivate_btn, 1)
         form_outer.addSpacing(6)
-        form_outer.addWidget(add_btn)
+        form_outer.addLayout(buttons_row)
         setup_layout.addWidget(form_group)
 
         attendance_group = QGroupBox("تسجيل الحضور والغياب")
@@ -274,7 +305,50 @@ class HRModule(QWidget):
         for field in fields:
             field.setMinimumWidth(160)
 
-    def add_employee(self):
+    @property
+    def editing_employee_id(self):
+        return self.employee_picker.currentData()
+
+    def clear_employee_form(self):
+        self.employee_picker.setCurrentIndex(0)
+
+    def on_employee_picked(self):
+        emp_id = self.editing_employee_id
+        if emp_id is None:
+            for field in (self.name_input, self.job_input, self.salary_input,
+                          self.allowance_input, self.iqama_input, self.passport_input,
+                          self.work_permit_input, self.work_card_input):
+                field.clear()
+            self.save_btn.setText("إضافة موظف")
+            self.deactivate_btn.setEnabled(False)
+            return
+
+        emp = self.db.fetch_one("SELECT * FROM employees WHERE id = ?", (emp_id,))
+        if not emp:
+            return
+        self.name_input.setText(emp["name"] or "")
+        self.job_input.setText(emp["job_title"] or "")
+        index = self.branch_input.findData(emp["branch_id"])
+        if index >= 0:
+            self.branch_input.setCurrentIndex(index)
+        self.salary_input.setText(str(emp["base_salary"] or 0))
+        self.allowance_input.setText(str(emp["allowances"] or 0))
+        self.iqama_input.setText(emp["iqama_no"] or "")
+        self.passport_input.setText(emp["passport_no"] or "")
+        self.work_permit_input.setText(emp["work_permit_no"] or "")
+        self.work_card_input.setText(emp["work_card_no"] or "")
+        for value, widget in (
+            (emp["iqama_expiry"], self.iqama_expiry),
+            (emp["passport_expiry"], self.passport_expiry),
+            (emp["work_permit_expiry"], self.work_permit_expiry),
+            (emp["work_card_expiry"], self.work_card_expiry),
+        ):
+            if value:
+                widget.setDate(QDate.fromString(str(value), "yyyy-MM-dd"))
+        self.save_btn.setText("حفظ التعديلات")
+        self.deactivate_btn.setEnabled(True)
+
+    def save_employee(self):
         name = self.name_input.text().strip()
         if not name:
             QMessageBox.warning(self, "تنبيه", "ادخل اسم الموظف")
@@ -284,28 +358,62 @@ class HRModule(QWidget):
         try:
             salary = float(self.salary_input.text() or 0)
             allowance = float(self.allowance_input.text() or 0)
+            if salary < 0 or allowance < 0:
+                raise ValueError
         except ValueError:
             QMessageBox.warning(self, "تنبيه", "الراتب أو البدلات غير صحيحة")
             return
-        iqama = self.iqama_expiry.date().toString("yyyy-MM-dd")
-        passport = self.passport_expiry.date().toString("yyyy-MM-dd")
-        work_permit = self.work_permit_expiry.date().toString("yyyy-MM-dd")
-        work_card = self.work_card_expiry.date().toString("yyyy-MM-dd")
 
-        self.db.execute_query(
-            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances, iqama_no, iqama_expiry, passport_no, passport_expiry, work_permit_no, work_permit_expiry, work_card_no, work_card_expiry) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, job, branch_id, salary, allowance, self.iqama_input.text().strip(), iqama, self.passport_input.text().strip(), passport, self.work_permit_input.text().strip(), work_permit, self.work_card_input.text().strip(), work_card)
+        values = (
+            name, job, branch_id, salary, allowance,
+            self.iqama_input.text().strip(), self.iqama_expiry.date().toString("yyyy-MM-dd"),
+            self.passport_input.text().strip(), self.passport_expiry.date().toString("yyyy-MM-dd"),
+            self.work_permit_input.text().strip(), self.work_permit_expiry.date().toString("yyyy-MM-dd"),
+            self.work_card_input.text().strip(), self.work_card_expiry.date().toString("yyyy-MM-dd"),
         )
-        QMessageBox.information(self, "نجاح", "تم إضافة الموظف بنجاح")
-        self.name_input.clear()
-        self.job_input.clear()
-        self.salary_input.clear()
-        self.allowance_input.clear()
-        self.iqama_input.clear()
-        self.passport_input.clear()
-        self.work_permit_input.clear()
-        self.work_card_input.clear()
+
+        emp_id = self.editing_employee_id
+        if emp_id is None:
+            self.db.execute_query(
+                """INSERT INTO employees (name, job_title, branch_id, base_salary, allowances,
+                   iqama_no, iqama_expiry, passport_no, passport_expiry,
+                   work_permit_no, work_permit_expiry, work_card_no, work_card_expiry)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                values,
+            )
+            message = "تم إضافة الموظف بنجاح"
+        else:
+            self.db.execute_query(
+                """UPDATE employees SET name=?, job_title=?, branch_id=?, base_salary=?, allowances=?,
+                   iqama_no=?, iqama_expiry=?, passport_no=?, passport_expiry=?,
+                   work_permit_no=?, work_permit_expiry=?, work_card_no=?, work_card_expiry=?
+                   WHERE id=?""",
+                values + (emp_id,),
+            )
+            message = "تم حفظ التعديلات"
+
+        QMessageBox.information(self, "نجاح", message)
         self.load_employees()
+        self.clear_employee_form()
+        self.refresh_payroll()
+
+    def deactivate_employee(self):
+        emp_id = self.editing_employee_id
+        if emp_id is None:
+            QMessageBox.warning(self, "تنبيه", "اختر موظفاً من القائمة أولاً")
+            return
+        name = self.name_input.text().strip()
+        answer = QMessageBox.question(
+            self, "إنهاء خدمة موظف",
+            f"سيتم إنهاء خدمة «{name}» فلا يظهر في الرواتب ولا التنبيهات.\n\n"
+            "بياناته وسجله المحاسبي القديم يبقى محفوظاً ولا يُحذف.\n\nمتابعة؟",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.db.execute_query("UPDATE employees SET is_active = 0 WHERE id = ?", (emp_id,))
+        QMessageBox.information(self, "تم", "تم إنهاء خدمة الموظف")
+        self.load_employees()
+        self.clear_employee_form()
         self.refresh_payroll()
 
     def record_attendance(self):
@@ -405,12 +513,32 @@ class HRModule(QWidget):
         self.load_employees()
 
     def load_employees(self):
-        employees = self.db.fetch_all("SELECT e.*, b.name as branch_name FROM employees e JOIN branches b ON e.branch_id = b.id")
+        employees = self.db.fetch_all(
+            """SELECT e.*, b.name as branch_name FROM employees e
+               JOIN branches b ON e.branch_id = b.id
+               WHERE e.is_active = 1 ORDER BY e.name"""
+        )
         self.attendance_employee.clear()
         self.deduction_employee.clear()
         for emp in employees:
             self.attendance_employee.addItem(emp['name'], emp['id'])
             self.deduction_employee.addItem(emp['name'], emp['id'])
+
+        # Repopulate the edit picker without firing its change handler, which
+        # would otherwise wipe the form while the user is typing in it.
+        self.employee_picker.blockSignals(True)
+        current = self.employee_picker.currentData()
+        self.employee_picker.clear()
+        self.employee_picker.addItem("— موظف جديد —", None)
+        for emp in employees:
+            self.employee_picker.addItem(emp['name'], emp['id'])
+        restored = self.employee_picker.findData(current)
+        self.employee_picker.setCurrentIndex(restored if restored >= 0 else 0)
+        self.employee_picker.blockSignals(False)
+        if restored < 0:
+            self.save_btn.setText("إضافة موظف")
+            self.deactivate_btn.setEnabled(False)
+
         self.table.setRowCount(len(employees))
         for row, emp in enumerate(employees):
             self.table.setItem(row, 0, QTableWidgetItem(emp['name']))

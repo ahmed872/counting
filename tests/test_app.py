@@ -103,9 +103,40 @@ def main():
         hr.job_input.setText("طباخ")
         hr.salary_input.setText("6000")
         hr.allowance_input.setText("0")
-        hr.add_employee()
+        hr.save_employee()
         assert db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")
     check("add employee", add_employee)
+
+    def edit_employee_salary():
+        hr = window.hr
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
+        hr.employee_picker.setCurrentIndex(hr.employee_picker.findData(emp_id))
+        assert hr.salary_input.text().startswith("6000"), hr.salary_input.text()
+        hr.salary_input.setText("6600")
+        hr.save_employee()
+        again = db.fetch_one("SELECT base_salary FROM employees WHERE id = ?", (emp_id,))
+        assert abs(again["base_salary"] - 6600) < 0.01, again["base_salary"]
+        # put it back so the payroll expectations below still hold
+        hr.employee_picker.setCurrentIndex(hr.employee_picker.findData(emp_id))
+        hr.salary_input.setText("6000")
+        hr.save_employee()
+        assert db.fetch_one("SELECT COUNT(*) c FROM employees")["c"] == 1, "edit created a duplicate row"
+    check("editing an employee updates instead of duplicating", edit_employee_salary)
+
+    def duplicate_attendance_counts_once():
+        hr = window.hr
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
+        for _ in range(3):
+            window.hr_logic.record_attendance(emp_id, "2026-08-09", "Absent")
+        rows = db.fetch_all(
+            "SELECT * FROM attendance WHERE employee_id=? AND date='2026-08-09'", (emp_id,))
+        assert len(rows) == 1, f"{len(rows)} attendance rows for one day"
+        window.hr_logic.record_attendance(emp_id, "2026-08-09", "Present")
+        row = window.hr_logic.get_attendance(emp_id, "2026-08-09")
+        assert row["status"] == "Present", row["status"]
+        # leave the day clean for the deduction check below
+        db.execute_query("DELETE FROM attendance WHERE employee_id=? AND date='2026-08-09'", (emp_id,))
+    check("same day recorded twice counts once and can be corrected", duplicate_attendance_counts_once)
 
     def absence_deducts_one_day():
         hr = window.hr
@@ -190,6 +221,64 @@ def main():
         assert abs(row["v"] - 225) < 0.01, row["v"]   # 15% of the 1500 net
     check("daily sales split VAT out of a tax-inclusive total", daily_sales_vat)
 
+    def saving_the_same_day_twice_replaces_it():
+        goto("sales")
+        s = window.sales
+        day = s.date_input.date().toString("yyyy-MM-dd")
+        branch = s.branch_input.currentData()
+        before_total = db.fetch_one(
+            "SELECT COALESCE(SUM(total_amount),0) t FROM sales WHERE branch_id=? AND date=?",
+            (branch, day))["t"]
+        before_entries = db.fetch_one(
+            "SELECT COUNT(*) c FROM journal_entries WHERE description LIKE 'مبيعات يومية%'")["c"]
+        s.cash_input.setText("1150")
+        s.network_input.setText("0")
+        s.transfer_input.setText("0")
+        s.save_daily_sales()      # dialogs auto-answer Yes -> replace
+        after_total = db.fetch_one(
+            "SELECT COALESCE(SUM(total_amount),0) t FROM sales WHERE branch_id=? AND date=?",
+            (branch, day))["t"]
+        after_entries = db.fetch_one(
+            "SELECT COUNT(*) c FROM journal_entries WHERE description LIKE 'مبيعات يومية%'")["c"]
+        assert abs(after_total - 1150) < 0.01, f"{before_total} -> {after_total}"
+        assert after_entries == before_entries, "replacing a day left a stale journal entry"
+    check("re-saving a day replaces it instead of doubling it", saving_the_same_day_twice_replaces_it)
+
+    def opening_balances_fix_negative_cash():
+        goto("settings")
+        st = window.settings
+        st.opening_cash.setText("50000")
+        st.opening_bank.setText("20000")
+        st.opening_inventory.setText("0")
+        st.save_opening_balances()
+        bs = window.accounting.accounting.get_balance_sheet()
+        assert bs["assets"] > 0, f"assets still negative: {bs['assets']}"
+        assert bs["balanced"], bs
+        # saving again must correct, not stack
+        st.save_opening_balances()
+        capital = db.fetch_one(
+            "SELECT COALESCE(SUM(credit)-SUM(debit),0) v FROM journal_items WHERE account_code='3000'")["v"]
+        assert abs(capital - 70000) < 0.01, capital
+    check("opening balances lift assets positive and can be corrected", opening_balances_fix_negative_cash)
+
+    def deleting_a_purchase_reverses_its_entry():
+        goto("purchases")
+        p = window.purchases
+        p.category_input.setCurrentIndex(p.category_input.findData("operating_expense"))
+        p.supplier_input.setCurrentIndex(0)
+        p.description_input.setText("مصروف بالغلط")
+        p.amount_input.setText("999")
+        p.payment_status.setCurrentText("Cash")
+        p.save_purchase()
+        before = db.fetch_one(
+            "SELECT COALESCE(SUM(debit)-SUM(credit),0) v FROM journal_items WHERE account_code='5200'")["v"]
+        p.table.setCurrentCell(0, 0)
+        p.delete_selected_purchase()
+        after = db.fetch_one(
+            "SELECT COALESCE(SUM(debit)-SUM(credit),0) v FROM journal_items WHERE account_code='5200'")["v"]
+        assert abs((before - after) - 999) < 0.01, f"{before} -> {after}"
+    check("deleting a purchase also reverses its journal entry", deleting_a_purchase_reverses_its_entry)
+
     # ---------------- accounting identities ----------------
     print("\n[accounting]")
 
@@ -216,17 +305,19 @@ def main():
     def report_matches_ledger():
         acc = window.accounting.accounting
         report = acc.get_period_report("2000-01-01", "2100-01-01", None)
-        # Sales 1150 cash + 575 card = 1725 incl. VAT -> 1500 net, 225 VAT.
-        assert abs(report["net_sales"] - 1500) < 0.01, report["net_sales"]
-        # Cost of sales = raw material (1000 cash + 500 credit) + 150 freight.
+        # State at this point: the day's sales were replaced above with 1150
+        # cash only -> 1000 net + 150 VAT. Purchases still standing are raw
+        # material 1000 (cash) + 500 (credit), 150 freight and 2000 operating;
+        # the 999 expense was added and deleted again, so it nets to zero.
+        assert abs(report["net_sales"] - 1000) < 0.01, report["net_sales"]
         assert abs(report["cost_of_sales"] - 1650) < 0.01, report["cost_of_sales"]
         assert abs(report["operating_expenses"] - 2000) < 0.01, report["operating_expenses"]
-        assert abs(report["gross_profit"] - (1500 - 1650)) < 0.01, report["gross_profit"]
-        assert abs(report["net_profit"] - (1500 - 1650 - 2000)) < 0.01, report["net_profit"]
-        # Output VAT 225 ; input VAT 150 + 22.5 + 300 + 75 = 547.5
-        assert abs(report["output_vat"] - 225) < 0.01, report["output_vat"]
+        assert abs(report["gross_profit"] - (1000 - 1650)) < 0.01, report["gross_profit"]
+        assert abs(report["net_profit"] - (1000 - 1650 - 2000)) < 0.01, report["net_profit"]
+        # Output VAT 150 ; input VAT 150 + 75 + 22.5 + 300 = 547.5
+        assert abs(report["output_vat"] - 150) < 0.01, report["output_vat"]
         assert abs(report["input_vat"] - 547.5) < 0.01, report["input_vat"]
-        assert abs(report["net_vat"] - (225 - 547.5)) < 0.01, report["net_vat"]
+        assert abs(report["net_vat"] - (150 - 547.5)) < 0.01, report["net_vat"]
     check("period report figures match the ledger", report_matches_ledger)
 
     def pdf_export_works():

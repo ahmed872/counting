@@ -5,6 +5,13 @@ CREATE TABLE IF NOT EXISTS branches (
     location TEXT
 );
 
+-- Simple key/value store for company details and bookkeeping markers
+-- (e.g. the id of the opening-balance journal entry, so it can be corrected).
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 -- Employees Table
 CREATE TABLE IF NOT EXISTS employees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,6 +37,11 @@ CREATE TABLE IF NOT EXISTS attendance (
     status TEXT CHECK(status IN ('Present', 'Absent')),
     FOREIGN KEY (employee_id) REFERENCES employees(id)
 );
+
+-- NOTE: the uniqueness constraints for attendance and daily sales are created
+-- in db_manager.ensure_schema_migrations(), not here. Existing databases may
+-- already contain duplicates, and CREATE UNIQUE INDEX would abort startup - the
+-- migration de-duplicates first, then adds the index.
 
 -- Chart of Accounts
 CREATE TABLE IF NOT EXISTS chart_of_accounts (

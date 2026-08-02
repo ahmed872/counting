@@ -95,6 +95,60 @@ class DBManager:
             if 'settled_run_id' not in employee_deductions_columns:
                 cursor.execute("ALTER TABLE employee_deductions ADD COLUMN settled_run_id INTEGER")
 
+        if 'is_active' not in employee_columns:
+            # Employees who leave are deactivated, never deleted - deleting one
+            # would orphan their attendance, payroll and journal history.
+            cursor.execute("ALTER TABLE employees ADD COLUMN is_active INTEGER DEFAULT 1")
+            cursor.execute("UPDATE employees SET is_active = 1 WHERE is_active IS NULL")
+
+        if 'journal_entry_id' not in purchases_columns and self.table_exists(cursor, 'purchases'):
+            cursor.execute("ALTER TABLE purchases ADD COLUMN journal_entry_id INTEGER")
+
+        sales_columns = table_columns('sales')
+        if 'journal_entry_id' not in sales_columns:
+            # Links a day's sales rows to the journal entry they produced, so a
+            # mis-typed day can be corrected without orphaning its ledger entry.
+            cursor.execute("ALTER TABLE sales ADD COLUMN journal_entry_id INTEGER")
+
+        supplier_columns = table_columns('suppliers')
+        if 'is_active' not in supplier_columns:
+            cursor.execute("ALTER TABLE suppliers ADD COLUMN is_active INTEGER DEFAULT 1")
+            cursor.execute("UPDATE suppliers SET is_active = 1 WHERE is_active IS NULL")
+
+        self.enforce_uniqueness(cursor)
+
+    def enforce_uniqueness(self, cursor):
+        """De-duplicate then add the unique indexes.
+
+        Recording the same absence twice used to deduct the daily rate twice,
+        and saving a day's sales twice doubled that day's revenue and VAT.
+        Existing databases may already hold such duplicates, so they are
+        collapsed to the newest row before the index is created - otherwise
+        CREATE UNIQUE INDEX aborts and the app will not start."""
+        # Daily sales are stored per-day; drop any time component so that
+        # "the same day" is actually comparable.
+        cursor.execute(
+            "UPDATE sales SET date = date(date) WHERE date <> date(date)"
+        )
+        cursor.execute("""
+            DELETE FROM sales WHERE id NOT IN (
+                SELECT MAX(id) FROM sales GROUP BY branch_id, date, payment_method
+            )
+        """)
+        cursor.execute("""
+            DELETE FROM attendance WHERE id NOT IN (
+                SELECT MAX(id) FROM attendance GROUP BY employee_id, date
+            )
+        """)
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_attendance_employee_day "
+            "ON attendance(employee_id, date)"
+        )
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sales_branch_day_method "
+            "ON sales(branch_id, date, payment_method)"
+        )
+
     def get_existing_tables(self, cursor):
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         return {row[0] for row in cursor.fetchall()}
@@ -133,6 +187,34 @@ class DBManager:
         result = cursor.fetchone()
         conn.close()
         return result
+
+    def get_setting(self, key, default=None):
+        row = self.fetch_one("SELECT value FROM app_settings WHERE key = ?", (key,))
+        return row['value'] if row else default
+
+    def set_setting(self, key, value):
+        self.execute_query(
+            "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, str(value)),
+        )
+
+    def delete_journal_entry(self, entry_id):
+        """Removes a journal entry and its lines together, so the ledger can
+        never be left holding half of a reversed transaction."""
+        if not entry_id:
+            return
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        try:
+            cursor.execute("DELETE FROM journal_items WHERE entry_id = ?", (entry_id,))
+            cursor.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
 
     def add_journal_entry(self, date, description, branch_id, items):
         """

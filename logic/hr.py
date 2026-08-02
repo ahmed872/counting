@@ -20,21 +20,31 @@ class HRLogic:
         alert_date = today + timedelta(days=days)
 
         query = """
-            SELECT id, name, 'إقامة' as doc_type, iqama_expiry as expiry_date FROM employees WHERE iqama_expiry IS NOT NULL AND iqama_expiry <= ?
+            SELECT id, name, 'إقامة' as doc_type, iqama_expiry as expiry_date FROM employees WHERE is_active = 1 AND iqama_expiry IS NOT NULL AND iqama_expiry <= ?
             UNION
-            SELECT id, name, 'جواز سفر' as doc_type, passport_expiry as expiry_date FROM employees WHERE passport_expiry IS NOT NULL AND passport_expiry <= ?
+            SELECT id, name, 'جواز سفر' as doc_type, passport_expiry as expiry_date FROM employees WHERE is_active = 1 AND passport_expiry IS NOT NULL AND passport_expiry <= ?
             UNION
-            SELECT id, name, 'تصريح عمل' as doc_type, work_permit_expiry as expiry_date FROM employees WHERE work_permit_expiry IS NOT NULL AND work_permit_expiry <= ?
+            SELECT id, name, 'تصريح عمل' as doc_type, work_permit_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_permit_expiry IS NOT NULL AND work_permit_expiry <= ?
             UNION
-            SELECT id, name, 'كرت عمل' as doc_type, work_card_expiry as expiry_date FROM employees WHERE work_card_expiry IS NOT NULL AND work_card_expiry <= ?
+            SELECT id, name, 'كرت عمل' as doc_type, work_card_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_card_expiry IS NOT NULL AND work_card_expiry <= ?
             ORDER BY expiry_date
         """
         return self.db.fetch_all(query, (alert_date, alert_date, alert_date, alert_date))
 
     def record_attendance(self, employee_id, date, status):
+        """One record per employee per day: re-recording the same day corrects it
+        rather than adding a second row. Stacking rows meant an absence saved
+        twice was deducted from the employee's salary twice."""
         self.db.execute_query(
-            "INSERT INTO attendance (employee_id, date, status) VALUES (?, ?, ?)",
+            """INSERT INTO attendance (employee_id, date, status) VALUES (?, ?, ?)
+               ON CONFLICT(employee_id, date) DO UPDATE SET status = excluded.status""",
             (employee_id, date, status)
+        )
+
+    def get_attendance(self, employee_id, date):
+        return self.db.fetch_one(
+            "SELECT * FROM attendance WHERE employee_id = ? AND date = ?",
+            (employee_id, date)
         )
 
     def add_deduction(self, employee_id, date, entry_type, amount, notes=""):
@@ -72,6 +82,7 @@ class HRLogic:
             LEFT JOIN attendance a ON a.employee_id = e.id
                 AND strftime('%m', a.date) = ?
                 AND strftime('%Y', a.date) = ?
+            WHERE e.is_active = 1
             GROUP BY e.id
             ORDER BY e.name
         """
