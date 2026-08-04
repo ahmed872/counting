@@ -8,6 +8,7 @@ RTL date formatting, and content being cut off below the window.
 """
 
 import collections
+import re
 import os
 import sys
 import traceback
@@ -336,16 +337,26 @@ def main():
     print("\n[ui]")
 
     def all_buttons_visible():
+        """A button is invisible only if *nothing* of it renders - no fill, no
+        border, no text. Outlined buttons (used for destructive actions so they
+        don't compete with Save) legitimately have a white fill, so testing the
+        dominant colour alone would wrongly flag them."""
         bad = []
         for page in pages:
             entry = goto(page)
             for btn in entry["page"].findChildren(QPushButton):
-                if btn.isVisible() and btn.width() > 20 and btn.height() > 10:
-                    fill = dominant_colour(btn)
-                    if is_near_white(fill):
-                        bad.append((page, btn.text()[:25], fill))
+                if not (btn.isVisible() and btn.width() > 20 and btn.height() > 10):
+                    continue
+                image = render(btn)
+                ink = 0
+                for y in range(0, image.height(), 2):
+                    for x in range(0, image.width(), 2):
+                        if not is_near_white(image.pixelColor(x, y).name()):
+                            ink += 1
+                if ink < 12:
+                    bad.append((page, btn.text()[:25], f"{ink} non-white px"))
         assert not bad, bad
-    check("no button renders white-on-white", all_buttons_visible)
+    check("no button renders as a blank rectangle", all_buttons_visible)
 
     def no_stylesheet_leak_onto_labels():
         """A bare `QFrame {...}` rule also matches QLabel (a QFrame subclass) and
@@ -356,6 +367,18 @@ def main():
             entry = goto(page)
             for label in entry["page"].findChildren(QLabel):
                 if not label.isVisible() or label.width() < 12 or label.height() < 8:
+                    continue
+                # Skip labels that give themselves a *visible* border or fill -
+                # those are deliberate banners. "border: none" must NOT skip,
+                # otherwise the stat-card labels (which explicitly reset their
+                # border) would be excluded and the leak this guards against
+                # would go undetected.
+                own_style = label.styleSheet() or ""
+                paints_itself = re.search(
+                    r"border\s*:\s*(?!none|0)|background(-color)?\s*:\s*(?!transparent|none)",
+                    own_style,
+                )
+                if paints_itself:
                     continue
                 image = render(label)
                 top = [image.pixelColor(x, 0) for x in range(0, image.width(), 2)]

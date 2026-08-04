@@ -54,24 +54,29 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.create_divider())
         sidebar_layout.addSpacing(6)
 
-        self.btn_dashboard = self.create_nav_btn("لوحة التحكم")
-        self.btn_sales = self.create_nav_btn("المبيعات اليومية")
-        self.btn_hr = self.create_nav_btn("الموارد البشرية")
-        self.btn_purchases = self.create_nav_btn("المشتريات")
-        self.btn_suppliers = self.create_nav_btn("الموردون")
-        self.btn_reports = self.create_nav_btn("التقارير")
-        self.btn_settings = self.create_nav_btn("الإعدادات")
-        self.btn_accounting = self.create_nav_btn("المحاسبة")
+        self.btn_dashboard = self.create_nav_btn("لوحة التحكم", "🏠")
+        self.btn_sales = self.create_nav_btn("المبيعات اليومية", "💰")
+        self.btn_purchases = self.create_nav_btn("المشتريات", "🧾")
+        self.btn_suppliers = self.create_nav_btn("الموردون", "🚚")
+        self.btn_hr = self.create_nav_btn("الموارد البشرية", "👥")
+        self.btn_reports = self.create_nav_btn("التقارير", "📊")
+        self.btn_accounting = self.create_nav_btn("المحاسبة", "📒")
+        self.btn_settings = self.create_nav_btn("الإعدادات", "⚙️")
 
+        # Grouped by what the owner is doing, with the daily work first: the flat
+        # list of eight gave no clue which page he needs at the end of a shift.
         sidebar_layout.addWidget(self.btn_dashboard)
+        sidebar_layout.addWidget(self.nav_group_label("العمل اليومي"))
         sidebar_layout.addWidget(self.btn_sales)
-        sidebar_layout.addWidget(self.btn_hr)
         sidebar_layout.addWidget(self.btn_purchases)
         sidebar_layout.addWidget(self.btn_suppliers)
+        sidebar_layout.addWidget(self.nav_group_label("الموظفون"))
+        sidebar_layout.addWidget(self.btn_hr)
+        sidebar_layout.addWidget(self.nav_group_label("التقارير والحسابات"))
         sidebar_layout.addWidget(self.btn_reports)
         sidebar_layout.addWidget(self.btn_accounting)
-        sidebar_layout.addWidget(self.btn_settings)
         sidebar_layout.addStretch()
+        sidebar_layout.addWidget(self.btn_settings)
 
         layout.addWidget(self.sidebar)
 
@@ -114,11 +119,19 @@ class MainWindow(QMainWindow):
             date_edit.setDisplayFormat("yyyy-MM-dd")
             date_edit.setCalendarPopup(True)
 
-    def create_nav_btn(self, text):
-        btn = QPushButton(text)
+    def nav_group_label(self, text):
+        label = QLabel(text)
+        label.setStyleSheet(
+            "color: rgba(255,255,255,0.42); font-size: 11px; font-weight: 800;"
+            "padding: 10px 16px 2px 0;"
+        )
+        return label
+
+    def create_nav_btn(self, text, icon=None):
+        btn = QPushButton(f"{icon}   {text}" if icon else text)
         btn.setCheckable(True)
         btn.setAutoExclusive(True)
-        btn.setFixedHeight(48)
+        btn.setFixedHeight(44)
         # Explicit transparent border rather than `border: none` - see the note
         # on QPushButton in ui/theme.py.
         btn.setStyleSheet("""

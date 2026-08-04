@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QLineEdit,
     QComboBox,
+    QDateEdit,
     QLabel,
     QHeaderView,
     QMessageBox,
@@ -19,6 +20,8 @@ from PyQt6.QtWidgets import (
 )
 from logic.accounting import AccountingLogic
 from ui.labels import PAYMENT_STATUS_LABELS, REFUND_METHOD_LABELS, label_for
+from ui.formatting import money_item, money
+from ui.common_widgets import page_header, danger_button, fill_table, section_title
 
 CATEGORY_LABELS = {
     'raw_material': 'مواد خام',
@@ -38,9 +41,9 @@ class PurchaseModule(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
 
-        header = QLabel("إدارة المشتريات والمصروفات")
-        header.setStyleSheet("font-size: 22px; font-weight: bold; color: #1f3b57; margin-bottom: 8px;")
-        layout.addWidget(header)
+        layout.addWidget(page_header(
+            "المشتريات والمصروفات",
+            "سجّل فواتير المواد الخام والمصروفات التشغيلية، نقداً أو على الحساب."))
 
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
@@ -66,6 +69,7 @@ class PurchaseModule(QWidget):
         self.supplier_input = QComboBox()
         self.load_suppliers()
 
+        self.date_input = QDateEdit(QDate.currentDate())
         self.description_input = QLineEdit()
         self.description_input.setPlaceholderText("مثال: إيجار، كهرباء، شحن مشتريات ...")
 
@@ -74,7 +78,20 @@ class PurchaseModule(QWidget):
         self.payment_status.addItem("نقدي", "Cash")
         self.payment_status.addItem("آجل (على الحساب)", "Credit")
 
+        # Cap the field width: a 700px-wide box for a four-digit amount looks
+        # unfinished and makes the eye travel much further than it needs to.
+        for field in (self.branch_input, self.date_input, self.category_input,
+                      self.supplier_input, self.amount_input, self.payment_status):
+            field.setMaximumWidth(340)
+        self.description_input.setMaximumWidth(520)
+        self.amount_input.setPlaceholderText("0.00")
+        self.amount_input.returnPressed.connect(self.save_purchase)
+        self.description_input.returnPressed.connect(self.save_purchase)
+
+        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form_layout.setSpacing(10)
         form_layout.addRow("الفرع:", self.branch_input)
+        form_layout.addRow("تاريخ الفاتورة:", self.date_input)
         form_layout.addRow("نوع المصروف:", self.category_input)
         form_layout.addRow("المورد:", self.supplier_input)
         form_layout.addRow("البيان:", self.description_input)
@@ -82,8 +99,10 @@ class PurchaseModule(QWidget):
         form_layout.addRow("حالة الدفع:", self.payment_status)
 
         save_btn = QPushButton("تسجيل الفاتورة")
+        save_btn.setMinimumHeight(44)
+        save_btn.setMaximumWidth(340)
         save_btn.clicked.connect(self.save_purchase)
-        form_layout.addRow(save_btn)
+        form_layout.addRow("", save_btn)
 
         layout.addLayout(form_layout)
 
@@ -101,15 +120,16 @@ class PurchaseModule(QWidget):
         table_label.setStyleSheet("font-weight:700; color:#334155;")
         table_header.addWidget(table_label)
         table_header.addStretch()
-        delete_btn = QPushButton("حذف الفاتورة المحددة")
-        delete_btn.setStyleSheet(
-            "QPushButton { background-color:#dc2626; border:1px solid #b91c1c; }"
-            "QPushButton:hover { background-color:#b91c1c; border:1px solid #991b1b; }"
-        )
+        delete_btn = danger_button("حذف الفاتورة المحددة")
         delete_btn.clicked.connect(self.delete_selected_purchase)
         table_header.addWidget(delete_btn)
         layout.addLayout(table_header)
         layout.addWidget(self.table, 1)
+
+        self.purchases_total_label = QLabel()
+        self.purchases_total_label.setStyleSheet(
+            "font-weight:800; color:#1f3b57; padding:6px 2px;")
+        layout.addWidget(self.purchases_total_label)
 
         self.on_category_changed()
         self.load_purchases()
@@ -148,6 +168,7 @@ class PurchaseModule(QWidget):
         for s in self.db.fetch_all("SELECT id, name FROM suppliers ORDER BY name"):
             self.return_supplier_input.addItem(s['name'], s['id'])
 
+        self.return_date_input = QDateEdit(QDate.currentDate())
         self.return_amount_input = QLineEdit()
         self.return_method_input = QComboBox()
         self.return_method_input.addItem("استرداد نقدي", "Cash")
@@ -155,6 +176,7 @@ class PurchaseModule(QWidget):
         self.return_notes_input = QLineEdit()
 
         form_layout.addRow("الفرع:", self.return_branch_input)
+        form_layout.addRow("تاريخ المرتجع:", self.return_date_input)
         form_layout.addRow("المورد:", self.return_supplier_input)
         form_layout.addRow("المبلغ (قبل الضريبة):", self.return_amount_input)
         form_layout.addRow("طريقة الاسترداد:", self.return_method_input)
@@ -231,7 +253,9 @@ class PurchaseModule(QWidget):
                 raise ValueError("الشراء الآجل (Credit) يتطلب اختيار مورد")
 
             vat, total = self.accounting.calculate_vat(amount)
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # The invoice date is chosen, not "now": invoices are often entered
+            # in a batch days after they were actually received.
+            timestamp = self.date_input.date().toString("yyyy-MM-dd")
 
             account_credit = '1000' if status == 'Cash' else '2000'
             if category == 'raw_material':
@@ -278,7 +302,9 @@ class PurchaseModule(QWidget):
             ORDER BY p.date DESC, p.id DESC
         """
         purchases = self.db.fetch_all(query)
-        self.table.setRowCount(len(purchases))
+        if not fill_table(self.table, len(purchases), "لا توجد فواتير مسجلة بعد"):
+            self.purchases_total_label.setText("")
+            return
         for row, p in enumerate(purchases):
             date_item = QTableWidgetItem(str(p['date']))
             date_item.setData(Qt.ItemDataRole.UserRole, (p['id'], p['journal_entry_id']))
@@ -286,9 +312,17 @@ class PurchaseModule(QWidget):
             self.table.setItem(row, 1, QTableWidgetItem(CATEGORY_LABELS.get(p['category'] or 'raw_material', p['category'] or "")))
             self.table.setItem(row, 2, QTableWidgetItem(p['supplier_name'] or "مصروف عام"))
             self.table.setItem(row, 3, QTableWidgetItem(p['description'] or ""))
-            self.table.setItem(row, 4, QTableWidgetItem(f"{p['total_amount']:.2f}"))
-            self.table.setItem(row, 5, QTableWidgetItem(f"{p['vat_amount']:.2f}"))
+            self.table.setItem(row, 4, money_item(p['total_amount']))
+            self.table.setItem(row, 5, money_item(p['vat_amount']))
             self.table.setItem(row, 6, QTableWidgetItem(label_for(PAYMENT_STATUS_LABELS, p['payment_status'])))
+
+        total = sum((p['total_amount'] or 0) for p in purchases)
+        vat = sum((p['vat_amount'] or 0) for p in purchases)
+        self.purchases_total_label.setText(
+            f"عدد الفواتير: {len(purchases)}"
+            f"     |     الإجمالي: {money(total)} ريال"
+            f"     |     منها ضريبة: {money(vat)} ريال"
+        )
 
     def save_purchase_return(self):
         try:
@@ -304,7 +338,7 @@ class PurchaseModule(QWidget):
             refund_method = self.return_method_input.currentData()
             notes = self.return_notes_input.text().strip()
             vat, total = self.accounting.calculate_vat(amount)
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            timestamp = self.return_date_input.date().toString("yyyy-MM-dd")
 
             self.db.execute_query(
                 """INSERT INTO purchase_returns (branch_id, supplier_id, date, amount, vat_amount, refund_method, notes)
@@ -336,11 +370,12 @@ class PurchaseModule(QWidget):
             ORDER BY pr.date DESC, pr.id DESC
         """
         rows = self.db.fetch_all(query)
-        self.returns_table.setRowCount(len(rows))
+        if not fill_table(self.returns_table, len(rows), "لا توجد مرتجعات مسجلة"):
+            return
         for row, r in enumerate(rows):
             self.returns_table.setItem(row, 0, QTableWidgetItem(str(r['date'])))
             self.returns_table.setItem(row, 1, QTableWidgetItem(r['supplier_name'] or ""))
-            self.returns_table.setItem(row, 2, QTableWidgetItem(f"{r['amount']:.2f}"))
-            self.returns_table.setItem(row, 3, QTableWidgetItem(f"{r['vat_amount']:.2f}"))
+            self.returns_table.setItem(row, 2, money_item(r['amount']))
+            self.returns_table.setItem(row, 3, money_item(r['vat_amount']))
             method_label = label_for(REFUND_METHOD_LABELS, r['refund_method'])
             self.returns_table.setItem(row, 4, QTableWidgetItem(method_label))

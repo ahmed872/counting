@@ -3,7 +3,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
                              QGroupBox, QTabWidget, QScrollArea, QSizePolicy)
 from PyQt6.QtCore import QDate, Qt
-from ui.common_widgets import create_stat_card
+from ui.common_widgets import create_stat_card, page_header, fill_table
+from ui.formatting import money_item, money
 
 
 class HRModule(QWidget):
@@ -18,13 +19,9 @@ class HRModule(QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(12)
 
-        header = QLabel("إدارة الموارد البشرية")
-        header.setStyleSheet("font-size: 24px; font-weight: bold; color: #1f3b57;")
-        root_layout.addWidget(header)
-
-        subtitle = QLabel("متابعة بيانات العمال، الوثائق، الحضور، السلف والخصومات، والرواتب الشهرية من مكان واحد")
-        subtitle.setStyleSheet("color: #64748b; margin-bottom: 4px;")
-        root_layout.addWidget(subtitle)
+        root_layout.addWidget(page_header(
+            "الموارد البشرية",
+            "بيانات العمال ووثائقهم، الحضور والغياب، السلف والخصومات، والرواتب الشهرية."))
 
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
@@ -495,20 +492,23 @@ class HRModule(QWidget):
             return
 
         payroll = self.hr_logic.get_monthly_payroll(month, year)
-        self.payroll_table.setRowCount(len(payroll))
         total_absent = 0
+        if not fill_table(self.payroll_table, len(payroll), "لا يوجد موظفون مسجلون"):
+            self.absent_card.value_label.setText("0")
+            self.load_employees()
+            return
         for row, item in enumerate(payroll):
             total_absent += item['absent_days']
             self.payroll_table.setItem(row, 0, QTableWidgetItem(item['name']))
             self.payroll_table.setItem(row, 1, QTableWidgetItem(item['branch_name'] or ""))
-            self.payroll_table.setItem(row, 2, QTableWidgetItem(f"{item['gross_salary']:.2f}"))
+            self.payroll_table.setItem(row, 2, money_item(item['gross_salary'], bold=False))
             self.payroll_table.setItem(row, 3, QTableWidgetItem(str(item['absent_days'])))
             self.payroll_table.setItem(row, 4, QTableWidgetItem(str(item['present_days'])))
-            self.payroll_table.setItem(row, 5, QTableWidgetItem(f"{item['absence_deduction']:.2f}"))
-            self.payroll_table.setItem(row, 6, QTableWidgetItem(f"{item['other_deductions']:.2f}"))
-            self.payroll_table.setItem(row, 7, QTableWidgetItem(f"{item['bonuses']:.2f}"))
-            self.payroll_table.setItem(row, 8, QTableWidgetItem(f"{item['advances_recovered']:.2f}"))
-            self.payroll_table.setItem(row, 9, QTableWidgetItem(f"{item['net_salary']:.2f}"))
+            self.payroll_table.setItem(row, 5, money_item(item['absence_deduction'], bold=False))
+            self.payroll_table.setItem(row, 6, money_item(item['other_deductions'], bold=False))
+            self.payroll_table.setItem(row, 7, money_item(item['bonuses'], bold=False))
+            self.payroll_table.setItem(row, 8, money_item(item['advances_recovered'], bold=False))
+            self.payroll_table.setItem(row, 9, money_item(item['net_salary'], bold=True))
 
         self.absent_card.value_label.setText(str(total_absent))
         self.load_employees()
@@ -540,13 +540,17 @@ class HRModule(QWidget):
             self.save_btn.setText("إضافة موظف")
             self.deactivate_btn.setEnabled(False)
 
-        self.table.setRowCount(len(employees))
+        if not fill_table(self.table, len(employees), "لا يوجد موظفون مسجلون بعد"):
+            self.total_employees_card.value_label.setText("0")
+            self.doc_alerts_card.value_label.setText(str(len(self.hr_logic.get_document_alerts())))
+            self.advances_card.value_label.setText(money(self.hr_logic.get_outstanding_advances_total()))
+            return
         for row, emp in enumerate(employees):
             self.table.setItem(row, 0, QTableWidgetItem(emp['name']))
             self.table.setItem(row, 1, QTableWidgetItem(emp['job_title']))
             self.table.setItem(row, 2, QTableWidgetItem(emp['branch_name']))
-            self.table.setItem(row, 3, QTableWidgetItem(str(emp['base_salary'])))
-            self.table.setItem(row, 4, QTableWidgetItem(str(emp['allowances'])))
+            self.table.setItem(row, 3, money_item(emp['base_salary']))
+            self.table.setItem(row, 4, money_item(emp['allowances']))
             self.table.setItem(row, 5, QTableWidgetItem(emp['iqama_no'] or ""))
             self.table.setItem(row, 6, QTableWidgetItem(emp['iqama_expiry'] or ""))
             self.table.setItem(row, 7, QTableWidgetItem(emp['passport_no'] or ""))
@@ -559,7 +563,7 @@ class HRModule(QWidget):
         alerts = self.hr_logic.get_document_alerts()
         self.doc_alerts_card.value_label.setText(str(len(alerts)))
         outstanding_advances = self.hr_logic.get_outstanding_advances_total()
-        self.advances_card.value_label.setText(f"{outstanding_advances:.2f}")
+        self.advances_card.value_label.setText(money(outstanding_advances))
 
     def refresh_on_show(self):
         self.load_employees()

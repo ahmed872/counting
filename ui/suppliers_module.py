@@ -19,6 +19,8 @@ from PyQt6.QtWidgets import (
 )
 
 from logic.accounting import AccountingLogic
+from ui.formatting import money_item, money
+from ui.common_widgets import page_header, fill_table
 
 
 class SuppliersModule(QWidget):
@@ -34,14 +36,9 @@ class SuppliersModule(QWidget):
         root_layout.setContentsMargins(0, 0, 0, 0)
         root_layout.setSpacing(12)
 
-        header = QLabel("إدارة الموردين")
-        header.setStyleSheet("font-size: 22px; font-weight: bold; color: #1f3b57; margin-bottom: 8px;")
-        root_layout.addWidget(header)
-
-        subtitle = QLabel("إضافة الموردين، متابعة الرصيد الدائن لكل مورد على حدة، وتسجيل السداد")
-        subtitle.setStyleSheet("color:#64748b;")
-        subtitle.setWordWrap(True)
-        root_layout.addWidget(subtitle)
+        root_layout.addWidget(page_header(
+            "الموردون",
+            "أضف الموردين، تابع رصيد كل مورد على حدة، وسجّل السداد."))
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
@@ -166,18 +163,20 @@ class SuppliersModule(QWidget):
 
     def load_suppliers(self):
         balances = self.accounting.get_all_supplier_balances()
-        self.suppliers_table.setRowCount(len(balances))
         total = 0
+        if not fill_table(self.suppliers_table, len(balances), "لا يوجد موردون مسجلون بعد"):
+            self.total_balance_label.setText("")
+            return
         for row, s in enumerate(balances):
             total += s['balance']
             self.suppliers_table.setItem(row, 0, QTableWidgetItem(s['name']))
             self.suppliers_table.setItem(row, 1, QTableWidgetItem(s['phone'] or ""))
-            self.suppliers_table.setItem(row, 2, QTableWidgetItem(f"{s['balance']:.2f}"))
+            self.suppliers_table.setItem(row, 2, money_item(s['balance'], bold=True))
             status = "له رصيد مستحق" if s['balance'] > 0.01 else ("مسدد بالكامل" if s['balance'] > -0.01 else "رصيد لصالحنا")
             item = QTableWidgetItem(status)
             self.suppliers_table.setItem(row, 3, item)
             self.suppliers_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, s['id'])
-        self.total_balance_label.setText(f"إجمالي أرصدة الموردين الدائنة: {total:.2f} ريال")
+        self.total_balance_label.setText(f"إجمالي أرصدة الموردين الدائنة: {money(total)} ريال")
 
     def on_supplier_selected(self):
         rows = self.suppliers_table.selectionModel().selectedRows()
@@ -196,13 +195,14 @@ class SuppliersModule(QWidget):
             return
         statement = self.accounting.get_supplier_statement(self.selected_supplier_id)
         entries = statement['entries']
-        self.statement_table.setRowCount(len(entries))
+        if not fill_table(self.statement_table, len(entries), "لا توجد حركات على هذا المورد"):
+            return
         for row, e in enumerate(entries):
             self.statement_table.setItem(row, 0, QTableWidgetItem(str(e['date'] or "")))
             self.statement_table.setItem(row, 1, QTableWidgetItem(e['type']))
-            self.statement_table.setItem(row, 2, QTableWidgetItem(f"{e['debit']:.2f}" if e['debit'] else ""))
-            self.statement_table.setItem(row, 3, QTableWidgetItem(f"{e['credit']:.2f}" if e['credit'] else ""))
-            self.statement_table.setItem(row, 4, QTableWidgetItem(f"{e['balance']:.2f}"))
+            self.statement_table.setItem(row, 2, money_item(e['debit'], blank_if_zero=True))
+            self.statement_table.setItem(row, 3, money_item(e['credit'], blank_if_zero=True))
+            self.statement_table.setItem(row, 4, money_item(e['balance'], bold=True))
 
     def record_payment(self):
         if not self.selected_supplier_id:

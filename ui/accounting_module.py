@@ -21,6 +21,8 @@ from PyQt6.QtCore import QDate, Qt
 from logic.accounting import AccountingLogic
 from ui.common_widgets import create_stat_card
 from ui.labels import ACCOUNT_TYPE_LABELS, label_for
+from ui.formatting import money_item, money
+from ui.common_widgets import page_header
 
 
 class AccountingModule(QWidget):
@@ -34,14 +36,9 @@ class AccountingModule(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
 
-        header = QLabel("التقارير المحاسبية والضريبية")
-        header.setStyleSheet("font-size: 22px; font-weight: bold; color: #1f3b57; margin-bottom: 8px;")
-        layout.addWidget(header)
-
-        subtitle = QLabel("صافي الربح والضريبة، ميزان المراجعة، قائمة الدخل، حساب المتاجرة، والمركز المالي")
-        subtitle.setStyleSheet("color:#64748b; margin-bottom:4px;")
-        subtitle.setWordWrap(True)
-        layout.addWidget(subtitle)
+        layout.addWidget(page_header(
+            "المحاسبة",
+            "ميزان المراجعة، قائمة الدخل، حساب المتاجرة، وقائمة المركز المالي."))
 
         controls_box = QGroupBox("تحديد الفترة")
         controls = QGridLayout(controls_box)
@@ -222,27 +219,27 @@ class AccountingModule(QWidget):
         start_date, end_date = self.resolve_period()
         summary = self.accounting.get_financial_summary(start_date, end_date)
         net_vat = summary["net_vat"]
-        self.sales_card.value_label.setText(f"{summary['revenue']:.2f}")
-        self.purchases_card.value_label.setText(f"{summary['cogs'] + summary['operating_expenses']:.2f}")
-        self.profit_card.value_label.setText(f"{summary['net_profit']:.2f}")
-        self.vat_card.value_label.setText(f"{net_vat:.2f}")
-        self.vat_label.setText(f"صافي الضريبة المستحقة للهيئة (مبيعات - مشتريات): {net_vat:.2f} ريال")
+        self.sales_card.value_label.setText(f"{money(summary['revenue'])}")
+        self.purchases_card.value_label.setText(f"{money(summary['cogs'] + summary['operating_expenses'])}")
+        self.profit_card.value_label.setText(f"{money(summary['net_profit'])}")
+        self.vat_card.value_label.setText(f"{money(net_vat)}")
+        self.vat_label.setText(f"صافي الضريبة المستحقة للهيئة (مبيعات - مشتريات): {money(net_vat)} ريال")
 
         self.income_box.setText(
             f"<b>قائمة الدخل ({start_date} إلى {end_date})</b><br><br>"
-            f"الإيرادات (صافي المبيعات): {summary['revenue']:.2f}<br>"
-            f"تكلفة البضاعة المباعة: {summary['cogs']:.2f}<br>"
-            f"<b>مجمل الربح: {summary['revenue'] - summary['cogs']:.2f}</b><br>"
-            f"المصروفات التشغيلية: {summary['operating_expenses']:.2f}<br>"
-            f"<b>صافي الربح: {summary['net_profit']:.2f}</b>"
+            f"الإيرادات (صافي المبيعات): {money(summary['revenue'])}<br>"
+            f"تكلفة البضاعة المباعة: {money(summary['cogs'])}<br>"
+            f"<b>مجمل الربح: {money(summary['revenue'] - summary['cogs'])}</b><br>"
+            f"المصروفات التشغيلية: {money(summary['operating_expenses'])}<br>"
+            f"<b>صافي الربح: {money(summary['net_profit'])}</b>"
         )
 
         balance = self.accounting.get_balance_sheet()
         self.balance_box.setText(
             f"<b>قائمة المركز المالي</b><br><br>"
-            f"إجمالي الأصول: {balance['assets']:.2f}<br>"
-            f"إجمالي الالتزامات: {balance['liabilities']:.2f}<br>"
-            f"حقوق الملكية (شامل الأرباح المرحّلة): {balance['equity']:.2f}<br>"
+            f"إجمالي الأصول: {money(balance['assets'])}<br>"
+            f"إجمالي الالتزامات: {money(balance['liabilities'])}<br>"
+            f"حقوق الملكية (شامل الأرباح المرحّلة): {money(balance['equity'])}<br>"
             f"الأصول = الالتزامات + حقوق الملكية: "
             f"{'متوازن ✓' if balance['balanced'] else 'غير متوازن ✗'}"
         )
@@ -260,8 +257,8 @@ class AccountingModule(QWidget):
             self.table.setItem(row, 0, QTableWidgetItem(item['code']))
             self.table.setItem(row, 1, QTableWidgetItem(item['name']))
             self.table.setItem(row, 2, QTableWidgetItem(label_for(ACCOUNT_TYPE_LABELS, item['type'])))
-            self.table.setItem(row, 3, QTableWidgetItem(f"{debit:.2f}"))
-            self.table.setItem(row, 4, QTableWidgetItem(f"{credit:.2f}"))
+            self.table.setItem(row, 3, money_item(debit, blank_if_zero=True))
+            self.table.setItem(row, 4, money_item(credit, blank_if_zero=True))
 
         # Show the balanced/unbalanced state on the totals label rather than as a
         # border on the table: a bare "border: ..." stylesheet on a QTableWidget
@@ -270,7 +267,7 @@ class AccountingModule(QWidget):
         status = "متوازن ✓" if balanced else "غير متوازن ✗"
         color = "#16a34a" if balanced else "#dc2626"
         self.tb_totals_label.setText(
-            f"إجمالي مدين: {total_debit:.2f}   |   إجمالي دائن: {total_credit:.2f}   |   {status}"
+            f"إجمالي مدين: {money(total_debit)}   |   إجمالي دائن: {money(total_credit)}   |   {status}"
         )
         self.tb_totals_label.setStyleSheet(
             f"font-weight: 800; padding: 8px; color: {color}; background: transparent; border: none;"
@@ -284,8 +281,8 @@ class AccountingModule(QWidget):
         for row, item in enumerate(rows):
             self.bs_table.setItem(row, 0, QTableWidgetItem(item['section']))
             self.bs_table.setItem(row, 1, QTableWidgetItem(item['name']))
-            self.bs_table.setItem(row, 2, QTableWidgetItem(f"{item['debit']:.2f}"))
-            self.bs_table.setItem(row, 3, QTableWidgetItem(f"{item['credit']:.2f}"))
+            self.bs_table.setItem(row, 2, money_item(item['debit'], blank_if_zero=True))
+            self.bs_table.setItem(row, 3, money_item(item['credit'], blank_if_zero=True))
 
     def refresh_trading_account(self):
         start_date, end_date = self.resolve_period()
@@ -294,16 +291,16 @@ class AccountingModule(QWidget):
         result = self.accounting.get_trading_account(start_date, end_date, opening, closing)
         self.trading_box.setText(
             f"<b>حساب المتاجرة ({start_date} إلى {end_date})</b><br><br>"
-            f"رصيد أول المدة (المخزون): {result['opening_inventory']:.2f}<br>"
-            f"(+) المشتريات (مواد خام): {result['purchases']:.2f}<br>"
-            f"(+) المصروفات المرتبطة بالمشتريات: {result['purchase_related_expenses']:.2f}<br>"
-            f"(-) مرتجعات المشتريات: {result['purchase_returns']:.2f}<br>"
-            f"<b>= تكلفة البضاعة المتاحة للبيع: {result['cogs_available']:.2f}</b><br>"
-            f"(-) رصيد آخر المدة (المخزون): {result['closing_inventory']:.2f}<br>"
-            f"<b>= تكلفة البضاعة المباعة: {result['cost_of_goods_sold']:.2f}</b><br><br>"
-            f"صافي المبيعات: {result['net_sales']:.2f}<br>"
-            f"(-) مرتجعات المبيعات: {result['sales_returns']:.2f}<br>"
-            f"<b>= مجمل الربح (حساب المتاجرة): {result['gross_profit']:.2f}</b>"
+            f"رصيد أول المدة (المخزون): {money(result['opening_inventory'])}<br>"
+            f"(+) المشتريات (مواد خام): {money(result['purchases'])}<br>"
+            f"(+) المصروفات المرتبطة بالمشتريات: {money(result['purchase_related_expenses'])}<br>"
+            f"(-) مرتجعات المشتريات: {money(result['purchase_returns'])}<br>"
+            f"<b>= تكلفة البضاعة المتاحة للبيع: {money(result['cogs_available'])}</b><br>"
+            f"(-) رصيد آخر المدة (المخزون): {money(result['closing_inventory'])}<br>"
+            f"<b>= تكلفة البضاعة المباعة: {money(result['cost_of_goods_sold'])}</b><br><br>"
+            f"صافي المبيعات: {money(result['net_sales'])}<br>"
+            f"(-) مرتجعات المبيعات: {money(result['sales_returns'])}<br>"
+            f"<b>= مجمل الربح (حساب المتاجرة): {money(result['gross_profit'])}</b>"
         )
 
     def refresh_on_show(self):

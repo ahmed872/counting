@@ -19,6 +19,8 @@ from PyQt6.QtWidgets import (
 )
 
 from logic.accounting import AccountingLogic
+from ui.formatting import money_item, money
+from ui.common_widgets import page_header, danger_button, fill_table
 
 PAYMENT_CHANNELS = [
     ("Cash", "cash_input", "كاش"),
@@ -41,14 +43,9 @@ class SalesEntryModule(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(10)
 
-        header = QLabel("تسجيل المبيعات اليومية")
-        header.setStyleSheet("font-size: 22px; font-weight: 800; color: #1f3b57;")
-        layout.addWidget(header)
-
-        subtitle = QLabel("اكتب مبيعات اليوم شاملة الضريبة، والباقي يحسبه البرنامج لوحده.")
-        subtitle.setWordWrap(True)
-        subtitle.setStyleSheet("color: #64748b;")
-        layout.addWidget(subtitle)
+        layout.addWidget(page_header(
+            "المبيعات اليومية",
+            "اكتب مبيعات اليوم شاملة الضريبة، والباقي يحسبه البرنامج لوحده."))
 
         form_box = QGroupBox("مبيعات اليوم")
         form_outer = QVBoxLayout(form_box)
@@ -118,11 +115,7 @@ class SalesEntryModule(QWidget):
         history_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #334155;")
         history_row.addWidget(history_label)
         history_row.addStretch()
-        delete_btn = QPushButton("حذف اليوم المحدد")
-        delete_btn.setStyleSheet(
-            "QPushButton { background-color:#dc2626; border:1px solid #b91c1c; }"
-            "QPushButton:hover { background-color:#b91c1c; border:1px solid #991b1b; }"
-        )
+        delete_btn = danger_button("حذف اليوم المحدد")
         delete_btn.clicked.connect(self.delete_selected_day)
         history_row.addWidget(delete_btn)
         layout.addLayout(history_row)
@@ -304,17 +297,18 @@ class SalesEntryModule(QWidget):
             ORDER BY day DESC
         """
         rows = self.db.fetch_all(query)
-        self.table.setRowCount(len(rows))
+        if not fill_table(self.table, len(rows), "لم تُسجَّل مبيعات بعد — اكتب مبالغ اليوم بالأعلى واضغط حفظ"):
+            return
         for row, r in enumerate(rows):
             day_item = QTableWidgetItem(r["day"])
             day_item.setData(Qt.ItemDataRole.UserRole, r["branch_id"])
             self.table.setItem(row, 0, day_item)
             self.table.setItem(row, 1, QTableWidgetItem(r["branch_name"]))
-            self.table.setItem(row, 2, QTableWidgetItem(f"{r['cash_total']:.2f}"))
-            self.table.setItem(row, 3, QTableWidgetItem(f"{r['pos_total']:.2f}"))
-            self.table.setItem(row, 4, QTableWidgetItem(f"{r['transfer_total']:.2f}"))
-            self.table.setItem(row, 5, QTableWidgetItem(f"{r['grand_total']:.2f}"))
-            self.table.setItem(row, 6, QTableWidgetItem(f"{r['vat_total']:.2f}"))
+            self.table.setItem(row, 2, money_item(r['cash_total'], bold=False))
+            self.table.setItem(row, 3, money_item(r['pos_total'], bold=False))
+            self.table.setItem(row, 4, money_item(r['transfer_total'], bold=False))
+            self.table.setItem(row, 5, money_item(r['grand_total'], bold=True))
+            self.table.setItem(row, 6, money_item(r['vat_total'], bold=False))
 
     def refresh_on_show(self):
         selected_branch = self.branch_input.currentData()
