@@ -21,7 +21,8 @@ from PyQt6.QtWidgets import (
 from logic.accounting import AccountingLogic
 from ui.labels import PAYMENT_STATUS_LABELS, REFUND_METHOD_LABELS, label_for
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, danger_button, fill_table, section_title
+from ui.common_widgets import (page_header, danger_button, fill_table, compact_form,
+                              pin_height, collapsible)
 
 CATEGORY_LABELS = {
     'raw_material': 'مواد خام',
@@ -71,40 +72,38 @@ class PurchaseModule(QWidget):
 
         self.date_input = QDateEdit(QDate.currentDate())
         self.description_input = QLineEdit()
-        self.description_input.setPlaceholderText("مثال: إيجار، كهرباء، شحن مشتريات ...")
+        self.description_input.setPlaceholderText("مثال: إيجار، كهرباء ...")
 
         self.amount_input = QLineEdit()
         self.payment_status = QComboBox()
         self.payment_status.addItem("نقدي", "Cash")
         self.payment_status.addItem("آجل (على الحساب)", "Credit")
 
-        # Cap the field width: a 700px-wide box for a four-digit amount looks
-        # unfinished and makes the eye travel much further than it needs to.
-        for field in (self.branch_input, self.date_input, self.category_input,
-                      self.supplier_input, self.amount_input, self.payment_status):
-            field.setMaximumWidth(340)
-        self.description_input.setMaximumWidth(520)
-        self.amount_input.setPlaceholderText("0.00")
+        self.amount_input.setPlaceholderText("0.00 قبل الضريبة")
         self.amount_input.returnPressed.connect(self.save_purchase)
         self.description_input.returnPressed.connect(self.save_purchase)
 
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form_layout.setSpacing(10)
-        form_layout.addRow("الفرع:", self.branch_input)
-        form_layout.addRow("تاريخ الفاتورة:", self.date_input)
-        form_layout.addRow("نوع المصروف:", self.category_input)
-        form_layout.addRow("المورد:", self.supplier_input)
-        form_layout.addRow("البيان:", self.description_input)
-        form_layout.addRow("المبلغ (قبل الضريبة):", self.amount_input)
-        form_layout.addRow("حالة الدفع:", self.payment_status)
-
         save_btn = QPushButton("تسجيل الفاتورة")
-        save_btn.setMinimumHeight(44)
-        save_btn.setMaximumWidth(340)
+        save_btn.setMinimumHeight(38)
         save_btn.clicked.connect(self.save_purchase)
-        form_layout.addRow("", save_btn)
 
-        layout.addLayout(form_layout)
+        # Three columns with the button in the last cell: eight rows of fields
+        # would not leave the invoice list a usable height on a 720p screen.
+        form_box = QGroupBox("فاتورة جديدة")
+        form_outer = QVBoxLayout(form_box)
+        form_outer.setContentsMargins(10, 6, 10, 8)
+        form_outer.addWidget(compact_form([
+            ("الفرع", self.branch_input),
+            ("التاريخ", self.date_input),
+            ("نوع المصروف", self.category_input),
+            ("المورد", self.supplier_input),
+            ("البيان", self.description_input),
+            ("المبلغ", self.amount_input),
+            ("حالة الدفع", self.payment_status),
+            (None, save_btn),
+        ], columns=3, field_min_width=150))
+
+        layout.addWidget(pin_height(form_box))
 
         self.table = QTableWidget()
         self.table.setColumnCount(7)
@@ -120,6 +119,9 @@ class PurchaseModule(QWidget):
         table_label.setStyleSheet("font-weight:700; color:#334155;")
         table_header.addWidget(table_label)
         table_header.addStretch()
+        table_header.addWidget(collapsible(
+            form_box, "إظهار نموذج الفاتورة", "إخفاء النموذج",
+            start_collapsed=self._short_screen()))
         delete_btn = danger_button("حذف الفاتورة المحددة")
         delete_btn.clicked.connect(self.delete_selected_purchase)
         table_header.addWidget(delete_btn)
@@ -134,6 +136,12 @@ class PurchaseModule(QWidget):
         self.on_category_changed()
         self.load_purchases()
         return widget
+
+    def _short_screen(self):
+        """Fold the entry form away by default when the screen cannot show both
+        the form and a useful number of table rows."""
+        screen = self.screen() or (self.window().screen() if self.window() else None)
+        return bool(screen and screen.availableGeometry().height() < 800)
 
     def delete_selected_purchase(self):
         row = self.table.currentRow()
@@ -159,7 +167,6 @@ class PurchaseModule(QWidget):
         layout = QVBoxLayout(widget)
         layout.setSpacing(12)
 
-        form_layout = QFormLayout()
         self.return_branch_input = QComboBox()
         for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.return_branch_input.addItem(row['name'], row['id'])
@@ -175,17 +182,27 @@ class PurchaseModule(QWidget):
         self.return_method_input.addItem("خصم من رصيد المورد (إشعار دائن)", "CreditNote")
         self.return_notes_input = QLineEdit()
 
-        form_layout.addRow("الفرع:", self.return_branch_input)
-        form_layout.addRow("تاريخ المرتجع:", self.return_date_input)
-        form_layout.addRow("المورد:", self.return_supplier_input)
-        form_layout.addRow("المبلغ (قبل الضريبة):", self.return_amount_input)
-        form_layout.addRow("طريقة الاسترداد:", self.return_method_input)
-        form_layout.addRow("ملاحظات:", self.return_notes_input)
-
+        return_box = QGroupBox("مرتجع جديد")
+        return_outer = QVBoxLayout(return_box)
+        return_outer.setSpacing(10)
         save_return_btn = QPushButton("تسجيل مرتجع مشتريات")
+        save_return_btn.setMinimumHeight(38)
         save_return_btn.clicked.connect(self.save_purchase_return)
-        form_layout.addRow(save_return_btn)
-        layout.addLayout(form_layout)
+        return_outer.setContentsMargins(10, 6, 10, 8)
+        return_outer.addWidget(compact_form([
+            ("الفرع", self.return_branch_input),
+            ("التاريخ", self.return_date_input),
+            ("المورد", self.return_supplier_input),
+            ("المبلغ", self.return_amount_input),
+            ("طريقة الاسترداد", self.return_method_input),
+            ("ملاحظات", self.return_notes_input),
+            (None, save_return_btn),
+        ], columns=3, field_min_width=150))
+        layout.addWidget(pin_height(return_box))
+
+        returns_label = QLabel("المرتجعات المسجلة:")
+        returns_label.setStyleSheet("font-weight:700; color:#334155;")
+        layout.addWidget(returns_label)
 
         self.returns_table = QTableWidget()
         self.returns_table.setColumnCount(5)
@@ -223,7 +240,7 @@ class PurchaseModule(QWidget):
 
     def load_suppliers(self):
         self.supplier_input.clear()
-        self.supplier_input.addItem("بدون مورد (مصروف عام)", None)
+        self.supplier_input.addItem("بدون مورد", None)
         suppliers = self.db.fetch_all("SELECT * FROM suppliers ORDER BY name")
         for s in suppliers:
             self.supplier_input.addItem(s['name'], s['id'])

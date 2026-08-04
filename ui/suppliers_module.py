@@ -15,12 +15,12 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QMessageBox,
-    QScrollArea,
+    QTabWidget,
 )
 
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, fill_table
+from ui.common_widgets import page_header, fill_table, compact_form, pin_height
 
 
 class SuppliersModule(QWidget):
@@ -40,36 +40,41 @@ class SuppliersModule(QWidget):
             "الموردون",
             "أضف الموردين، تابع رصيد كل مورد على حدة، وسجّل السداد."))
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll_widget = QWidget()
-        layout = QVBoxLayout(scroll_widget)
-        layout.setContentsMargins(2, 2, 2, 2)
-        layout.setSpacing(14)
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        root_layout.addWidget(tabs, 1)
 
-        form_box = QGroupBox("إضافة مورد جديد")
-        form_layout = QFormLayout(form_box)
-        form_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        form_layout.setSpacing(12)
+        # ---- Tab 1: suppliers and balances ----
+        list_tab = QWidget()
+        list_layout = QVBoxLayout(list_tab)
+        list_layout.setSpacing(10)
+
         self.name_input = QLineEdit()
         self.tax_id_input = QLineEdit()
         self.phone_input = QLineEdit()
         self.opening_balance_input = QLineEdit()
         self.opening_balance_input.setPlaceholderText("0.00")
-        form_layout.addRow("اسم المورد:", self.name_input)
-        form_layout.addRow("الرقم الضريبي:", self.tax_id_input)
-        form_layout.addRow("رقم الجوال:", self.phone_input)
-        form_layout.addRow("الرصيد الافتتاحي (دائن للمورد):", self.opening_balance_input)
+        self.name_input.returnPressed.connect(self.add_supplier)
+
+        form_box = QGroupBox("إضافة مورد جديد")
+        form_outer = QVBoxLayout(form_box)
+        form_outer.setSpacing(10)
         add_btn = QPushButton("حفظ المورد")
+        add_btn.setMinimumHeight(38)
         add_btn.clicked.connect(self.add_supplier)
-        add_btn.setMinimumHeight(42)
-        form_layout.addRow(add_btn)
-        layout.addWidget(form_box)
+        form_outer.setContentsMargins(10, 6, 10, 8)
+        form_outer.addWidget(compact_form([
+            ("اسم المورد", self.name_input),
+            ("الرقم الضريبي", self.tax_id_input),
+            ("رقم الجوال", self.phone_input),
+            ("رصيد افتتاحي", self.opening_balance_input),
+            (None, add_btn),
+        ], columns=3, field_min_width=150))
+        list_layout.addWidget(pin_height(form_box))
 
         list_label = QLabel("قائمة الموردين والأرصدة الحالية")
-        list_label.setStyleSheet("font-weight: 700; color: #334155; margin-top: 6px;")
-        layout.addWidget(list_label)
+        list_label.setStyleSheet("font-weight: 700; color: #334155;")
+        list_layout.addWidget(list_label)
 
         self.suppliers_table = QTableWidget()
         self.suppliers_table.setColumnCount(4)
@@ -79,39 +84,52 @@ class SuppliersModule(QWidget):
         self.suppliers_table.setAlternatingRowColors(True)
         self.suppliers_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.suppliers_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.suppliers_table.setMinimumHeight(160)
+        self.suppliers_table.setMinimumHeight(120)
         self.suppliers_table.itemSelectionChanged.connect(self.on_supplier_selected)
-        layout.addWidget(self.suppliers_table)
+        list_layout.addWidget(self.suppliers_table, 1)
 
-        total_box = QLabel("إجمالي أرصدة الموردين الدائنة: 0.00 ريال")
-        total_box.setStyleSheet("font-weight: 700; color: #e67e22; padding: 6px;")
-        self.total_balance_label = total_box
-        layout.addWidget(total_box)
+        self.total_balance_label = QLabel("إجمالي أرصدة الموردين الدائنة: 0.00 ريال")
+        self.total_balance_label.setStyleSheet("font-weight: 800; color: #e67e22; padding: 4px 2px;")
+        list_layout.addWidget(self.total_balance_label)
+        tabs.addTab(list_tab, "الموردون والأرصدة")
 
-        payment_box = QGroupBox("تسجيل سداد لمورد")
-        payment_layout = QFormLayout(payment_box)
-        payment_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
-        payment_layout.setSpacing(14)
-        self.payment_supplier_label = QLabel("اختر مورداً من القائمة أعلاه أولاً")
-        self.payment_supplier_label.setStyleSheet("font-weight: 700; color: #1f3b57;")
+        # ---- Tab 2: payment and statement ----
+        pay_tab = QWidget()
+        pay_layout = QVBoxLayout(pay_tab)
+        pay_layout.setSpacing(10)
+
+        self.payment_supplier_label = QLabel("اختر مورداً من تبويب «الموردون والأرصدة» أولاً")
+        self.payment_supplier_label.setStyleSheet(
+            "font-weight: 800; color: #1f3b57; background:#eef6ff;"
+            "border:1px solid #cfe0f5; border-radius:8px; padding:9px 12px;")
+        pay_layout.addWidget(self.payment_supplier_label)
+
         self.payment_amount = QLineEdit()
+        self.payment_amount.setPlaceholderText("0.00")
         self.payment_method = QComboBox()
         self.payment_method.addItem("نقدي", "Cash")
         self.payment_method.addItem("تحويل بنكي", "Bank")
         self.payment_notes = QLineEdit()
+        self.payment_amount.returnPressed.connect(self.record_payment)
+
+        payment_box = QGroupBox("تسجيل سداد")
+        payment_outer = QVBoxLayout(payment_box)
+        payment_outer.setSpacing(10)
         pay_btn = QPushButton("تسجيل السداد")
-        pay_btn.setMinimumHeight(42)
+        pay_btn.setMinimumHeight(38)
         pay_btn.clicked.connect(self.record_payment)
-        payment_layout.addRow(self.payment_supplier_label)
-        payment_layout.addRow("المبلغ:", self.payment_amount)
-        payment_layout.addRow("طريقة السداد:", self.payment_method)
-        payment_layout.addRow("ملاحظات:", self.payment_notes)
-        payment_layout.addRow(pay_btn)
-        layout.addWidget(payment_box)
+        payment_outer.setContentsMargins(10, 6, 10, 8)
+        payment_outer.addWidget(compact_form([
+            ("المبلغ", self.payment_amount),
+            ("طريقة السداد", self.payment_method),
+            ("ملاحظات", self.payment_notes),
+            (None, pay_btn),
+        ], columns=4, field_min_width=130))
+        pay_layout.addWidget(pin_height(payment_box))
 
         statement_label = QLabel("كشف حساب المورد")
-        statement_label.setStyleSheet("font-weight: 700; color: #334155; margin-top: 6px;")
-        layout.addWidget(statement_label)
+        statement_label.setStyleSheet("font-weight: 700; color: #334155;")
+        pay_layout.addWidget(statement_label)
 
         self.statement_table = QTableWidget()
         self.statement_table.setColumnCount(5)
@@ -120,11 +138,9 @@ class SuppliersModule(QWidget):
         self.statement_table.verticalHeader().setVisible(False)
         self.statement_table.setAlternatingRowColors(True)
         self.statement_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.statement_table.setMinimumHeight(160)
-        layout.addWidget(self.statement_table, 1)
-
-        scroll.setWidget(scroll_widget)
-        root_layout.addWidget(scroll, 1)
+        self.statement_table.setMinimumHeight(140)
+        pay_layout.addWidget(self.statement_table, 1)
+        tabs.addTab(pay_tab, "السداد وكشف الحساب")
 
         self.load_suppliers()
 

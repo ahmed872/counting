@@ -1,6 +1,7 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget, QPushButton, QTableWidget,
+    QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QWidget, QPushButton,
+    QTableWidget, QSizePolicy,
 )
 
 
@@ -21,6 +22,47 @@ def page_header(title, subtitle=None):
         sub.setWordWrap(True)
         sub.setStyleSheet("color: #64748b; font-size: 14px;")
         layout.addWidget(sub)
+    return wrapper
+
+
+def compact_form(pairs, columns=2, field_min_width=200):
+    """A form laid out in N columns instead of one field per row.
+
+    A seven-field form stacked vertically is ~330px tall, which on a 720p
+    screen leaves almost nothing for the table underneath. The same fields in
+    two columns are half that, and they fill the width instead of leaving a
+    dead gap beside them.
+
+    pairs: list of (label_text, widget). Pass (None, widget) to span a cell
+    without a label.
+    """
+    wrapper = QWidget()
+    # Vertically Fixed: left at the default policy the form stretches to absorb
+    # spare height (measured 480px for a 299px form) and starves the table
+    # underneath it, which is what limited the invoice list to a single row.
+    wrapper.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    grid = QGridLayout(wrapper)
+    grid.setContentsMargins(0, 0, 0, 0)
+    grid.setHorizontalSpacing(18)
+    grid.setVerticalSpacing(10)
+
+    for index, (caption, field) in enumerate(pairs):
+        row, column = divmod(index, columns)
+        cell = QHBoxLayout()
+        cell.setSpacing(8)
+        if caption:
+            label = QLabel(caption)
+            label.setMinimumWidth(92)
+            label.setStyleSheet("color:#334155; font-weight:600;")
+            cell.addWidget(label)
+        field.setMinimumWidth(field_min_width)
+        cell.addWidget(field, 1)
+        holder = QWidget()
+        holder.setLayout(cell)
+        grid.addWidget(holder, row, column)
+
+    for column in range(columns):
+        grid.setColumnStretch(column, 1)
     return wrapper
 
 
@@ -120,3 +162,36 @@ def create_stat_card(title, value, accent_color="#4f78a8"):
 
     frame.value_label = value_label
     return frame
+
+
+def pin_height(widget):
+    """Stop a form container from stretching into the space a table needs."""
+    widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+    return widget
+
+
+def collapsible(form_widget, show_text, hide_text, start_collapsed=False):
+    """Returns (toggle_button, form_widget) where the button hides/shows the form.
+
+    On a short screen a form and a table cannot both have a usable height. Rather
+    than shrink the table to a couple of rows, the form can be folded away and
+    the table takes the whole page. Starts collapsed automatically when the
+    screen is too short to fit both.
+    """
+    button = QPushButton()
+    button.setCheckable(True)
+    button.setStyleSheet(
+        "QPushButton { background-color: transparent; color: #1f3b57;"
+        "  border: 1px solid #c9d6e4; border-radius: 8px; padding: 6px 14px; font-weight: 700; }"
+        "QPushButton:hover { background-color: #eef4fa; border-color: #4f78a8; }"
+    )
+
+    def apply_state():
+        collapsed = button.isChecked()
+        form_widget.setVisible(not collapsed)
+        button.setText(show_text if collapsed else hide_text)
+
+    button.toggled.connect(lambda _checked: apply_state())
+    button.setChecked(start_collapsed)
+    apply_state()
+    return button

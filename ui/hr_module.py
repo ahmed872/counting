@@ -176,10 +176,6 @@ class HRModule(QWidget):
 
         # --- Attendance / deductions get their own tab: cramming them under the
         # employee form pushed the payroll controls off the bottom of the window.
-        daily_scroll = QScrollArea()
-        daily_scroll.setWidgetResizable(True)
-        daily_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        daily_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         daily_widget = QWidget()
         daily_layout = QVBoxLayout(daily_widget)
         daily_layout.setContentsMargins(6, 6, 6, 6)
@@ -187,13 +183,8 @@ class HRModule(QWidget):
         daily_layout.addWidget(attendance_group)
         daily_layout.addWidget(deduction_group)
         daily_layout.addStretch()
-        daily_scroll.setWidget(daily_widget)
-        tabs.addTab(daily_scroll, "الحضور والسلف")
+        tabs.addTab(daily_widget, "الحضور والسلف")
 
-        payroll_scroll = QScrollArea()
-        payroll_scroll.setWidgetResizable(True)
-        payroll_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        payroll_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         payroll_widget = QWidget()
         payroll_tab_layout = QVBoxLayout(payroll_widget)
         payroll_tab_layout.setContentsMargins(6, 6, 6, 6)
@@ -231,18 +222,13 @@ class HRModule(QWidget):
         self.payroll_table.setAlternatingRowColors(True)
         self.payroll_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.payroll_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.payroll_table.setMinimumHeight(220)
+        self.payroll_table.setMinimumHeight(140)
         payroll_box = QGroupBox("ملخص الرواتب")
         payroll_box_layout = QVBoxLayout(payroll_box)
         payroll_box_layout.addWidget(self.payroll_table)
         payroll_tab_layout.addWidget(payroll_box, 1)
-        payroll_scroll.setWidget(payroll_widget)
-        tabs.addTab(payroll_scroll, "الرواتب")
+        tabs.addTab(payroll_widget, "الرواتب")
 
-        tables_scroll = QScrollArea()
-        tables_scroll.setWidgetResizable(True)
-        tables_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        tables_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         tables_widget = QWidget()
         tables_layout = QVBoxLayout(tables_widget)
         tables_layout.setContentsMargins(6, 6, 6, 6)
@@ -256,14 +242,13 @@ class HRModule(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setMinimumHeight(280)
+        self.table.setMinimumHeight(140)
         employees_box = QGroupBox("قائمة العاملين والوثائق")
         employees_box_layout = QVBoxLayout(employees_box)
         employees_box_layout.addWidget(self.table)
         tables_layout.addWidget(employees_box, 1)
 
-        tables_scroll.setWidget(tables_widget)
-        tabs.addTab(tables_scroll, "قائمة العاملين")
+        tabs.addTab(tables_widget, "قائمة العاملين")
 
         self.load_employees()
 

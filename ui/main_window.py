@@ -20,7 +20,7 @@ class MainWindow(QMainWindow):
         self.db = db_manager
         self.nav_entries = []
         self.setWindowTitle("نظام إدارة المطعم")
-        self.setMinimumSize(1200, 760)
+        self.setMinimumSize(1040, 640)
         self.resize(1440, 900)
 
         # Main Layout
@@ -54,14 +54,14 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.create_divider())
         sidebar_layout.addSpacing(6)
 
-        self.btn_dashboard = self.create_nav_btn("لوحة التحكم", "🏠")
-        self.btn_sales = self.create_nav_btn("المبيعات اليومية", "💰")
-        self.btn_purchases = self.create_nav_btn("المشتريات", "🧾")
-        self.btn_suppliers = self.create_nav_btn("الموردون", "🚚")
-        self.btn_hr = self.create_nav_btn("الموارد البشرية", "👥")
-        self.btn_reports = self.create_nav_btn("التقارير", "📊")
-        self.btn_accounting = self.create_nav_btn("المحاسبة", "📒")
-        self.btn_settings = self.create_nav_btn("الإعدادات", "⚙️")
+        self.btn_dashboard = self.create_nav_btn("لوحة التحكم")
+        self.btn_sales = self.create_nav_btn("المبيعات اليومية")
+        self.btn_purchases = self.create_nav_btn("المشتريات")
+        self.btn_suppliers = self.create_nav_btn("الموردون")
+        self.btn_hr = self.create_nav_btn("الموارد البشرية")
+        self.btn_reports = self.create_nav_btn("التقارير")
+        self.btn_accounting = self.create_nav_btn("المحاسبة")
+        self.btn_settings = self.create_nav_btn("الإعدادات")
 
         # Grouped by what the owner is doing, with the daily work first: the flat
         # list of eight gave no clue which page he needs at the end of a shift.
@@ -127,8 +127,8 @@ class MainWindow(QMainWindow):
         )
         return label
 
-    def create_nav_btn(self, text, icon=None):
-        btn = QPushButton(f"{icon}   {text}" if icon else text)
+    def create_nav_btn(self, text):
+        btn = QPushButton(text)
         btn.setCheckable(True)
         btn.setAutoExclusive(True)
         btn.setFixedHeight(44)
@@ -219,13 +219,16 @@ class MainWindow(QMainWindow):
         self.settings = SettingsModule(self.db)
         self.accounting = AccountingModule(self.db)
 
-        self.add_page("dashboard", self.dashboard)
-        self.add_page("sales", self.sales)
-        # HR and Suppliers scroll internally already - wrapping them again would
-        # produce two nested scrollbars on the same page.
+        # Screens built around a table must NOT be wrapped in a scroll area:
+        # inside one, the table only ever gets its minimum height and the page
+        # scrolls instead, so a 720p screen showed 5 rows out of 12. Left
+        # unwrapped, the table takes every spare pixel and scrolls its own rows.
+        # Only genuinely long documents keep the page-level scroll.
+        self.add_page("dashboard", self.dashboard, scrollable=False)
+        self.add_page("sales", self.sales, scrollable=False)
         self.add_page("hr", self.hr, scrollable=False)
-        self.add_page("purchases", self.purchases)
+        self.add_page("purchases", self.purchases, scrollable=False)
         self.add_page("suppliers", self.suppliers, scrollable=False)
-        self.add_page("reports", self.reports)
-        self.add_page("accounting", self.accounting)
+        self.add_page("reports", self.reports, scrollable=False)
+        self.add_page("accounting", self.accounting, scrollable=False)
         self.add_page("settings", self.settings)

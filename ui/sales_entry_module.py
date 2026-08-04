@@ -20,7 +20,8 @@ from PyQt6.QtWidgets import (
 
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, danger_button, fill_table
+from ui.common_widgets import (page_header, danger_button, fill_table, pin_height,
+                              collapsible)
 
 PAYMENT_CHANNELS = [
     ("Cash", "cash_input", "كاش"),
@@ -108,13 +109,16 @@ class SalesEntryModule(QWidget):
         save_btn.clicked.connect(self.save_daily_sales)
         form_outer.addWidget(save_btn)
 
-        layout.addWidget(form_box)
+        layout.addWidget(pin_height(form_box))
 
         history_row = QHBoxLayout()
         history_label = QLabel("سجل المبيعات اليومية (حسب الفرع):")
         history_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #334155;")
         history_row.addWidget(history_label)
         history_row.addStretch()
+        history_row.addWidget(collapsible(
+            form_box, "إظهار نموذج التسجيل", "إخفاء النموذج",
+            start_collapsed=self._short_screen()))
         delete_btn = danger_button("حذف اليوم المحدد")
         delete_btn.clicked.connect(self.delete_selected_day)
         history_row.addWidget(delete_btn)
@@ -128,11 +132,15 @@ class SalesEntryModule(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setMinimumHeight(240)
+        self.table.setMinimumHeight(120)
         layout.addWidget(self.table, 1)
 
         self.update_preview()
         self.load_history()
+
+    def _short_screen(self):
+        screen = self.screen() or (self.window().screen() if self.window() else None)
+        return bool(screen and screen.availableGeometry().height() < 800)
 
     def _field_label(self, text):
         label = QLabel(text)
