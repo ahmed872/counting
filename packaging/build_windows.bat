@@ -49,7 +49,7 @@ if errorlevel 1 (
 )
 
 echo [3/3] بناء البرنامج...
-python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist --workpath packaging\temp
+python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist
 if errorlevel 1 (
     echo [خطأ] فشل البناء.
     pause

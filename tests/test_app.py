@@ -12,6 +12,7 @@ import re
 import os
 import shutil
 import sys
+import tempfile
 import traceback
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,7 +27,10 @@ from database.db_manager import DBManager
 from ui.main_window import MainWindow
 from ui.theme import apply_theme
 
-DB_PATH = "/tmp/_erp_regression.db"
+# Not a hard-coded /tmp: the release build runs these same checks on a Windows
+# runner, where that path does not exist and every test would fail to open a
+# database.
+DB_PATH = os.path.join(tempfile.gettempdir(), "_erp_regression.db")
 
 failures = []
 
@@ -325,7 +329,7 @@ def main():
     def pdf_export_works():
         goto("reports")
         from PyQt6.QtPrintSupport import QPrinter
-        out = "/tmp/_erp_report_test.pdf"
+        out = os.path.join(tempfile.gettempdir(), "_erp_report_test.pdf")
         printer = QPrinter(QPrinter.PrinterMode.HighResolution)
         printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
         printer.setOutputFileName(out)
