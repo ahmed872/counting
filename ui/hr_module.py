@@ -141,7 +141,8 @@ class HRModule(QWidget):
         self.attendance_date = QDateEdit(QDate.currentDate())
         self.attendance_date.setCalendarPopup(True)
         self.attendance_status = QComboBox()
-        self.attendance_status.addItems(["Present", "Absent"])
+        self.attendance_status.addItem("حاضر", "Present")
+        self.attendance_status.addItem("غائب", "Absent")
         self.attendance_note = QLineEdit()
         self._apply_field_widths([self.attendance_employee, self.attendance_date, self.attendance_status, self.attendance_note])
         attendance_btn = QPushButton("تسجيل الحضور/الغياب")
@@ -423,7 +424,7 @@ class HRModule(QWidget):
             return
 
         date = self.attendance_date.date().toString("yyyy-MM-dd")
-        status = self.attendance_status.currentText()
+        status = self.attendance_status.currentData()
         note = self.attendance_note.text().strip()
         self.hr_logic.record_attendance(employee_id, date, status)
         if note:

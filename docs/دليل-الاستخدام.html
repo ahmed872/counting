@@ -1,0 +1,453 @@
+<title>دليل استخدام برنامج إدارة المطعم</title>
+
+<style>
+  :root {
+    --ink: #16283a;
+    --ink-2: #33465c;
+    --muted: #5b6b7f;
+    --paper: #ffffff;
+    --ground: #eaf0f6;
+    --line: #d2dce6;
+    --accent: #33628f;
+    --accent-soft: #dbe7f3;
+    --accent-ink: #1f4467;
+    --btn-ink: #ffffff;
+    --good: #14714a;
+    --good-soft: #d8efe3;
+    --warn: #9a5a06;
+    --warn-soft: #fbeacf;
+    --danger: #a8322a;
+    --danger-soft: #f8dedb;
+    --radius: 10px;
+    --font-ui: "Segoe UI", "Noto Sans Arabic", "Dubai", "Geeza Pro", Tahoma, system-ui, sans-serif;
+    --font-num: "Consolas", "SF Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e8eef5; --ink-2: #c2cedb; --muted: #93a3b5;
+      --paper: #16202b; --ground: #0e161e; --line: #2a3a4a;
+      --accent: #7fb0e0; --accent-soft: #1d3247; --accent-ink: #a9cdf0;
+      --btn-ink: #0e161e;
+      --good: #6fd3a4; --good-soft: #14332a;
+      --warn: #e8b467; --warn-soft: #38290f;
+      --danger: #f0928a; --danger-soft: #3a1e1c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e8eef5; --ink-2: #c2cedb; --muted: #93a3b5;
+    --paper: #16202b; --ground: #0e161e; --line: #2a3a4a;
+    --accent: #7fb0e0; --accent-soft: #1d3247; --accent-ink: #a9cdf0;
+    --btn-ink: #0e161e;
+    --good: #6fd3a4; --good-soft: #14332a;
+    --warn: #e8b467; --warn-soft: #38290f;
+    --danger: #f0928a; --danger-soft: #3a1e1c;
+  }
+  :root[data-theme="light"] {
+    --ink: #16283a; --ink-2: #33465c; --muted: #5b6b7f;
+    --paper: #ffffff; --ground: #eaf0f6; --line: #d2dce6;
+    --accent: #33628f; --accent-soft: #dbe7f3; --accent-ink: #1f4467;
+    --btn-ink: #ffffff;
+    --good: #14714a; --good-soft: #d8efe3;
+    --warn: #9a5a06; --warn-soft: #fbeacf;
+    --danger: #a8322a; --danger-soft: #f8dedb;
+  }
+
+  .page {
+    direction: rtl;
+    text-align: right;
+    font-family: var(--font-ui);
+    background: var(--ground);
+    color: var(--ink);
+    line-height: 1.75;
+    padding: 32px 20px 72px;
+    min-height: 100%;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; display: flex; flex-direction: column; gap: 26px; }
+
+  .masthead {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 28px 26px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .masthead .eyebrow {
+    font-size: 12.5px; font-weight: 700; color: var(--accent);
+    letter-spacing: .06em;
+  }
+  .masthead h1 {
+    margin: 0; font-size: clamp(26px, 4.4vw, 36px); font-weight: 800;
+    letter-spacing: -.01em; text-wrap: balance; color: var(--ink);
+  }
+  .masthead p { margin: 4px 0 0; color: var(--muted); font-size: 16px; max-width: 62ch; }
+
+  .band {
+    display: flex; align-items: baseline; gap: 12px;
+    padding: 2px 0 0;
+  }
+  .band h2 {
+    margin: 0; font-size: 21px; font-weight: 800; color: var(--ink);
+    letter-spacing: -.005em;
+  }
+  .band .when {
+    font-family: var(--font-num); font-size: 12px; font-weight: 700;
+    color: var(--accent-ink); background: var(--accent-soft);
+    border-radius: 999px; padding: 3px 11px; white-space: nowrap;
+  }
+  .band .rule { flex: 1; height: 1px; background: var(--line); }
+
+  .task {
+    background: var(--paper);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 20px 22px;
+    display: flex; flex-direction: column; gap: 12px;
+  }
+  .task h3 {
+    margin: 0; font-size: 17px; font-weight: 800; color: var(--ink);
+  }
+  .task > p { margin: 0; color: var(--ink-2); }
+
+  ol.steps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; counter-reset: s; }
+  ol.steps > li {
+    counter-increment: s;
+    display: grid; grid-template-columns: 26px 1fr; gap: 12px; align-items: start;
+    color: var(--ink-2);
+  }
+  ol.steps > li::before {
+    content: counter(s);
+    font-family: var(--font-num); font-size: 12.5px; font-weight: 700;
+    color: var(--accent-ink); background: var(--accent-soft);
+    border-radius: 6px; height: 24px; display: grid; place-items: center;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .nav {
+    display: inline-block; font-weight: 700; color: var(--accent-ink);
+    background: var(--accent-soft); border-radius: 6px; padding: 1px 8px;
+    white-space: nowrap;
+  }
+  .btn {
+    display: inline-block; font-weight: 700; color: var(--btn-ink);
+    background: var(--accent); border-radius: 6px; padding: 1px 9px;
+    white-space: nowrap;
+  }
+
+  .note {
+    border-radius: 8px; padding: 12px 14px; font-size: 15px;
+    border: 1px solid; display: flex; flex-direction: column; gap: 4px;
+  }
+  .note b { font-weight: 800; }
+  .note.good { background: var(--good-soft); border-color: var(--good); color: var(--ink); }
+  .note.warn { background: var(--warn-soft); border-color: var(--warn); color: var(--ink); }
+  .note.stop { background: var(--danger-soft); border-color: var(--danger); color: var(--ink); }
+
+  .kv { display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--line); }
+  .kv div {
+    display: grid; grid-template-columns: minmax(120px, 34%) 1fr; gap: 14px;
+    padding: 9px 0; border-bottom: 1px solid var(--line); align-items: baseline;
+  }
+  .kv dt, .kv .k { font-weight: 700; color: var(--ink); }
+  .kv .v { color: var(--ink-2); }
+
+  .fix { display: flex; flex-direction: column; gap: 0; }
+  .fix > div {
+    display: grid; grid-template-columns: minmax(150px, 40%) 1fr; gap: 14px;
+    padding: 11px 0; border-bottom: 1px solid var(--line); align-items: start;
+  }
+  .fix > div:last-child { border-bottom: 0; }
+  .fix .prob { font-weight: 700; color: var(--danger); }
+  .fix .sol { color: var(--ink-2); }
+
+  .money { font-family: var(--font-num); font-variant-numeric: tabular-nums; font-weight: 700; }
+
+  .footer {
+    color: var(--muted); font-size: 14px; text-align: center;
+    border-top: 1px solid var(--line); padding-top: 18px;
+  }
+
+  @media (max-width: 560px) {
+    .kv div, .fix > div { grid-template-columns: 1fr; gap: 2px; }
+    .page { padding: 20px 12px 48px; }
+  }
+
+  @media print {
+    .page { background: #fff; padding: 0; }
+    .task, .masthead { break-inside: avoid; border-color: #bbb; }
+    .band { break-after: avoid; }
+    .wrap { gap: 18px; max-width: none; }
+    .note { break-inside: avoid; }
+  }
+</style>
+
+<div class="page">
+<div class="wrap">
+
+  <header class="masthead">
+    <span class="eyebrow">دليل الاستخدام</span>
+    <h1>برنامج إدارة المطعم</h1>
+    <p>
+      كل اللي تحتاجه في ورقة واحدة. مرتّبة حسب <strong>وقت الاستخدام</strong>:
+      إيش تسوي مرة وحدة بس، وإيش كل يوم، وإيش آخر الشهر.
+    </p>
+  </header>
+
+  <!-- ============ أول مرة ============ -->
+  <div class="band">
+    <h2>تجهيز البرنامج</h2>
+    <span class="when">مرة واحدة فقط</span>
+    <span class="rule"></span>
+  </div>
+
+  <section class="task">
+    <h3>١) بيانات المطعم والأرصدة</h3>
+    <p>افتح <span class="nav">الإعدادات</span> من القائمة على اليمين.</p>
+    <ol class="steps">
+      <li>اكتب <strong>اسم المنشأة</strong> و<strong>الرقم الضريبي</strong>، واضغط <span class="btn">حفظ بيانات المنشأة</span>. هذي البيانات تطلع في التقارير.</li>
+      <li>في مربع <strong>الأرصدة الافتتاحية</strong> اكتب الفلوس الموجودة عندك فعلياً اليوم: <strong>النقدية بالخزنة</strong>، <strong>رصيد البنك</strong>، و<strong>قيمة البضاعة</strong> الموجودة بالمخزن.</li>
+      <li>اضغط <span class="btn">حفظ الأرصدة الافتتاحية</span>.</li>
+    </ol>
+    <div class="note warn">
+      <b>مهم جداً</b>
+      <span>لا تتجاوز هذي الخطوة. بدونها البرنامج يحسب كأن الخزنة فاضية، وتطلع الميزانية بالسالب وأرقامها غلط.</span>
+    </div>
+  </section>
+
+  <section class="task">
+    <h3>٢) الفروع والموظفين والموردين</h3>
+    <ol class="steps">
+      <li>في نفس صفحة <span class="nav">الإعدادات</span>، تحت <strong>الفروع</strong>، أضف فروعك.</li>
+      <li>افتح <span class="nav">الموارد البشرية</span> ← تبويب <strong>الموظفون</strong>، واملأ بيانات كل عامل: الاسم، الوظيفة، الفرع، الراتب، البدلات، وأرقام <strong>الإقامة والجواز وتصريح العمل وكرت العمل مع تواريخ انتهائها</strong>، ثم <span class="btn">إضافة موظف</span>.</li>
+      <li>افتح <span class="nav">الموردون</span> وأضف كل مورد. لو له فلوس عندك من قبل، اكتبها في خانة <strong>الرصيد الافتتاحي</strong>.</li>
+    </ol>
+  </section>
+
+  <!-- ============ كل يوم ============ -->
+  <div class="band">
+    <h2>الشغل اليومي</h2>
+    <span class="when">كل يوم</span>
+    <span class="rule"></span>
+  </div>
+
+  <section class="task">
+    <h3>تسجيل مبيعات اليوم</h3>
+    <p>آخر الدوام، افتح <span class="nav">المبيعات اليومية</span>.</p>
+    <ol class="steps">
+      <li>اختر <strong>الفرع</strong> و<strong>التاريخ</strong>.</li>
+      <li>اكتب الثلاث مبالغ زي ما طلعت من الجهاز: <strong>كاش</strong> · <strong>شبكة (مدى / فيزا)</strong> · <strong>تحويل بنكي</strong>.</li>
+      <li>راجع الشريط الأزرق تحت — يوريك <span class="money">الإجمالي</span> و<span class="money">الضريبة</span> وهو يحسبها لك أول بأول.</li>
+      <li>اضغط <span class="btn">حفظ مبيعات اليوم</span>.</li>
+    </ol>
+    <div class="note good">
+      <b>المبالغ شاملة الضريبة</b>
+      <span>اكتب الرقم زي ما هو من الجهاز، والبرنامج يفصل الـ 15% بنفسه ويسجّل القيود المحاسبية تلقائياً.</span>
+    </div>
+  </section>
+
+  <!-- ============ أول بأول ============ -->
+  <div class="band">
+    <h2>أول بأول</h2>
+    <span class="when">وقت ما يحصل</span>
+    <span class="rule"></span>
+  </div>
+
+  <section class="task">
+    <h3>فاتورة مشتريات أو مصروف</h3>
+    <p>افتح <span class="nav">المشتريات</span> ← تبويب <strong>فاتورة مشتريات / مصروف</strong>.</p>
+    <ol class="steps">
+      <li>اختر <strong>الفرع</strong>، ثم <strong>نوع المصروف</strong> — وهذي أهم خانة:</li>
+      <li>اختر <strong>المورد</strong> (أو «بدون مورد» لو مصروف عام)، واكتب <strong>البيان</strong> والمبلغ <strong>قبل الضريبة</strong>.</li>
+      <li>اختر <strong>حالة الدفع</strong>: <strong>نقدي</strong> لو دفعت طول، أو <strong>آجل</strong> لو على الحساب.</li>
+      <li>اضغط <span class="btn">تسجيل الفاتورة</span>.</li>
+    </ol>
+    <div class="kv">
+      <div><span class="k">مواد خام</span><span class="v">اللحوم والخضار وكل ما يدخل في الأكل</span></div>
+      <div><span class="k">مصروفات مرتبطة بالمشتريات</span><span class="v">شحن ونقل البضاعة</span></div>
+      <div><span class="k">مصروفات تشغيلية</span><span class="v">إيجار، كهرباء، ماء، صيانة</span></div>
+    </div>
+    <div class="note warn">
+      <b>الشراء الآجل</b>
+      <span>لازم تختار مورد، عشان المبلغ ينضاف على حسابه وتعرف كم له عندك.</span>
+    </div>
+  </section>
+
+  <section class="task">
+    <h3>غياب عامل</h3>
+    <p><span class="nav">الموارد البشرية</span> ← تبويب <strong>الحضور والسلف</strong>.</p>
+    <ol class="steps">
+      <li>اختر <strong>العامل</strong> و<strong>التاريخ</strong>، وخلّ الحالة <strong>غائب</strong>.</li>
+      <li>اضغط <span class="btn">تسجيل الحضور/الغياب</span>.</li>
+    </ol>
+    <div class="note good">
+      <b>الخصم يصير لحاله</b>
+      <span>البرنامج يخصم يوم واحد = (الراتب + البدلات) ÷ ٣٠. مثال: راتب <span class="money">٦٬٠٠٠</span> ← اليوم <span class="money">٢٠٠</span> ريال.</span>
+    </div>
+  </section>
+
+  <section class="task">
+    <h3>سلفة أو خصم أو مكافأة</h3>
+    <p>نفس التبويب، في مربع <strong>سلف / خصومات / مكافآت</strong>.</p>
+    <ol class="steps">
+      <li>اختر <strong>العامل</strong> و<strong>النوع</strong> و<strong>المبلغ</strong>، ثم <span class="btn">تسجيل الحركة</span>.</li>
+    </ol>
+    <div class="kv">
+      <div><span class="k">سلفة</span><span class="v">فلوس أعطيتها له مقدماً — ترجع لك تلقائياً عند صرف الراتب</span></div>
+      <div><span class="k">خصم</span><span class="v">جزاء أو خصم يقلّل الراتب</span></div>
+      <div><span class="k">مكافأة</span><span class="v">مبلغ إضافي يزيد الراتب</span></div>
+    </div>
+  </section>
+
+  <section class="task">
+    <h3>سداد لمورد</h3>
+    <p>افتح <span class="nav">الموردون</span>.</p>
+    <ol class="steps">
+      <li>اضغط على اسم المورد في الجدول.</li>
+      <li>اكتب <strong>المبلغ</strong> واختر <strong>نقدي</strong> أو <strong>تحويل بنكي</strong>، ثم <span class="btn">تسجيل السداد</span>.</li>
+      <li>تحت بالضبط يطلع لك <strong>كشف حساب</strong> المورد وكم باقي له.</li>
+    </ol>
+  </section>
+
+  <!-- ============ آخر الشهر ============ -->
+  <div class="band">
+    <h2>آخر الشهر</h2>
+    <span class="when">مرة بالشهر</span>
+    <span class="rule"></span>
+  </div>
+
+  <section class="task">
+    <h3>صرف الرواتب</h3>
+    <p><span class="nav">الموارد البشرية</span> ← تبويب <strong>الرواتب</strong>.</p>
+    <ol class="steps">
+      <li>اختر <strong>الشهر</strong> و<strong>السنة</strong>.</li>
+      <li>اضغط <span class="btn">حساب الرواتب (معاينة)</span> — يطلع لك جدول فيه لكل عامل: راتبه، أيام غيابه، الخصومات، السلف، و<strong>الصافي المستحق</strong>.</li>
+      <li>راجع الأرقام كويس.</li>
+      <li>لما تتأكد، اضغط <span class="btn">ترحيل الرواتب للمحاسبة</span>.</li>
+    </ol>
+    <div class="note stop">
+      <b>الترحيل نهائي</b>
+      <span>لا ترحّل إلا بعد المراجعة. البرنامج يرفض ترحيل نفس الشهر مرتين، فما فيه خوف من التكرار — بس ما ينفع تتراجع.</span>
+    </div>
+  </section>
+
+  <section class="task">
+    <h3>طلع تقرير الشهر</h3>
+    <p>افتح <span class="nav">التقارير</span>.</p>
+    <ol class="steps">
+      <li>اختر <strong>نوع التقرير</strong>: يومي أو أسبوعي أو <strong>شهري</strong> أو سنوي.</li>
+      <li>اختر <strong>الفرع</strong>، أو «كل الفروع» لو تبي الاثنين مع بعض.</li>
+      <li>اضغط <span class="btn">عرض التقرير</span>.</li>
+      <li>للمحاسب أو للهيئة: <span class="btn">حفظ PDF</span> أو <span class="btn">طباعة</span>.</li>
+    </ol>
+    <p>التقرير يوريك: المبيعات مقسّمة على طرق الدفع، المشتريات والمصروفات، مجمل الربح وصافي الربح، <strong>الضريبة المستحقة</strong>، وتفصيل يوم بيوم.</p>
+  </section>
+
+  <!-- ============ كل أسبوع ============ -->
+  <div class="band">
+    <h2>حماية بياناتك</h2>
+    <span class="when">كل أسبوع</span>
+    <span class="rule"></span>
+  </div>
+
+  <section class="task">
+    <h3>خُذ نسخة احتياطية</h3>
+    <ol class="steps">
+      <li><span class="nav">الإعدادات</span> ← <span class="btn">حفظ نسخة احتياطية</span>.</li>
+      <li>احفظ الملف على <strong>فلاشة</strong> أو مكان ثاني غير الكمبيوتر.</li>
+    </ol>
+    <div class="note stop">
+      <b>ليش هذي مهمة</b>
+      <span>كل بيانات المطعم في ملف واحد على هذا الجهاز. لو خرب الجهاز أو ضاع، تروح كل البيانات معه. النسخة الاحتياطية هي الشي الوحيد اللي يرجّعها.</span>
+    </div>
+  </section>
+
+  <!-- ============ التنبيهات ============ -->
+  <div class="band">
+    <h2>تنبيهات الإقامات والجوازات</h2>
+    <span class="when">تلقائي</span>
+    <span class="rule"></span>
+  </div>
+
+  <section class="task">
+    <h3>البرنامج ينبّهك بنفسه</h3>
+    <p>
+      أول ما تفتح البرنامج، تطلع لك نافذة فيها أي وثيقة بتنتهي خلال <strong>٣٠ يوم</strong>.
+      وتلقاها كمان في <span class="nav">لوحة التحكم</span> في جدول ملوّن:
+    </p>
+    <div class="kv">
+      <div><span class="k" style="color:var(--danger)">أحمر</span><span class="v">الوثيقة منتهية — لازم تتجدد فوراً</span></div>
+      <div><span class="k" style="color:var(--warn)">برتقالي</span><span class="v">باقي أسبوع أو أقل</span></div>
+      <div><span class="k">أصفر</span><span class="v">باقي أكثر من أسبوع</span></div>
+    </div>
+    <p>تقدر تغيّر المدة من القائمة فوق الجدول (٧ / ١٥ / ٣٠ / ٦٠ / ٩٠ يوم).</p>
+  </section>
+
+  <!-- ============ الأخطاء ============ -->
+  <div class="band">
+    <h2>لو غلطت في شي</h2>
+    <span class="when">كل شي يتصلّح</span>
+    <span class="rule"></span>
+  </div>
+
+  <section class="task">
+    <h3>جدول التصحيح السريع</h3>
+    <div class="fix">
+      <div>
+        <span class="prob">سجّلت مبيعات يوم غلط</span>
+        <span class="sol">افتح <span class="nav">المبيعات اليومية</span>، اختر نفس التاريخ واكتب المبالغ الصحيحة واحفظ. يسألك «تبي تستبدله؟» — اضغط نعم.</span>
+      </div>
+      <div>
+        <span class="prob">تبي تمسح مبيعات يوم كامل</span>
+        <span class="sol">اختر اليوم من الجدول تحت، ثم <span class="btn">حذف اليوم المحدد</span>.</span>
+      </div>
+      <div>
+        <span class="prob">فاتورة مشتريات غلط</span>
+        <span class="sol">افتح <span class="nav">المشتريات</span>، اختر الفاتورة من الجدول، ثم <span class="btn">حذف الفاتورة المحددة</span>.</span>
+      </div>
+      <div>
+        <span class="prob">بيانات موظف غلط (راتب، رقم إقامة…)</span>
+        <span class="sol">في <span class="nav">الموارد البشرية</span> ← تبويب <strong>الموظفون</strong>، اختر اسمه من قائمة <strong>«تعديل موظف موجود»</strong> فوق، عدّل، ثم <span class="btn">حفظ التعديلات</span>.</span>
+      </div>
+      <div>
+        <span class="prob">عامل ترك الشغل</span>
+        <span class="sol">اختره من نفس القائمة، ثم <span class="btn">إنهاء خدمة الموظف</span>. يختفي من الرواتب والتنبيهات، وسجله القديم يبقى محفوظ.</span>
+      </div>
+      <div>
+        <span class="prob">سجّلت غياب لواحد وهو حاضر</span>
+        <span class="sol">سجّل نفس العامل ونفس اليوم مرة ثانية بحالة <strong>حاضر</strong> — يصحّح نفسه ولا يتضاعف الخصم.</span>
+      </div>
+      <div>
+        <span class="prob">الأرصدة الافتتاحية مكتوبة غلط</span>
+        <span class="sol"><span class="nav">الإعدادات</span> ← عدّل الأرقام واضغط حفظ. يستبدل القديم ولا يضيف فوقه.</span>
+      </div>
+    </div>
+    <div class="note warn">
+      <b>الشي الوحيد اللي ما يتراجع</b>
+      <span><strong>ترحيل الرواتب</strong>. راجع الجدول زين قبل ما تضغط الزر.</span>
+    </div>
+  </section>
+
+  <!-- ============ الأرقام ============ -->
+  <div class="band">
+    <h2>وين تلقى أرقامك</h2>
+    <span class="when">في أي وقت</span>
+    <span class="rule"></span>
+  </div>
+
+  <section class="task">
+    <h3>ثلاث صفحات تعطيك الصورة</h3>
+    <div class="kv">
+      <div><span class="k"><span class="nav">لوحة التحكم</span></span><span class="v">أرقام اليوم بس: مبيعات، مشتريات، ربح، ضريبة، وتنبيهات الوثائق</span></div>
+      <div><span class="k"><span class="nav">التقارير</span></span><span class="v">تقرير جاهز لأي فترة، يتطبع أو يتحفظ PDF — هذا اللي تعطيه للمحاسب</span></div>
+      <div><span class="k"><span class="nav">المحاسبة</span></span><span class="v">التفاصيل المحاسبية: ميزان المراجعة، قائمة الدخل، حساب المتاجرة، والمركز المالي</span></div>
+    </div>
+    <div class="note good">
+      <b>علامة إن حساباتك سليمة</b>
+      <span>في صفحة <span class="nav">المحاسبة</span> ← <strong>ميزان المراجعة</strong>، تحت الجدول لازم تشوف كلمة <strong style="color:var(--good)">متوازن ✓</strong> باللون الأخضر. لو طلعت حمرا، كلّم اللي ركّب لك البرنامج.</span>
+    </div>
+  </section>
+
+  <p class="footer">اطبع هذي الورقة وخلّها جنب الكمبيوتر.</p>
+
+</div>
+</div>

@@ -70,7 +70,8 @@ class PurchaseModule(QWidget):
 
         self.amount_input = QLineEdit()
         self.payment_status = QComboBox()
-        self.payment_status.addItems(["Cash", "Credit"])
+        self.payment_status.addItem("نقدي", "Cash")
+        self.payment_status.addItem("آجل (على الحساب)", "Credit")
 
         form_layout.addRow("الفرع:", self.branch_input)
         form_layout.addRow("نوع المصروف:", self.category_input)
@@ -224,7 +225,7 @@ class PurchaseModule(QWidget):
             if amount <= 0:
                 raise ValueError("يجب أن يكون المبلغ أكبر من صفر")
 
-            status = self.payment_status.currentText()
+            status = self.payment_status.currentData()
             if status == 'Credit' and not supplier_id:
                 raise ValueError("الشراء الآجل (Credit) يتطلب اختيار مورد")
 

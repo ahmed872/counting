@@ -142,7 +142,7 @@ def main():
         hr = window.hr
         emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
         hr.attendance_employee.setCurrentIndex(hr.attendance_employee.findData(emp_id))
-        hr.attendance_status.setCurrentText("Absent")
+        hr.attendance_status.setCurrentIndex(hr.attendance_status.findData("Absent"))
         hr.record_attendance()
         row = next(r for r in window.hr_logic.get_monthly_payroll(
             hr.payroll_month.currentData(), int(hr.payroll_year.text())) if r["id"] == emp_id)
@@ -189,12 +189,12 @@ def main():
             p.category_input.setCurrentIndex(p.category_input.findData(category))
             p.supplier_input.setCurrentIndex(0)
             p.amount_input.setText(amount)
-            p.payment_status.setCurrentText(status)
+            p.payment_status.setCurrentIndex(p.payment_status.findData(status))
             p.save_purchase()
         p.category_input.setCurrentIndex(p.category_input.findData("raw_material"))
         p.supplier_input.setCurrentIndex(p.supplier_input.findData(sid))
         p.amount_input.setText("500")
-        p.payment_status.setCurrentText("Credit")
+        p.payment_status.setCurrentIndex(p.payment_status.findData("Credit"))
         p.save_purchase()
 
         def balance_of(code):
@@ -268,7 +268,7 @@ def main():
         p.supplier_input.setCurrentIndex(0)
         p.description_input.setText("مصروف بالغلط")
         p.amount_input.setText("999")
-        p.payment_status.setCurrentText("Cash")
+        p.payment_status.setCurrentIndex(p.payment_status.findData("Cash"))
         p.save_purchase()
         before = db.fetch_one(
             "SELECT COALESCE(SUM(debit)-SUM(credit),0) v FROM journal_items WHERE account_code='5200'")["v"]

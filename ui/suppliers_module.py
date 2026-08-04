@@ -99,7 +99,8 @@ class SuppliersModule(QWidget):
         self.payment_supplier_label.setStyleSheet("font-weight: 700; color: #1f3b57;")
         self.payment_amount = QLineEdit()
         self.payment_method = QComboBox()
-        self.payment_method.addItems(["Cash", "Bank"])
+        self.payment_method.addItem("نقدي", "Cash")
+        self.payment_method.addItem("تحويل بنكي", "Bank")
         self.payment_notes = QLineEdit()
         pay_btn = QPushButton("تسجيل السداد")
         pay_btn.setMinimumHeight(42)
@@ -215,7 +216,7 @@ class SuppliersModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "ادخل مبلغاً صحيحاً")
             return
 
-        method = self.payment_method.currentText()
+        method = self.payment_method.currentData()
         notes = self.payment_notes.text().strip()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
