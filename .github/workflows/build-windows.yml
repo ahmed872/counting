@@ -56,15 +56,20 @@ jobs:
       - name: توليد دليل الاستخدام
         run: python docs/build_manual.py
 
+      # Both builds come from the same spec, so they need separate --workpath
+      # directories: PyInstaller caches its intermediates under a name derived
+      # from the spec, and the second build would otherwise pick up the first
+      # one's leftovers.
+
       # ---- what the customer actually receives: one file ----
       - name: بناء الملف الواحد
         env:
           ONEFILE: "1"
-        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm --distpath dist-single
+        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm --distpath dist-single --workpath build/single
 
       # ---- the folder version, for when the single file is blocked or slow ----
       - name: بناء نسخة المجلد
-        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm --distpath dist-folder
+        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm --distpath dist-folder --workpath build/folder
 
       - name: تجهيز الملفات للإرسال
         shell: pwsh

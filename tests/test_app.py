@@ -595,7 +595,11 @@ def main():
             button.click()
         finally:
             QDesktopServices.openUrl = original
-        assert opened == [path], opened
+        # Compare the files, not the strings. On Windows manual_path() comes
+        # back with backslashes while QUrl hands it over with forward slashes,
+        # so a plain equality check fails on a build that is working perfectly.
+        assert len(opened) == 1, opened
+        assert os.path.samefile(opened[0], path), (opened[0], path)
     check("the manual is shipped and reachable from the settings page", manual_ships_and_opens)
 
     def packaging_bundles_every_data_file():
