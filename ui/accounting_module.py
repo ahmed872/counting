@@ -20,6 +20,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import QDate, Qt
 from logic.accounting import AccountingLogic
 from ui.common_widgets import create_stat_card
+from ui.labels import ACCOUNT_TYPE_LABELS, label_for
 
 
 class AccountingModule(QWidget):
@@ -258,7 +259,7 @@ class AccountingModule(QWidget):
             total_credit += credit
             self.table.setItem(row, 0, QTableWidgetItem(item['code']))
             self.table.setItem(row, 1, QTableWidgetItem(item['name']))
-            self.table.setItem(row, 2, QTableWidgetItem(item['type']))
+            self.table.setItem(row, 2, QTableWidgetItem(label_for(ACCOUNT_TYPE_LABELS, item['type'])))
             self.table.setItem(row, 3, QTableWidgetItem(f"{debit:.2f}"))
             self.table.setItem(row, 4, QTableWidgetItem(f"{credit:.2f}"))
 

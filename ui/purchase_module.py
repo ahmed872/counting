@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
 )
 from logic.accounting import AccountingLogic
+from ui.labels import PAYMENT_STATUS_LABELS, REFUND_METHOD_LABELS, label_for
 
 CATEGORY_LABELS = {
     'raw_material': 'مواد خام',
@@ -287,7 +288,7 @@ class PurchaseModule(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem(p['description'] or ""))
             self.table.setItem(row, 4, QTableWidgetItem(f"{p['total_amount']:.2f}"))
             self.table.setItem(row, 5, QTableWidgetItem(f"{p['vat_amount']:.2f}"))
-            self.table.setItem(row, 6, QTableWidgetItem(p['payment_status']))
+            self.table.setItem(row, 6, QTableWidgetItem(label_for(PAYMENT_STATUS_LABELS, p['payment_status'])))
 
     def save_purchase_return(self):
         try:
@@ -341,5 +342,5 @@ class PurchaseModule(QWidget):
             self.returns_table.setItem(row, 1, QTableWidgetItem(r['supplier_name'] or ""))
             self.returns_table.setItem(row, 2, QTableWidgetItem(f"{r['amount']:.2f}"))
             self.returns_table.setItem(row, 3, QTableWidgetItem(f"{r['vat_amount']:.2f}"))
-            method_label = "استرداد نقدي" if r['refund_method'] == 'Cash' else "إشعار دائن"
+            method_label = label_for(REFUND_METHOD_LABELS, r['refund_method'])
             self.returns_table.setItem(row, 4, QTableWidgetItem(method_label))

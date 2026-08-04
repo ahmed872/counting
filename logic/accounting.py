@@ -234,7 +234,8 @@ class AccountingLogic:
             (supplier_id,),
         )
         for pay in payments:
-            entries.append({'date': pay['date'], 'type': f"سداد ({pay['method']})", 'debit': pay['amount'] or 0, 'credit': 0})
+            method_label = 'نقدي' if pay['method'] == 'Cash' else 'تحويل بنكي'
+            entries.append({'date': pay['date'], 'type': f"سداد ({method_label})", 'debit': pay['amount'] or 0, 'credit': 0})
 
         returns = self.db.fetch_all(
             "SELECT date, amount, vat_amount FROM purchase_returns WHERE supplier_id = ? AND refund_method = 'CreditNote' ORDER BY date",

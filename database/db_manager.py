@@ -115,7 +115,24 @@ class DBManager:
             cursor.execute("ALTER TABLE suppliers ADD COLUMN is_active INTEGER DEFAULT 1")
             cursor.execute("UPDATE suppliers SET is_active = 1 WHERE is_active IS NULL")
 
+        self.arabise_account_names(cursor)
         self.enforce_uniqueness(cursor)
+
+    def arabise_account_names(self, cursor):
+        """schema.sql seeds accounts with INSERT OR IGNORE, so renaming them there
+        only affects new databases. Existing ones are updated here - the code is
+        the key, the name is only ever a label."""
+        renames = {
+            '1200': 'ضريبة المشتريات (مدخلات)',
+            '2000': 'الموردون (ذمم دائنة)',
+            '2100': 'ضريبة المبيعات (مخرجات)',
+            '5000': 'تكلفة البضاعة المباعة',
+        }
+        for code, name in renames.items():
+            cursor.execute(
+                "UPDATE chart_of_accounts SET name = ? WHERE code = ? AND name <> ?",
+                (name, code, name),
+            )
 
     def enforce_uniqueness(self, cursor):
         """De-duplicate then add the unique indexes.

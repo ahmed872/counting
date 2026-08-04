@@ -19,7 +19,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.db = db_manager
         self.nav_entries = []
-        self.setWindowTitle("نظام إدارة المطعم - Mini ERP")
+        self.setWindowTitle("نظام إدارة المطعم")
         self.setMinimumSize(1200, 760)
         self.resize(1440, 900)
 

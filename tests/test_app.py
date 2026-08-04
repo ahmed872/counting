@@ -399,6 +399,55 @@ def main():
             assert entry["page"].isVisible(), page
     check("every page opens without error", every_page_opens)
 
+    def no_english_shown_to_the_user():
+        """The owner asked for an Arabic-only interface. Stored values stay
+        English (CHECK constraints and every query depend on them) but nothing
+        English may reach a label, a dropdown entry or a table cell."""
+        from PyQt6.QtWidgets import QComboBox, QTableWidget
+        banned = [
+            "Present", "Absent", "Cash", "Credit", "Bank", "POS", "Transfer",
+            "Asset", "Liability", "Equity", "Revenue", "Expense",
+            "Deduction", "Advance", "Bonus", "CreditNote",
+            "Input VAT", "Output VAT", "COGS", "Mini ERP",
+        ]
+        found = []
+
+        def scan(text, where):
+            if not text:
+                return
+            for word in banned:
+                if word in text:
+                    found.append((where, text[:45]))
+                    return
+
+        scan(window.windowTitle(), "window title")
+        for page in pages + ["settings"]:
+            entry = goto(page)
+            widget = entry["page"]
+            for label in widget.findChildren(QLabel):
+                if label.isVisible():
+                    scan(label.text(), f"{page}/label")
+            for btn in widget.findChildren(QPushButton):
+                if btn.isVisible():
+                    scan(btn.text(), f"{page}/button")
+            for combo in widget.findChildren(QComboBox):
+                for i in range(combo.count()):
+                    scan(combo.itemText(i), f"{page}/dropdown")
+            for table in widget.findChildren(QTableWidget):
+                for r in range(table.rowCount()):
+                    for c in range(table.columnCount()):
+                        item = table.item(r, c)
+                        if item:
+                            scan(item.text(), f"{page}/table")
+                    if r > 30:
+                        break
+                for c in range(table.columnCount()):
+                    header = table.horizontalHeaderItem(c)
+                    if header:
+                        scan(header.text(), f"{page}/header")
+        assert not found, found
+    check("nothing English is shown to the user", no_english_shown_to_the_user)
+
     print("\n" + "=" * 52)
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")

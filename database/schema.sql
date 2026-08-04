@@ -236,14 +236,14 @@ INSERT OR IGNORE INTO branches (id, name, location) VALUES (2, 'فرع جدة', 
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1000', 'النقدية', 'Asset');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1001', 'البنك', 'Asset');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1100', 'المخزون', 'Asset');
-INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1200', 'ضريبة المشتريات (Input VAT)', 'Asset');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1200', 'ضريبة المشتريات (مدخلات)', 'Asset');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1300', 'سلف الموظفين', 'Asset');
-INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2000', 'الموردون (AP)', 'Liability');
-INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2100', 'ضريبة المبيعات (Output VAT)', 'Liability');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2000', 'الموردون (ذمم دائنة)', 'Liability');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2100', 'ضريبة المبيعات (مخرجات)', 'Liability');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('3000', 'رأس المال', 'Equity');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('3900', 'الأرصدة الافتتاحية', 'Equity');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('4000', 'المبيعات', 'Revenue');
-INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5000', 'تكلفة البضاعة المباعة (COGS)', 'Expense');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5000', 'تكلفة البضاعة المباعة', 'Expense');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5100', 'الرواتب والأجور', 'Expense');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5150', 'مصروفات مرتبطة بالمشتريات', 'Expense');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5200', 'المصاريف التشغيلية', 'Expense');
