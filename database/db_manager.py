@@ -12,7 +12,10 @@ class DBManager:
         return conn
 
     def init_db(self):
-        schema_path = os.path.join(os.path.dirname(__file__), 'schema.sql')
+        # Not dirname(__file__): inside a packaged .exe this module lives in an
+        # archive, and the .sql is unpacked elsewhere.
+        from logic.paths import resource_path
+        schema_path = resource_path('database', 'schema.sql')
         with open(schema_path, 'r', encoding='utf-8') as f:
             schema_sql = f.read()
         

@@ -10,6 +10,7 @@ from ui.main_window import MainWindow
 from ui.theme import apply_theme
 from logic.hr import HRLogic
 from logic.trial import TrialManager
+from logic.paths import database_path
 
 
 def enforce_trial(db):
@@ -46,7 +47,7 @@ def show_expiry_notifications(db):
 
 
 def main():
-    db = DBManager('restaurant_erp.db')
+    db = DBManager(database_path())
 
     app = QApplication(sys.argv)
     apply_theme(app)

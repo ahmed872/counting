@@ -233,9 +233,8 @@ class SettingsModule(QWidget):
     # ---------------- manual ----------------
 
     def manual_path(self):
-        """The PDF ships next to the code, in docs/."""
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        return os.path.join(root, "docs", "دليل-الاستخدام.pdf")
+        from logic.paths import manual_path
+        return manual_path()
 
     def build_manual_box(self):
         box = QGroupBox("دليل الاستخدام")

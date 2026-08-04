@@ -594,6 +594,40 @@ def main():
         assert opened == [path], opened
     check("the manual is shipped and reachable from the settings page", manual_ships_and_opens)
 
+    def packaging_bundles_every_data_file():
+        """Files loaded through resource_path() are data, not code, so
+        PyInstaller cannot discover them by following imports. Anything missing
+        from the spec builds a perfectly clean .exe that then dies on the
+        restaurant's machine with a file-not-found - which is the worst place to
+        find out. Every call site must be declared in the spec."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        spec_path = os.path.join(root, "packaging", "restaurant_erp.spec")
+        assert os.path.exists(spec_path), "the packaging spec is missing"
+        spec = open(spec_path, encoding="utf-8").read()
+
+        wanted = set()
+        for folder, _dirs, files in os.walk(root):
+            if any(part in folder for part in (".git", "__pycache__", "dist")):
+                continue
+            for name in files:
+                if not name.endswith(".py") or name == "paths.py":
+                    continue
+                source = open(os.path.join(folder, name), encoding="utf-8").read()
+                for call in re.findall(r"resource_path\(([^)]*)\)", source):
+                    for literal in re.findall(r"[\"']([^\"']+)[\"']", call):
+                        wanted.add(literal)
+
+        assert wanted, "no resource_path call sites found - did the helper move?"
+        missing = [item for item in wanted if item not in spec]
+        assert not missing, f"not bundled by the spec: {missing}"
+
+        # And the files themselves have to exist to be bundled at all.
+        from logic.paths import resource_path
+        for path in (resource_path("database", "schema.sql"),
+                     resource_path("docs", "دليل-الاستخدام.pdf")):
+            assert os.path.exists(path), path
+    check("the Windows build bundles every file the app loads", packaging_bundles_every_data_file)
+
     print("\n" + "=" * 52)
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")
