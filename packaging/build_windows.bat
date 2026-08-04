@@ -42,34 +42,45 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [2/3] توليد دليل الاستخدام PDF...
+echo [2/4] توليد دليل الاستخدام PDF...
 python docs\build_manual.py
 if errorlevel 1 (
     echo [تحذير] لم يتم توليد الدليل. سيتم استخدام النسخة الموجودة.
 )
 
-echo [3/3] بناء البرنامج...
-python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist
+echo [3/4] بناء نسخة الملف الواحد...
+set ONEFILE=1
+python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist-single
+set ONEFILE=
 if errorlevel 1 (
-    echo [خطأ] فشل البناء.
+    echo [خطأ] فشل بناء الملف الواحد.
     pause
     exit /b 1
 )
+copy /y "packaging\اقرأني-قبل-التشغيل.txt" "dist-single\" >nul
+copy /y "docs\دليل-الاستخدام.pdf" "dist-single\" >nul
 
-REM Sits next to the .exe where the owner will actually see it. Bundling it as
-REM PyInstaller data would hide it inside _internal\.
-copy /y "packaging\اقرأني-قبل-التشغيل.txt" "dist\نظام-إدارة-المطعم\" >nul
+echo [4/4] بناء نسخة المجلد...
+python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist-folder
+if errorlevel 1 (
+    echo [خطأ] فشل بناء نسخة المجلد.
+    pause
+    exit /b 1
+)
+REM Sits next to the .exe where the customer will actually see it. Bundling it
+REM as PyInstaller data would hide it inside _internal\.
+copy /y "packaging\اقرأني-قبل-التشغيل.txt" "dist-folder\نظام-إدارة-المطعم\" >nul
 
 echo.
 echo ============================================
 echo   تم البناء بنجاح
 echo ============================================
 echo.
-echo البرنامج جاهز في المجلد:
-echo     dist\نظام-إدارة-المطعم\
+echo 1) للارسال للعملاء - ملف واحد يدوس عليه ويشتغل:
+echo        dist-single\نظام إدارة المطعم.exe
 echo.
-echo اضغط على المجلد بزر الماوس الايمن ثم:
-echo     Send to  ^>  Compressed (zipped) folder
-echo وابعت الملف المضغوط.
+echo 2) نسخة احتياطية على شكل مجلد ^(اسرع في الفتح^):
+echo        dist-folder\نظام-إدارة-المطعم\
+echo    اضغطها: كليك يمين ^> Send to ^> Compressed (zipped) folder
 echo.
 pause

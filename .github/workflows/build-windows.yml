@@ -1,9 +1,15 @@
 # Builds the Windows copy on GitHub's own machines, so nobody has to install
-# Python to produce it - not the restaurant, and not whoever is sending it.
+# Python to produce it - not the customer, and not whoever is sending it.
 #
-# How to use it:
-#   GitHub -> Actions -> "بناء نسخة ويندوز" -> Run workflow
-#   wait ~3 minutes, then download the zip from the run's Artifacts section.
+# Two ways to use it:
+#
+#   One-off build:  Actions -> "بناء نسخة ويندوز" -> Run workflow, then take
+#                   the zip from the run's Artifacts section.
+#
+#   For customers:  push a tag (git tag v1.0 && git push origin v1.0). The
+#                   same build is attached to a GitHub Release, which gives a
+#                   permanent download link that can be sent to any number of
+#                   customers instead of mailing files around.
 #
 # PyInstaller cannot cross-compile, which is why this runs on windows-latest
 # rather than the default ubuntu runner.
@@ -14,7 +20,10 @@ on:
   workflow_dispatch:        # the "Run workflow" button
   push:
     tags:
-      - "v*"                # tagging a release builds one automatically
+      - "v*"
+
+permissions:
+  contents: write           # needed to create the release on a tag
 
 jobs:
   build:
@@ -47,19 +56,51 @@ jobs:
       - name: توليد دليل الاستخدام
         run: python docs/build_manual.py
 
-      - name: البناء
-        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm
+      # ---- what the customer actually receives: one file ----
+      - name: بناء الملف الواحد
+        env:
+          ONEFILE: "1"
+        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm --distpath dist-single
 
-      - name: إضافة ورقة التعليمات بجانب البرنامج
+      # ---- the folder version, for when the single file is blocked or slow ----
+      - name: بناء نسخة المجلد
+        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm --distpath dist-folder
+
+      - name: تجهيز الملفات للإرسال
         shell: pwsh
         run: |
-          $target = Get-ChildItem -Path dist -Directory | Select-Object -First 1
-          Copy-Item "packaging/اقرأني-قبل-التشغيل.txt" -Destination $target.FullName
-          Write-Host "المجلد الجاهز: $($target.FullName)"
+          Copy-Item "packaging/اقرأني-قبل-التشغيل.txt" -Destination dist-single
+          Copy-Item "docs/دليل-الاستخدام.pdf" -Destination dist-single
+          $folder = Get-ChildItem -Path dist-folder -Directory | Select-Object -First 1
+          Copy-Item "packaging/اقرأني-قبل-التشغيل.txt" -Destination $folder.FullName
+          Get-ChildItem dist-single | Format-Table Name, Length
 
-      - name: رفع النسخة الجاهزة
+      - name: رفع النسخة (ملف واحد)
         uses: actions/upload-artifact@v4
         with:
-          name: restaurant-erp-windows
-          path: dist/
+          name: restaurant-erp-single-file
+          path: dist-single/
           retention-days: 30
+
+      - name: رفع النسخة (مجلد)
+        uses: actions/upload-artifact@v4
+        with:
+          name: restaurant-erp-folder
+          path: dist-folder/
+          retention-days: 30
+
+      # Only on a tag: publish a permanent link that can be handed to customers.
+      - name: نشر إصدار
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path dist-folder/* -DestinationPath "نظام-إدارة-المطعم-مجلد.zip"
+          $exe = Get-ChildItem -Path dist-single -Filter *.exe | Select-Object -First 1
+          gh release create "${{ github.ref_name }}" `
+            "$($exe.FullName)" `
+            "نظام-إدارة-المطعم-مجلد.zip" `
+            "docs/دليل-الاستخدام.pdf" `
+            --title "نظام إدارة المطعم ${{ github.ref_name }}" `
+            --notes "نسخة تجريبية تعمل 7 أيام من أول تشغيل على كل جهاز. حمّل ملف exe وشغّله مباشرة - لا يحتاج تثبيت."
