@@ -1,0 +1,106 @@
+# Builds the Windows copy on GitHub's own machines, so nobody has to install
+# Python to produce it - not the customer, and not whoever is sending it.
+#
+# Two ways to use it:
+#
+#   One-off build:  Actions -> "بناء نسخة ويندوز" -> Run workflow, then take
+#                   the zip from the run's Artifacts section.
+#
+#   For customers:  push a tag (git tag v1.0 && git push origin v1.0). The
+#                   same build is attached to a GitHub Release, which gives a
+#                   permanent download link that can be sent to any number of
+#                   customers instead of mailing files around.
+#
+# PyInstaller cannot cross-compile, which is why this runs on windows-latest
+# rather than the default ubuntu runner.
+
+name: بناء نسخة ويندوز
+
+on:
+  workflow_dispatch:        # the "Run workflow" button
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write           # needed to create the release on a tag
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    env:
+      # The project is full of Arabic file names; without this the runner falls
+      # back to the legacy code page and mangles them.
+      PYTHONUTF8: "1"
+      # No display on a CI runner, and the manual is generated through Qt.
+      QT_QPA_PLATFORM: offscreen
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: تثبيت المكتبات
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt pyinstaller
+
+      - name: فحص البرنامج قبل البناء
+        # Shipping a build that fails its own checks is worse than shipping
+        # nothing, so the tests gate the artifact.
+        run: python tests/test_app.py
+
+      - name: توليد دليل الاستخدام
+        run: python docs/build_manual.py
+
+      # ---- what the customer actually receives: one file ----
+      - name: بناء الملف الواحد
+        env:
+          ONEFILE: "1"
+        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm --distpath dist-single
+
+      # ---- the folder version, for when the single file is blocked or slow ----
+      - name: بناء نسخة المجلد
+        run: python -m PyInstaller packaging/restaurant_erp.spec --noconfirm --distpath dist-folder
+
+      - name: تجهيز الملفات للإرسال
+        shell: pwsh
+        run: |
+          Copy-Item "packaging/اقرأني-قبل-التشغيل.txt" -Destination dist-single
+          Copy-Item "docs/دليل-الاستخدام.pdf" -Destination dist-single
+          $folder = Get-ChildItem -Path dist-folder -Directory | Select-Object -First 1
+          Copy-Item "packaging/اقرأني-قبل-التشغيل.txt" -Destination $folder.FullName
+          Get-ChildItem dist-single | Format-Table Name, Length
+
+      - name: رفع النسخة (ملف واحد)
+        uses: actions/upload-artifact@v4
+        with:
+          name: restaurant-erp-single-file
+          path: dist-single/
+          retention-days: 30
+
+      - name: رفع النسخة (مجلد)
+        uses: actions/upload-artifact@v4
+        with:
+          name: restaurant-erp-folder
+          path: dist-folder/
+          retention-days: 30
+
+      # Only on a tag: publish a permanent link that can be handed to customers.
+      - name: نشر إصدار
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          Compress-Archive -Path dist-folder/* -DestinationPath "نظام-إدارة-المطعم-مجلد.zip"
+          $exe = Get-ChildItem -Path dist-single -Filter *.exe | Select-Object -First 1
+          gh release create "${{ github.ref_name }}" `
+            "$($exe.FullName)" `
+            "نظام-إدارة-المطعم-مجلد.zip" `
+            "docs/دليل-الاستخدام.pdf" `
+            --title "نظام إدارة المطعم ${{ github.ref_name }}" `
+            --notes "نسخة تجريبية تعمل 7 أيام من أول تشغيل على كل جهاز. حمّل ملف exe وشغّله مباشرة - لا يحتاج تثبيت."

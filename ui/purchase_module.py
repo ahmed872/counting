@@ -1,8 +1,35 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, 
-                             QTableWidgetItem, QPushButton, QFormLayout, QLineEdit, 
-                             QComboBox, QLabel, QHeaderView, QMessageBox)
 from datetime import datetime
+
+from PyQt6.QtCore import Qt, QDate
+from PyQt6.QtWidgets import (
+    QWidget,
+    QVBoxLayout,
+    QHBoxLayout,
+    QTableWidget,
+    QTableWidgetItem,
+    QPushButton,
+    QFormLayout,
+    QLineEdit,
+    QComboBox,
+    QDateEdit,
+    QLabel,
+    QHeaderView,
+    QMessageBox,
+    QTabWidget,
+    QGroupBox,
+)
 from logic.accounting import AccountingLogic
+from ui.labels import PAYMENT_STATUS_LABELS, REFUND_METHOD_LABELS, label_for
+from ui.formatting import money_item, money
+from ui.common_widgets import (page_header, danger_button, fill_table, compact_form,
+                              pin_height, collapsible)
+
+CATEGORY_LABELS = {
+    'raw_material': 'مواد خام',
+    'purchase_expense': 'مصروفات مرتبطة بالمشتريات',
+    'operating_expense': 'مصروفات تشغيلية',
+}
+
 
 class PurchaseModule(QWidget):
     def __init__(self, db_manager):
@@ -15,99 +42,357 @@ class PurchaseModule(QWidget):
         layout = QVBoxLayout(self)
         layout.setSpacing(14)
 
-        header = QLabel("إدارة المشتريات والمصروفات")
-        header.setStyleSheet("font-size: 22px; font-weight: bold; color: #1f3b57; margin-bottom: 8px;")
-        layout.addWidget(header)
+        layout.addWidget(page_header(
+            "المشتريات والمصروفات",
+            "سجّل فواتير المواد الخام والمصروفات التشغيلية، نقداً أو على الحساب."))
 
-        # Purchase Form
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        layout.addWidget(tabs, 1)
+
+        tabs.addTab(self.build_purchase_tab(), "فاتورة مشتريات / مصروف")
+        tabs.addTab(self.build_returns_tab(), "مرتجعات المشتريات")
+
+    def build_purchase_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(12)
+
         form_layout = QFormLayout()
         self.branch_input = QComboBox()
-        self.branch_input.addItem("فرع الرياض", 1)
-        self.branch_input.addItem("فرع جدة", 2)
-        
+        self.load_branches()
+
+        self.category_input = QComboBox()
+        for key, label in CATEGORY_LABELS.items():
+            self.category_input.addItem(label, key)
+        self.category_input.currentIndexChanged.connect(self.on_category_changed)
+
         self.supplier_input = QComboBox()
         self.load_suppliers()
-        
+
+        self.date_input = QDateEdit(QDate.currentDate())
+        self.description_input = QLineEdit()
+        self.description_input.setPlaceholderText("مثال: إيجار، كهرباء ...")
+
         self.amount_input = QLineEdit()
         self.payment_status = QComboBox()
-        self.payment_status.addItems(["Cash", "Credit"])
-        
-        form_layout.addRow("الفرع:", self.branch_input)
-        form_layout.addRow("المورد:", self.supplier_input)
-        form_layout.addRow("المبلغ (قبل الضريبة):", self.amount_input)
-        form_layout.addRow("حالة الدفع:", self.payment_status)
+        self.payment_status.addItem("نقدي", "Cash")
+        self.payment_status.addItem("آجل (على الحساب)", "Credit")
 
-        save_btn = QPushButton("تسجيل مشتريات")
+        self.amount_input.setPlaceholderText("0.00 قبل الضريبة")
+        self.amount_input.returnPressed.connect(self.save_purchase)
+        self.description_input.returnPressed.connect(self.save_purchase)
+
+        save_btn = QPushButton("تسجيل الفاتورة")
+        save_btn.setMinimumHeight(38)
         save_btn.clicked.connect(self.save_purchase)
-        form_layout.addRow(save_btn)
 
-        layout.addLayout(form_layout)
+        # Three columns with the button in the last cell: eight rows of fields
+        # would not leave the invoice list a usable height on a 720p screen.
+        form_box = QGroupBox("فاتورة جديدة")
+        form_outer = QVBoxLayout(form_box)
+        form_outer.setContentsMargins(10, 6, 10, 8)
+        form_outer.addWidget(compact_form([
+            ("الفرع", self.branch_input),
+            ("التاريخ", self.date_input),
+            ("نوع المصروف", self.category_input),
+            ("المورد", self.supplier_input),
+            ("البيان", self.description_input),
+            ("المبلغ", self.amount_input),
+            ("حالة الدفع", self.payment_status),
+            (None, save_btn),
+        ], columns=3, field_min_width=150))
 
-        # Purchases Table
+        layout.addWidget(pin_height(form_box))
+
         self.table = QTableWidget()
-        self.table.setColumnCount(5)
-        self.table.setHorizontalHeaderLabels(["التاريخ", "المورد", "المبلغ الإجمالي", "الضريبة", "الحالة"])
+        self.table.setColumnCount(7)
+        self.table.setHorizontalHeaderLabels(["التاريخ", "النوع", "المورد", "البيان", "المبلغ", "الضريبة", "الحالة"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        layout.addWidget(self.table)
 
+        table_header = QHBoxLayout()
+        table_label = QLabel("الفواتير المسجلة:")
+        table_label.setStyleSheet("font-weight:700; color:#334155;")
+        table_header.addWidget(table_label)
+        table_header.addStretch()
+        table_header.addWidget(collapsible(
+            form_box, "إظهار نموذج الفاتورة", "إخفاء النموذج",
+            start_collapsed=self._short_screen()))
+        delete_btn = danger_button("حذف الفاتورة المحددة")
+        delete_btn.clicked.connect(self.delete_selected_purchase)
+        table_header.addWidget(delete_btn)
+        layout.addLayout(table_header)
+        layout.addWidget(self.table, 1)
+
+        self.purchases_total_label = QLabel()
+        self.purchases_total_label.setStyleSheet(
+            "font-weight:800; color:#1f3b57; padding:6px 2px;")
+        layout.addWidget(self.purchases_total_label)
+
+        self.on_category_changed()
+        self.load_purchases()
+        return widget
+
+    def _short_screen(self):
+        """Fold the entry form away by default when the screen cannot show both
+        the form and a useful number of table rows."""
+        screen = self.screen() or (self.window().screen() if self.window() else None)
+        return bool(screen and screen.availableGeometry().height() < 800)
+
+    def delete_selected_purchase(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "تنبيه", "اختر فاتورة من الجدول أولاً")
+            return
+        purchase_id, entry_id = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        description = self.table.item(row, 3).text() or self.table.item(row, 1).text()
+        amount = self.table.item(row, 4).text()
+        answer = QMessageBox.question(
+            self, "حذف فاتورة",
+            f"سيتم حذف الفاتورة «{description}» بمبلغ {amount} وقيدها المحاسبي نهائياً.\n\nمتابعة؟",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.db.execute_query("DELETE FROM purchases WHERE id = ?", (purchase_id,))
+        self.db.delete_journal_entry(entry_id)
+        QMessageBox.information(self, "تم", "تم حذف الفاتورة وقيدها المحاسبي")
         self.load_purchases()
 
+    def build_returns_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(12)
+
+        self.return_branch_input = QComboBox()
+        for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.return_branch_input.addItem(row['name'], row['id'])
+
+        self.return_supplier_input = QComboBox()
+        for s in self.db.fetch_all("SELECT id, name FROM suppliers ORDER BY name"):
+            self.return_supplier_input.addItem(s['name'], s['id'])
+
+        self.return_date_input = QDateEdit(QDate.currentDate())
+        self.return_amount_input = QLineEdit()
+        self.return_method_input = QComboBox()
+        self.return_method_input.addItem("استرداد نقدي", "Cash")
+        self.return_method_input.addItem("خصم من رصيد المورد (إشعار دائن)", "CreditNote")
+        self.return_notes_input = QLineEdit()
+
+        return_box = QGroupBox("مرتجع جديد")
+        return_outer = QVBoxLayout(return_box)
+        return_outer.setSpacing(10)
+        save_return_btn = QPushButton("تسجيل مرتجع مشتريات")
+        save_return_btn.setMinimumHeight(38)
+        save_return_btn.clicked.connect(self.save_purchase_return)
+        return_outer.setContentsMargins(10, 6, 10, 8)
+        return_outer.addWidget(compact_form([
+            ("الفرع", self.return_branch_input),
+            ("التاريخ", self.return_date_input),
+            ("المورد", self.return_supplier_input),
+            ("المبلغ", self.return_amount_input),
+            ("طريقة الاسترداد", self.return_method_input),
+            ("ملاحظات", self.return_notes_input),
+            (None, save_return_btn),
+        ], columns=3, field_min_width=150))
+        layout.addWidget(pin_height(return_box))
+
+        returns_label = QLabel("المرتجعات المسجلة:")
+        returns_label.setStyleSheet("font-weight:700; color:#334155;")
+        layout.addWidget(returns_label)
+
+        self.returns_table = QTableWidget()
+        self.returns_table.setColumnCount(5)
+        self.returns_table.setHorizontalHeaderLabels(["التاريخ", "المورد", "المبلغ", "الضريبة", "طريقة الاسترداد"])
+        self.returns_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.returns_table.verticalHeader().setVisible(False)
+        self.returns_table.setAlternatingRowColors(True)
+        self.returns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        layout.addWidget(self.returns_table, 1)
+
+        self.load_purchase_returns()
+        return widget
+
+    def refresh_on_show(self):
+        selected_supplier = self.supplier_input.currentData()
+        self.load_suppliers()
+        if selected_supplier is not None:
+            idx = self.supplier_input.findData(selected_supplier)
+            if idx >= 0:
+                self.supplier_input.setCurrentIndex(idx)
+
+        selected_return_supplier = self.return_supplier_input.currentData()
+        self.return_supplier_input.clear()
+        for s in self.db.fetch_all("SELECT id, name FROM suppliers ORDER BY name"):
+            self.return_supplier_input.addItem(s['name'], s['id'])
+        if selected_return_supplier is not None:
+            idx = self.return_supplier_input.findData(selected_return_supplier)
+            if idx >= 0:
+                self.return_supplier_input.setCurrentIndex(idx)
+
+    def load_branches(self):
+        self.branch_input.clear()
+        for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.branch_input.addItem(row['name'], row['id'])
+
     def load_suppliers(self):
-        suppliers = self.db.fetch_all("SELECT * FROM suppliers")
+        self.supplier_input.clear()
+        self.supplier_input.addItem("بدون مورد", None)
+        suppliers = self.db.fetch_all("SELECT * FROM suppliers ORDER BY name")
         for s in suppliers:
             self.supplier_input.addItem(s['name'], s['id'])
+
+    def on_category_changed(self):
+        is_operating = self.category_input.currentData() == 'operating_expense'
+        # Operating expenses (rent, utilities...) are usually not tied to a specific supplier ledger.
+        self.payment_status.setEnabled(True)
+        self.supplier_input.setEnabled(True)
 
     def save_purchase(self):
         try:
             branch_id = self.branch_input.currentData()
+            category = self.category_input.currentData()
             supplier_id = self.supplier_input.currentData()
+            description = self.description_input.text().strip()
             amount_text = self.amount_input.text().strip()
             if not amount_text:
-                raise ValueError("يرجى إدخال مبلغ الشراء قبل الضريبة")
+                raise ValueError("يرجى إدخال المبلغ قبل الضريبة")
 
             amount = float(amount_text)
-            vat, total = self.accounting.calculate_vat(amount)
-            status = self.payment_status.currentText()
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            if amount <= 0:
+                raise ValueError("يجب أن يكون المبلغ أكبر من صفر")
 
-            # Save to DB
-            self.db.execute_query(
-                "INSERT INTO purchases (branch_id, supplier_id, total_amount, vat_amount, payment_status, date) VALUES (?, ?, ?, ?, ?, ?)",
-                (branch_id, supplier_id, total, vat, status, timestamp)
+            status = self.payment_status.currentData()
+            if status == 'Credit' and not supplier_id:
+                raise ValueError("الشراء الآجل (Credit) يتطلب اختيار مورد")
+
+            vat, total = self.accounting.calculate_vat(amount)
+            # The invoice date is chosen, not "now": invoices are often entered
+            # in a batch days after they were actually received.
+            timestamp = self.date_input.date().toString("yyyy-MM-dd")
+
+            account_credit = '1000' if status == 'Cash' else '2000'
+            if category == 'raw_material':
+                debit_account = '1100'
+            elif category == 'purchase_expense':
+                debit_account = '5150'
+            else:
+                debit_account = '5200'
+
+            items = [
+                {'account_code': debit_account, 'debit': amount, 'credit': 0},
+                {'account_code': '1200', 'debit': vat, 'credit': 0},
+                {'account_code': account_credit, 'debit': 0, 'credit': total},
+            ]
+            label = CATEGORY_LABELS.get(category, category)
+            entry_id = self.db.add_journal_entry(
+                timestamp, f"{label} - {description or status}", branch_id, items
             )
 
-            # Double Entry: 
-            # Debit Inventory (1100), Debit Input VAT (1200)
-            # Credit Cash (1000) or AP (2000)
-            account_credit = '1000' if status == 'Cash' else '2000'
-            items = [
-                {'account_code': '1100', 'debit': amount, 'credit': 0},
-                {'account_code': '1200', 'debit': vat, 'credit': 0},
-                {'account_code': account_credit, 'debit': 0, 'credit': total}
-            ]
-            self.db.add_journal_entry(timestamp, f"مشتريات من مورد - {status}", branch_id, items)
+            self.db.execute_query(
+                """INSERT INTO purchases
+                   (branch_id, supplier_id, amount, total_amount, vat_amount, payment_status,
+                    category, description, date, journal_entry_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (branch_id, supplier_id, amount, total, vat, status, category,
+                 description, timestamp, entry_id),
+            )
 
-            QMessageBox.information(self, "نجاح", "تم تسجيل المشتريات بنجاح")
+            QMessageBox.information(self, "نجاح", "تم تسجيل الفاتورة بنجاح")
+            self.amount_input.clear()
+            self.description_input.clear()
             self.load_purchases()
         except Exception as e:
             QMessageBox.critical(self, "خطأ", str(e))
 
     def load_purchases(self):
         query = """
-            SELECT p.*, s.name as supplier_name 
-            FROM purchases p 
-            LEFT JOIN suppliers s ON p.supplier_id = s.id 
-            ORDER BY p.date DESC
+            SELECT p.*, s.name as supplier_name
+            FROM purchases p
+            LEFT JOIN suppliers s ON p.supplier_id = s.id
+            -- id breaks ties: rows saved in the same second would otherwise
+            -- come back in an arbitrary order, and the user could delete
+            -- a different invoice from the one highlighted in the table.
+            ORDER BY p.date DESC, p.id DESC
         """
         purchases = self.db.fetch_all(query)
-        self.table.setRowCount(len(purchases))
+        if not fill_table(self.table, len(purchases), "لا توجد فواتير مسجلة بعد"):
+            self.purchases_total_label.setText("")
+            return
         for row, p in enumerate(purchases):
-            self.table.setItem(row, 0, QTableWidgetItem(p['date']))
-            self.table.setItem(row, 1, QTableWidgetItem(p['supplier_name'] or "مصروف عام"))
-            self.table.setItem(row, 2, QTableWidgetItem(str(p['total_amount'])))
-            self.table.setItem(row, 3, QTableWidgetItem(str(p['vat_amount'])))
-            self.table.setItem(row, 4, QTableWidgetItem(p['payment_status']))
+            date_item = QTableWidgetItem(str(p['date']))
+            date_item.setData(Qt.ItemDataRole.UserRole, (p['id'], p['journal_entry_id']))
+            self.table.setItem(row, 0, date_item)
+            self.table.setItem(row, 1, QTableWidgetItem(CATEGORY_LABELS.get(p['category'] or 'raw_material', p['category'] or "")))
+            self.table.setItem(row, 2, QTableWidgetItem(p['supplier_name'] or "مصروف عام"))
+            self.table.setItem(row, 3, QTableWidgetItem(p['description'] or ""))
+            self.table.setItem(row, 4, money_item(p['total_amount']))
+            self.table.setItem(row, 5, money_item(p['vat_amount']))
+            self.table.setItem(row, 6, QTableWidgetItem(label_for(PAYMENT_STATUS_LABELS, p['payment_status'])))
+
+        total = sum((p['total_amount'] or 0) for p in purchases)
+        vat = sum((p['vat_amount'] or 0) for p in purchases)
+        self.purchases_total_label.setText(
+            f"عدد الفواتير: {len(purchases)}"
+            f"     |     الإجمالي: {money(total)} ريال"
+            f"     |     منها ضريبة: {money(vat)} ريال"
+        )
+
+    def save_purchase_return(self):
+        try:
+            branch_id = self.return_branch_input.currentData()
+            supplier_id = self.return_supplier_input.currentData()
+            amount_text = self.return_amount_input.text().strip()
+            if not amount_text:
+                raise ValueError("يرجى إدخال مبلغ المرتجع")
+            amount = float(amount_text)
+            if amount <= 0:
+                raise ValueError("يجب أن يكون المبلغ أكبر من صفر")
+
+            refund_method = self.return_method_input.currentData()
+            notes = self.return_notes_input.text().strip()
+            vat, total = self.accounting.calculate_vat(amount)
+            timestamp = self.return_date_input.date().toString("yyyy-MM-dd")
+
+            self.db.execute_query(
+                """INSERT INTO purchase_returns (branch_id, supplier_id, date, amount, vat_amount, refund_method, notes)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (branch_id, supplier_id, timestamp, amount, vat, refund_method, notes),
+            )
+
+            credit_account = '1000' if refund_method == 'Cash' else '2000'
+            items = [
+                {'account_code': credit_account, 'debit': total, 'credit': 0},
+                {'account_code': '1100', 'debit': 0, 'credit': amount},
+                {'account_code': '1200', 'debit': 0, 'credit': vat},
+            ]
+            self.db.add_journal_entry(timestamp, f"مرتجع مشتريات - {notes or ''}", branch_id, items)
+
+            QMessageBox.information(self, "نجاح", "تم تسجيل مرتجع المشتريات")
+            self.return_amount_input.clear()
+            self.return_notes_input.clear()
+            self.load_purchase_returns()
+            self.load_purchases()
+        except Exception as e:
+            QMessageBox.critical(self, "خطأ", str(e))
+
+    def load_purchase_returns(self):
+        query = """
+            SELECT pr.*, s.name as supplier_name
+            FROM purchase_returns pr
+            LEFT JOIN suppliers s ON pr.supplier_id = s.id
+            ORDER BY pr.date DESC, pr.id DESC
+        """
+        rows = self.db.fetch_all(query)
+        if not fill_table(self.returns_table, len(rows), "لا توجد مرتجعات مسجلة"):
+            return
+        for row, r in enumerate(rows):
+            self.returns_table.setItem(row, 0, QTableWidgetItem(str(r['date'])))
+            self.returns_table.setItem(row, 1, QTableWidgetItem(r['supplier_name'] or ""))
+            self.returns_table.setItem(row, 2, money_item(r['amount']))
+            self.returns_table.setItem(row, 3, money_item(r['vat_amount']))
+            method_label = label_for(REFUND_METHOD_LABELS, r['refund_method'])
+            self.returns_table.setItem(row, 4, QTableWidgetItem(method_label))

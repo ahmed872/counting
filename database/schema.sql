@@ -5,6 +5,13 @@ CREATE TABLE IF NOT EXISTS branches (
     location TEXT
 );
 
+-- Simple key/value store for company details and bookkeeping markers
+-- (e.g. the id of the opening-balance journal entry, so it can be corrected).
+CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT
+);
+
 -- Employees Table
 CREATE TABLE IF NOT EXISTS employees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -30,6 +37,11 @@ CREATE TABLE IF NOT EXISTS attendance (
     status TEXT CHECK(status IN ('Present', 'Absent')),
     FOREIGN KEY (employee_id) REFERENCES employees(id)
 );
+
+-- NOTE: the uniqueness constraints for attendance and daily sales are created
+-- in db_manager.ensure_schema_migrations(), not here. Existing databases may
+-- already contain duplicates, and CREATE UNIQUE INDEX would abort startup - the
+-- migration de-duplicates first, then adds the index.
 
 -- Chart of Accounts
 CREATE TABLE IF NOT EXISTS chart_of_accounts (
@@ -67,53 +79,6 @@ CREATE TABLE IF NOT EXISTS suppliers (
     phone TEXT
 );
 
--- Menu Categories
-CREATE TABLE IF NOT EXISTS menu_categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    sort_order INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1
-);
-
--- Menu Items
-CREATE TABLE IF NOT EXISTS menu_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category_id INTEGER,
-    name TEXT NOT NULL,
-    price REAL NOT NULL DEFAULT 0,
-    image_path TEXT,
-    is_active INTEGER DEFAULT 1,
-    sort_order INTEGER DEFAULT 0,
-    FOREIGN KEY (category_id) REFERENCES menu_categories(id)
-);
-
--- Sales Orders (POS)
-CREATE TABLE IF NOT EXISTS sales_orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    branch_id INTEGER,
-    order_no TEXT,
-    cashier_name TEXT,
-    payment_method TEXT CHECK(payment_method IN ('Cash', 'POS', 'Transfer')),
-    subtotal REAL DEFAULT 0,
-    vat_amount REAL DEFAULT 0,
-    total_amount REAL DEFAULT 0,
-    qr_code TEXT,
-    date DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (branch_id) REFERENCES branches(id)
-);
-
-CREATE TABLE IF NOT EXISTS sales_order_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id INTEGER,
-    item_id INTEGER,
-    item_name TEXT,
-    unit_price REAL DEFAULT 0,
-    quantity INTEGER DEFAULT 1,
-    line_total REAL DEFAULT 0,
-    FOREIGN KEY (order_id) REFERENCES sales_orders(id),
-    FOREIGN KEY (item_id) REFERENCES menu_items(id)
-);
-
 -- Sales Table
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -131,38 +96,110 @@ CREATE TABLE IF NOT EXISTS purchases (
     branch_id INTEGER,
     supplier_id INTEGER,
     date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
     total_amount REAL,
     vat_amount REAL,
     payment_status TEXT CHECK(payment_status IN ('Cash', 'Credit')),
+    category TEXT CHECK(category IN ('raw_material', 'purchase_expense', 'operating_expense')) DEFAULT 'raw_material',
+    description TEXT,
     FOREIGN KEY (branch_id) REFERENCES branches(id),
     FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
 );
 
+-- Supplier Payments (settling credit purchases / opening balances)
+CREATE TABLE IF NOT EXISTS supplier_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    supplier_id INTEGER,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
+    method TEXT CHECK(method IN ('Cash', 'Bank')),
+    notes TEXT,
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+);
+
+-- Purchase Returns
+CREATE TABLE IF NOT EXISTS purchase_returns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id INTEGER,
+    supplier_id INTEGER,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
+    vat_amount REAL DEFAULT 0,
+    refund_method TEXT CHECK(refund_method IN ('Cash', 'CreditNote')),
+    notes TEXT,
+    FOREIGN KEY (branch_id) REFERENCES branches(id),
+    FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+);
+
+-- Sales Returns
+CREATE TABLE IF NOT EXISTS sales_returns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id INTEGER,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
+    vat_amount REAL DEFAULT 0,
+    refund_method TEXT CHECK(refund_method IN ('Cash', 'POS', 'Transfer')),
+    notes TEXT,
+    FOREIGN KEY (branch_id) REFERENCES branches(id)
+);
+
+-- Employee Deductions / Advances / Bonuses
+CREATE TABLE IF NOT EXISTS employee_deductions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER,
+    date DATE,
+    type TEXT CHECK(type IN ('Deduction', 'Advance', 'Bonus')),
+    amount REAL DEFAULT 0,
+    notes TEXT,
+    settled_run_id INTEGER,
+    FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+
+-- Payroll Runs (posting payroll to the accounting journal)
+CREATE TABLE IF NOT EXISTS payroll_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    month INTEGER,
+    year INTEGER,
+    posted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    total_expense REAL DEFAULT 0,
+    total_net_paid REAL DEFAULT 0,
+    total_advances_recovered REAL DEFAULT 0,
+    UNIQUE(month, year)
+);
+
+CREATE TABLE IF NOT EXISTS payroll_run_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER,
+    employee_id INTEGER,
+    gross_salary REAL DEFAULT 0,
+    absence_deduction REAL DEFAULT 0,
+    other_deductions REAL DEFAULT 0,
+    bonuses REAL DEFAULT 0,
+    advances_recovered REAL DEFAULT 0,
+    net_salary REAL DEFAULT 0,
+    FOREIGN KEY (run_id) REFERENCES payroll_runs(id),
+    FOREIGN KEY (employee_id) REFERENCES employees(id)
+);
+
 -- Initial Data for Branches
-INSERT OR IGNORE INTO branches (id, name, location) VALUES (1, 'فرع الرياض', 'الرياض - العليا');
-INSERT OR IGNORE INTO branches (id, name, location) VALUES (2, 'فرع جدة', 'جدة - الروضة');
+-- One neutral branch so the app is usable on first run; the owner renames it
+-- and adds his own from Settings. No other data ships with the app.
+INSERT OR IGNORE INTO branches (id, name, location) VALUES (1, 'الفرع الرئيسي', '');
 
 -- Initial Chart of Accounts
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1000', 'النقدية', 'Asset');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1001', 'البنك', 'Asset');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1100', 'المخزون', 'Asset');
-INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1200', 'ضريبة المشتريات (Input VAT)', 'Asset');
-INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2000', 'الموردون (AP)', 'Liability');
-INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2100', 'ضريبة المبيعات (Output VAT)', 'Liability');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1200', 'ضريبة المشتريات (مدخلات)', 'Asset');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1300', 'سلف الموظفين', 'Asset');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2000', 'الموردون (ذمم دائنة)', 'Liability');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2100', 'ضريبة المبيعات (مخرجات)', 'Liability');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('3000', 'رأس المال', 'Equity');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('3900', 'الأرصدة الافتتاحية', 'Equity');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('4000', 'المبيعات', 'Revenue');
-INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5000', 'تكلفة البضاعة المباعة (COGS)', 'Expense');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5000', 'تكلفة البضاعة المباعة', 'Expense');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5100', 'الرواتب والأجور', 'Expense');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5150', 'مصروفات مرتبطة بالمشتريات', 'Expense');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5200', 'المصاريف التشغيلية', 'Expense');
 
--- Initial Menu Categories
-INSERT OR IGNORE INTO menu_categories (id, name, sort_order, is_active) VALUES (1, 'وجبات', 1, 1);
-INSERT OR IGNORE INTO menu_categories (id, name, sort_order, is_active) VALUES (2, 'مشروبات', 2, 1);
-INSERT OR IGNORE INTO menu_categories (id, name, sort_order, is_active) VALUES (3, 'وجبات خفيفة', 3, 1);
 
--- Initial Menu Items
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (1, 1, 'برجر دجاج', 24.00, '', 1, 1);
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (2, 1, 'شاورما دجاج', 18.00, '', 1, 2);
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (3, 2, 'ماء', 2.00, '', 1, 1);
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (4, 2, 'مشروب غازي', 5.00, '', 1, 2);
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (5, 3, 'بطاطس', 8.00, '', 1, 1);

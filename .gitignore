@@ -50,3 +50,7 @@ htmlcov/
 
 # Logs
 *.log
+
+# PyInstaller output
+dist-single/
+dist-folder/
