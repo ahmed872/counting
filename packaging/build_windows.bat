@@ -50,7 +50,7 @@ if errorlevel 1 (
 
 echo [3/4] بناء نسخة الملف الواحد...
 set ONEFILE=1
-python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist-single
+python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist-single --workpath build\single
 set ONEFILE=
 if errorlevel 1 (
     echo [خطأ] فشل بناء الملف الواحد.
@@ -61,7 +61,7 @@ copy /y "packaging\اقرأني-قبل-التشغيل.txt" "dist-single\" >nul
 copy /y "docs\دليل-الاستخدام.pdf" "dist-single\" >nul
 
 echo [4/4] بناء نسخة المجلد...
-python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist-folder
+python -m PyInstaller packaging\restaurant_erp.spec --noconfirm --distpath dist-folder --workpath build\folder
 if errorlevel 1 (
     echo [خطأ] فشل بناء نسخة المجلد.
     pause
