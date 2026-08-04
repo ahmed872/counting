@@ -79,53 +79,6 @@ CREATE TABLE IF NOT EXISTS suppliers (
     phone TEXT
 );
 
--- Menu Categories
-CREATE TABLE IF NOT EXISTS menu_categories (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
-    sort_order INTEGER DEFAULT 0,
-    is_active INTEGER DEFAULT 1
-);
-
--- Menu Items
-CREATE TABLE IF NOT EXISTS menu_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    category_id INTEGER,
-    name TEXT NOT NULL,
-    price REAL NOT NULL DEFAULT 0,
-    image_path TEXT,
-    is_active INTEGER DEFAULT 1,
-    sort_order INTEGER DEFAULT 0,
-    FOREIGN KEY (category_id) REFERENCES menu_categories(id)
-);
-
--- Sales Orders (POS)
-CREATE TABLE IF NOT EXISTS sales_orders (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    branch_id INTEGER,
-    order_no TEXT,
-    cashier_name TEXT,
-    payment_method TEXT CHECK(payment_method IN ('Cash', 'POS', 'Transfer')),
-    subtotal REAL DEFAULT 0,
-    vat_amount REAL DEFAULT 0,
-    total_amount REAL DEFAULT 0,
-    qr_code TEXT,
-    date DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (branch_id) REFERENCES branches(id)
-);
-
-CREATE TABLE IF NOT EXISTS sales_order_items (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    order_id INTEGER,
-    item_id INTEGER,
-    item_name TEXT,
-    unit_price REAL DEFAULT 0,
-    quantity INTEGER DEFAULT 1,
-    line_total REAL DEFAULT 0,
-    FOREIGN KEY (order_id) REFERENCES sales_orders(id),
-    FOREIGN KEY (item_id) REFERENCES menu_items(id)
-);
-
 -- Sales Table
 CREATE TABLE IF NOT EXISTS sales (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -229,8 +182,9 @@ CREATE TABLE IF NOT EXISTS payroll_run_items (
 );
 
 -- Initial Data for Branches
-INSERT OR IGNORE INTO branches (id, name, location) VALUES (1, 'فرع الرياض', 'الرياض - العليا');
-INSERT OR IGNORE INTO branches (id, name, location) VALUES (2, 'فرع جدة', 'جدة - الروضة');
+-- One neutral branch so the app is usable on first run; the owner renames it
+-- and adds his own from Settings. No other data ships with the app.
+INSERT OR IGNORE INTO branches (id, name, location) VALUES (1, 'الفرع الرئيسي', '');
 
 -- Initial Chart of Accounts
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1000', 'النقدية', 'Asset');
@@ -248,14 +202,4 @@ INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5100', 'ال
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5150', 'مصروفات مرتبطة بالمشتريات', 'Expense');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5200', 'المصاريف التشغيلية', 'Expense');
 
--- Initial Menu Categories
-INSERT OR IGNORE INTO menu_categories (id, name, sort_order, is_active) VALUES (1, 'وجبات', 1, 1);
-INSERT OR IGNORE INTO menu_categories (id, name, sort_order, is_active) VALUES (2, 'مشروبات', 2, 1);
-INSERT OR IGNORE INTO menu_categories (id, name, sort_order, is_active) VALUES (3, 'وجبات خفيفة', 3, 1);
 
--- Initial Menu Items
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (1, 1, 'برجر دجاج', 24.00, '', 1, 1);
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (2, 1, 'شاورما دجاج', 18.00, '', 1, 2);
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (3, 2, 'ماء', 2.00, '', 1, 1);
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (4, 2, 'مشروب غازي', 5.00, '', 1, 2);
-INSERT OR IGNORE INTO menu_items (id, category_id, name, price, image_path, is_active, sort_order) VALUES (5, 3, 'بطاطس', 8.00, '', 1, 1);

@@ -44,42 +44,6 @@ class DBManager:
         if 'notes' not in attendance_columns:
             cursor.execute("ALTER TABLE attendance ADD COLUMN notes TEXT")
 
-        menu_categories_columns = table_columns('menu_categories') if self.table_exists(cursor, 'menu_categories') else set()
-        if 'menu_categories' in self.get_existing_tables(cursor):
-            if 'sort_order' not in menu_categories_columns:
-                cursor.execute("ALTER TABLE menu_categories ADD COLUMN sort_order INTEGER DEFAULT 0")
-            if 'is_active' not in menu_categories_columns:
-                cursor.execute("ALTER TABLE menu_categories ADD COLUMN is_active INTEGER DEFAULT 1")
-
-        menu_items_columns = table_columns('menu_items') if self.table_exists(cursor, 'menu_items') else set()
-        if 'menu_items' in self.get_existing_tables(cursor):
-            if 'image_path' not in menu_items_columns:
-                cursor.execute("ALTER TABLE menu_items ADD COLUMN image_path TEXT")
-            if 'is_active' not in menu_items_columns:
-                cursor.execute("ALTER TABLE menu_items ADD COLUMN is_active INTEGER DEFAULT 1")
-            if 'sort_order' not in menu_items_columns:
-                cursor.execute("ALTER TABLE menu_items ADD COLUMN sort_order INTEGER DEFAULT 0")
-
-        sales_orders_columns = table_columns('sales_orders') if self.table_exists(cursor, 'sales_orders') else set()
-        if 'sales_orders' in self.get_existing_tables(cursor):
-            if 'order_no' not in sales_orders_columns:
-                cursor.execute("ALTER TABLE sales_orders ADD COLUMN order_no TEXT")
-            if 'cashier_name' not in sales_orders_columns:
-                cursor.execute("ALTER TABLE sales_orders ADD COLUMN cashier_name TEXT")
-            if 'qr_code' not in sales_orders_columns:
-                cursor.execute("ALTER TABLE sales_orders ADD COLUMN qr_code TEXT")
-
-        sales_order_items_columns = table_columns('sales_order_items') if self.table_exists(cursor, 'sales_order_items') else set()
-        if 'sales_order_items' in self.get_existing_tables(cursor):
-            if 'item_name' not in sales_order_items_columns:
-                cursor.execute("ALTER TABLE sales_order_items ADD COLUMN item_name TEXT")
-            if 'unit_price' not in sales_order_items_columns:
-                cursor.execute("ALTER TABLE sales_order_items ADD COLUMN unit_price REAL DEFAULT 0")
-            if 'quantity' not in sales_order_items_columns:
-                cursor.execute("ALTER TABLE sales_order_items ADD COLUMN quantity INTEGER DEFAULT 1")
-            if 'line_total' not in sales_order_items_columns:
-                cursor.execute("ALTER TABLE sales_order_items ADD COLUMN line_total REAL DEFAULT 0")
-
         purchases_columns = table_columns('purchases') if self.table_exists(cursor, 'purchases') else set()
         if 'purchases' in self.get_existing_tables(cursor):
             if 'category' not in purchases_columns:

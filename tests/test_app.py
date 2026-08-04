@@ -10,6 +10,7 @@ RTL date formatting, and content being cut off below the window.
 import collections
 import re
 import os
+import shutil
 import sys
 import traceback
 
@@ -470,6 +471,128 @@ def main():
                         scan(header.text(), f"{page}/header")
         assert not found, found
     check("nothing English is shown to the user", no_english_shown_to_the_user)
+
+    # ---------------- what actually ships ----------------
+    print("\n[release]")
+
+    def shipped_database_is_empty():
+        """The evaluation copy must arrive with no data in it - the owner types
+        his own. Only the chart of accounts and one renameable branch ship."""
+        fresh_path = DB_PATH.replace(".db", "_fresh.db")
+        if os.path.exists(fresh_path):
+            os.remove(fresh_path)
+        fresh = DBManager(fresh_path)
+        try:
+            for table in ("employees", "suppliers", "sales", "purchases",
+                          "attendance", "journal_entries", "journal_items",
+                          "payroll_runs", "supplier_payments", "app_settings"):
+                count = fresh.fetch_one(f"SELECT COUNT(*) AS c FROM {table}")["c"]
+                assert count == 0, f"{table} ships with {count} rows"
+            assert fresh.fetch_one("SELECT COUNT(*) AS c FROM branches")["c"] == 1
+            assert fresh.fetch_one("SELECT COUNT(*) AS c FROM chart_of_accounts")["c"] > 0
+        finally:
+            os.remove(fresh_path)
+    check("the shipped database contains no data", shipped_database_is_empty)
+
+    def trial_expires_and_survives_a_reset():
+        """A week of use, then it stops - and deleting the database does not
+        buy a second week, because the marker file remembers the install date."""
+        import datetime as dt
+        import json
+        import tempfile
+        import logic.trial as trial
+
+        sandbox = tempfile.mkdtemp(prefix="_erp_trial_")
+        saved_env = (os.environ.get("XDG_CONFIG_HOME"), os.environ.get("APPDATA"))
+        os.environ["XDG_CONFIG_HOME"] = sandbox
+        os.environ.pop("APPDATA", None)          # would otherwise win on Windows
+        trial_db_path = DB_PATH.replace(".db", "_trial.db")
+        real_date = dt.date
+
+        class FrozenDate(real_date):
+            offset = 0
+
+            @classmethod
+            def today(cls):
+                return real_date.today() + dt.timedelta(days=cls.offset)
+
+        trial.date = FrozenDate
+        try:
+            def fresh_db():
+                if os.path.exists(trial_db_path):
+                    os.remove(trial_db_path)
+                return DBManager(trial_db_path)
+
+            db_a = fresh_db()
+            FrozenDate.offset = 0
+            allowed, days_left, _ = trial.TrialManager(db_a).check()
+            assert allowed and days_left == trial.TRIAL_DAYS, (allowed, days_left)
+
+            FrozenDate.offset = 3
+            allowed, days_left, _ = trial.TrialManager(db_a).check()
+            assert allowed and days_left == trial.TRIAL_DAYS - 3, (allowed, days_left)
+
+            FrozenDate.offset = trial.TRIAL_DAYS + 1
+            allowed, _, message = trial.TrialManager(db_a).check()
+            assert not allowed and message, "trial did not expire"
+
+            # A brand new database on day 8 must still be expired.
+            db_b = fresh_db()
+            allowed, _, _ = trial.TrialManager(db_b).check()
+            assert not allowed, "deleting the database reset the trial"
+
+            # Winding the clock back is detected rather than rewarded.
+            os.remove(os.path.join(sandbox, "RestaurantERP", "licence.json"))
+            db_c = fresh_db()
+            FrozenDate.offset = 2
+            trial.TrialManager(db_c).check()
+            FrozenDate.offset = -20
+            allowed, _, _ = trial.TrialManager(db_c).check()
+            assert not allowed, "rolling the clock back handed out a fresh trial"
+
+            marker = json.load(open(os.path.join(sandbox, "RestaurantERP", "licence.json")))
+            assert marker.get("tampered") is True
+        finally:
+            trial.date = real_date
+            for key, value in zip(("XDG_CONFIG_HOME", "APPDATA"), saved_env):
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            if os.path.exists(trial_db_path):
+                os.remove(trial_db_path)
+            shutil.rmtree(sandbox, ignore_errors=True)
+    check("the trial expires after a week and cannot be reset", trial_expires_and_survives_a_reset)
+
+    def manual_ships_and_opens():
+        settings = window.settings
+        path = settings.manual_path()
+        assert os.path.exists(path), f"the manual is missing: {path}"
+        assert os.path.getsize(path) > 20000, "the manual looks truncated"
+        with open(path, "rb") as handle:
+            assert handle.read(5) == b"%PDF-", "the manual is not a PDF"
+
+        button = next(
+            b for b in settings.findChildren(QPushButton)
+            if "دليل الاستخدام" in b.text()
+        )
+        assert button.isVisible() and button.isEnabled()
+
+        # Click for real, but intercept the hand-off to the desktop so the test
+        # does not spawn a PDF viewer. What is being checked is that the button
+        # is wired up and passes the file that actually exists.
+        from PyQt6.QtGui import QDesktopServices
+        opened = []
+        original = QDesktopServices.openUrl
+        QDesktopServices.openUrl = staticmethod(
+            lambda url: opened.append(url.toLocalFile()) or True
+        )
+        try:
+            button.click()
+        finally:
+            QDesktopServices.openUrl = original
+        assert opened == [path], opened
+    check("the manual is shipped and reachable from the settings page", manual_ships_and_opens)
 
     print("\n" + "=" * 52)
     if failures:

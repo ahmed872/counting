@@ -9,6 +9,21 @@ from database.db_manager import DBManager
 from ui.main_window import MainWindow
 from ui.theme import apply_theme
 from logic.hr import HRLogic
+from logic.trial import TrialManager
+
+
+def enforce_trial(db):
+    """Blocks startup once the evaluation period is over. Returns days left."""
+    allowed, days_left, message = TrialManager(db).check()
+    if allowed:
+        return days_left
+
+    box = QMessageBox()
+    box.setWindowTitle("النسخة التجريبية")
+    box.setIcon(QMessageBox.Icon.Warning)
+    box.setText(message)
+    box.exec()
+    sys.exit(0)
 
 
 def show_expiry_notifications(db):
@@ -36,7 +51,10 @@ def main():
     app = QApplication(sys.argv)
     apply_theme(app)
 
+    days_left = enforce_trial(db)
+
     window = MainWindow(db)
+    window.set_trial_banner(days_left)
     window.show()
 
     show_expiry_notifications(db)

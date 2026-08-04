@@ -76,6 +76,11 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_reports)
         sidebar_layout.addWidget(self.btn_accounting)
         sidebar_layout.addStretch()
+        self.trial_banner = QLabel()
+        self.trial_banner.setWordWrap(True)
+        self.trial_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.trial_banner.setVisible(False)
+        sidebar_layout.addWidget(self.trial_banner)
         sidebar_layout.addWidget(self.btn_settings)
 
         layout.addWidget(self.sidebar)
@@ -118,6 +123,24 @@ class MainWindow(QMainWindow):
             date_edit.setLayoutDirection(Qt.LayoutDirection.LeftToRight)
             date_edit.setDisplayFormat("yyyy-MM-dd")
             date_edit.setCalendarPopup(True)
+
+    def set_trial_banner(self, days_left):
+        """Show how much of the evaluation period is left, so the expiry is
+        never a surprise on the day it happens."""
+        if days_left is None:
+            self.trial_banner.setVisible(False)
+            return
+        urgent = days_left <= 2
+        self.trial_banner.setText(
+            "نسخة تجريبية\nينتهي غداً" if days_left == 1
+            else f"نسخة تجريبية\nمتبقٍ {days_left} أيام"
+        )
+        self.trial_banner.setStyleSheet(
+            f"color: {'#ffd8d4' if urgent else 'rgba(255,255,255,0.72)'};"
+            f"background: {'rgba(220,38,38,0.28)' if urgent else 'rgba(255,255,255,0.07)'};"
+            "border-radius: 8px; padding: 8px 6px; font-size: 12px; font-weight: 700;"
+        )
+        self.trial_banner.setVisible(True)
 
     def nav_group_label(self, text):
         label = QLabel(text)

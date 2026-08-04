@@ -2,7 +2,8 @@ import os
 import shutil
 from datetime import datetime
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -47,6 +48,7 @@ class SettingsModule(QWidget):
         layout.addWidget(self.build_opening_box())
         layout.addWidget(self.build_branches_box())
         layout.addWidget(self.build_backup_box())
+        layout.addWidget(self.build_manual_box())
         layout.addStretch()
 
         self.load_all()
@@ -206,8 +208,9 @@ class SettingsModule(QWidget):
         box = QGroupBox("النسخ الاحتياطي")
         outer = QVBoxLayout(box)
         note = QLabel(
-            "كل البيانات موجودة في ملف واحد. احفظ نسخة احتياطية بشكل دوري على "
-            "فلاشة أو على الجهاز، حتى لا تفقد بياناتك."
+            "كل البيانات موجودة في ملف واحد. خُذ نسخة احتياطية مرة كل شهر على الأقل "
+            "(مثلاً أول كل شهر) واحفظها على فلاشة أو على الإيميل، حتى لا تفقد بياناتك "
+            "لو تعطّل الجهاز."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#64748b;")
@@ -226,6 +229,43 @@ class SettingsModule(QWidget):
         row.addWidget(restore, 1)
         outer.addLayout(row)
         return box
+
+    # ---------------- manual ----------------
+
+    def manual_path(self):
+        """The PDF ships next to the code, in docs/."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        return os.path.join(root, "docs", "دليل-الاستخدام.pdf")
+
+    def build_manual_box(self):
+        box = QGroupBox("دليل الاستخدام")
+        outer = QVBoxLayout(box)
+        note = QLabel(
+            "كتيّب مبسّط يشرح كل شاشة ووظيفة كل زر، بالإضافة إلى طريقة النسخ الاحتياطي "
+            "وتصحيح الأخطاء. اضغط الزر لفتحه."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#64748b;")
+        outer.addWidget(note)
+
+        open_manual = QPushButton("فتح دليل الاستخدام")
+        open_manual.clicked.connect(self.open_manual)
+        outer.addWidget(open_manual)
+        return box
+
+    def open_manual(self):
+        path = self.manual_path()
+        if not os.path.exists(path):
+            QMessageBox.warning(
+                self, "غير موجود",
+                "لم يتم العثور على ملف الدليل:\n" + path,
+            )
+            return
+        if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
+            QMessageBox.information(
+                self, "الدليل",
+                "تعذّر فتح الملف تلقائياً. افتحه يدوياً من المسار:\n" + path,
+            )
 
     def backup(self):
         default = f"backup-{datetime.now().strftime('%Y-%m-%d-%H%M')}.db"
