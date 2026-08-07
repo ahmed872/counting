@@ -22,6 +22,7 @@ from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
 from ui.common_widgets import (page_header, danger_button, fill_table, pin_height,
                               collapsible)
+from logic.money import parse_money
 
 PAYMENT_CHANNELS = [
     ("Cash", "cash_input", "كاش"),
@@ -159,7 +160,7 @@ class SalesEntryModule(QWidget):
         total = 0.0
         for field in (self.cash_input, self.network_input, self.transfer_input):
             try:
-                total += float(field.text().strip() or 0)
+                total += parse_money(field.text())
             except ValueError:
                 pass
         net, vat = self.accounting.reverse_vat(total) if total else (0.0, 0.0)
@@ -171,10 +172,7 @@ class SalesEntryModule(QWidget):
         text = line_edit.text().strip()
         if not text:
             return 0.0
-        value = float(text)
-        if value < 0:
-            raise ValueError("لا يمكن إدخال مبلغ سالب")
-        return value
+        return parse_money(text, label=line_edit.property("moneyLabel") or "المبلغ")
 
     def existing_day(self, branch_id, date_str):
         return self.db.fetch_all(

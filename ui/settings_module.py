@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QFileDialog,
 )
+from logic.money import parse_money
 
 OPENING_ENTRY_KEY = "opening_balance_entry_id"
 
@@ -111,11 +112,14 @@ class SettingsModule(QWidget):
 
     def save_opening_balances(self):
         try:
-            cash = float(self.opening_cash.text().strip() or 0)
-            bank = float(self.opening_bank.text().strip() or 0)
-            inventory = float(self.opening_inventory.text().strip() or 0)
-        except ValueError:
-            QMessageBox.warning(self, "تنبيه", "المبالغ المدخلة غير صحيحة")
+            cash = parse_money(self.opening_cash.text(), "النقدية بالخزنة")
+            bank = parse_money(self.opening_bank.text(), "رصيد البنك")
+            inventory = parse_money(self.opening_inventory.text(), "قيمة المخزون")
+        except ValueError as exc:
+            # parse_money already phrased this for the user, naming the field
+            # and saying what is wrong with it. A generic "غير صحيحة" throws
+            # that away and leaves them guessing which box to look at.
+            QMessageBox.warning(self, "تنبيه", str(exc))
             return
 
         if min(cash, bank, inventory) < 0:

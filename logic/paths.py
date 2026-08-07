@@ -56,3 +56,10 @@ def database_path():
 
 def manual_path():
     return resource_path("docs", "دليل-الاستخدام.pdf")
+
+
+def icon_path():
+    """The window/taskbar icon. PNG rather than the .ico: the .ico is embedded
+    into the .exe by the packager and is never read at runtime, and Qt's ICO
+    support is not guaranteed to be present in every build."""
+    return resource_path("packaging", "app_icon.png")

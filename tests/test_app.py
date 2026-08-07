@@ -19,9 +19,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QPushButton, QDateEdit, QLabel, QScrollArea,
+    QTableWidget,
 )
-from PyQt6.QtGui import QPixmap
-from PyQt6.QtCore import Qt, QPoint
+from PyQt6.QtGui import QPixmap, QImage
+from PyQt6.QtCore import Qt, QPoint, QDate
 
 from database.db_manager import DBManager
 from ui.main_window import MainWindow
@@ -84,6 +85,8 @@ def main():
     db = DBManager(DB_PATH)
     app = QApplication(sys.argv)
     apply_theme(app)
+    from main import apply_app_icon
+    apply_app_icon(app)
     window = MainWindow(db)
     window.resize(1280, 720)   # deliberately small: catches cut-off content
     window.show()
@@ -403,21 +406,47 @@ def main():
             assert date_edit.layoutDirection() == Qt.LayoutDirection.LeftToRight
     check("date fields are ISO and not bidi-reversed", dates_are_iso_and_ltr)
 
+    def reachable(widget):
+        """Whether the user can actually get to this widget.
+
+        Walking the ancestors matters: the old version of this check skipped a
+        whole page as soon as it contained any QScrollArea, so a page with one
+        scrollable tab was exempt everywhere. It also has to be a scroll area
+        that *can* scroll - one whose content already fits hides nothing, and
+        one that cannot reach the widget is no help at all.
+        """
+        node = widget.parentWidget()
+        while node is not None and node is not window:
+            if isinstance(node, QScrollArea):
+                return node.verticalScrollBar().maximum() > 0
+            node = node.parentWidget()
+        return False
+
     def nothing_is_unreachable():
+        """Checked at 1024x600 as well as the normal size. The owner reported
+        content he could not reach until he enlarged the window, and on a small
+        laptop the accounting table was squeezed to 78px - one row - while the
+        purchases list got 94px."""
         bad = []
-        for page in pages:
-            entry = goto(page)
-            container = window.content_stack.currentWidget()
-            scrollable = isinstance(container, QScrollArea) or bool(
-                entry["page"].findChildren(QScrollArea))
-            if scrollable:
-                continue
-            for btn in entry["page"].findChildren(QPushButton):
-                if not btn.isVisible():
-                    continue
-                bottom = btn.mapTo(container, QPoint(0, 0)).y() + btn.height()
-                if bottom > container.height() + 4:
-                    bad.append((page, btn.text()[:25]))
+        for width, height in ((1024, 600), (1280, 720)):
+            window.resize(width, height)
+            for _ in range(4):
+                app.processEvents()
+            for page in pages + ["settings"]:
+                entry = goto(page)
+                widget = entry["page"]
+                for btn in widget.findChildren(QPushButton):
+                    if not btn.isVisible():
+                        continue
+                    bottom = btn.mapTo(window, btn.rect().bottomLeft()).y()
+                    if bottom > window.height() + 4 and not reachable(btn):
+                        bad.append((f"{page}@{width}x{height}", "زر " + btn.text()[:22]))
+                for table in widget.findChildren(QTableWidget):
+                    if table.isVisible() and table.height() < 100 and not reachable(table):
+                        bad.append((f"{page}@{width}x{height}", f"جدول {table.height()}px"))
+        window.resize(1280, 720)
+        for _ in range(4):
+            app.processEvents()
         assert not bad, bad
     check("no page hides content below the window", nothing_is_unreachable)
 
@@ -475,6 +504,52 @@ def main():
                         scan(header.text(), f"{page}/header")
         assert not found, found
     check("nothing English is shown to the user", no_english_shown_to_the_user)
+
+    def absurd_amounts_cannot_wreck_the_books():
+        """A held-down key put 99,999,999,999,999 into a day's sales. The entry
+        was balanced, so the trial balance still said متوازن and nothing warned
+        anyone, while every report and the balance sheet were quietly ruined.
+        Silent corruption is the worst thing this program can do."""
+        from logic.accounting import AccountingLogic
+
+        def total_debit():
+            return sum(r["total_debit"] or 0
+                       for r in AccountingLogic(db).get_trial_balance())
+
+        goto("sales")
+        sales = window.sales
+        before = total_debit()
+        sales.date_input.setDate(QDate.currentDate().addDays(-900))
+        sales.cash_input.setText("99999999999999")
+        sales.network_input.setText("0")
+        sales.transfer_input.setText("0")
+        sales.save_daily_sales()
+        assert abs(total_debit() - before) < 0.01, "an absurd sale reached the ledger"
+
+        # The same guard has to hold on every money field, not just this one.
+        goto("purchases")
+        window.purchases.amount_input.setText("88888888888888")
+        window.purchases.description_input.setText("اختبار")
+        window.purchases.save_purchase()
+        assert abs(total_debit() - before) < 0.01, "an absurd purchase reached the ledger"
+    check("an absurd amount is refused instead of silently wrecking the books",
+          absurd_amounts_cannot_wreck_the_books)
+
+    def arabic_digits_are_accepted():
+        """An Arabic keyboard produces ١٢٣. Refusing it makes a program written
+        for Arabic speakers look broken."""
+        from logic.money import parse_money
+        assert parse_money("١٢٣٤") == 1234
+        assert parse_money("1,500") == 1500        # people write separators
+        assert parse_money("١٢٫٥") == 12.5         # Arabic decimal separator
+        assert parse_money("") == 0
+        for bad in ("abc", "-5", "1.2.3", "99999999999999"):
+            try:
+                parse_money(bad)
+                raise AssertionError(f"{bad!r} was accepted")
+            except ValueError:
+                pass
+    check("Arabic digits and separators are understood", arabic_digits_are_accepted)
 
     # ---------------- what actually ships ----------------
     print("\n[release]")
@@ -569,6 +644,10 @@ def main():
     check("the trial expires after a week and cannot be reset", trial_expires_and_survives_a_reset)
 
     def manual_ships_and_opens():
+        # Navigate here rather than relying on whichever page an earlier check
+        # happened to leave open - a widget on a page that is not current is
+        # not visible, and this asserted on visibility.
+        goto("settings")
         settings = window.settings
         path = settings.manual_path()
         assert os.path.exists(path), f"the manual is missing: {path}"
@@ -635,6 +714,43 @@ def main():
                      resource_path("docs", "دليل-الاستخدام.pdf")):
             assert os.path.exists(path), path
     check("the Windows build bundles every file the app loads", packaging_bundles_every_data_file)
+
+    def the_icon_is_real_and_usable():
+        """The shortcut icon is the first thing the customer sees, before the
+        program has run at all. It has to exist, be a real multi-size .ico, and
+        still be legible at 16px - which is the size Explorer and the taskbar
+        actually draw."""
+        import struct
+        from logic.paths import icon_path
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        ico = os.path.join(root, "packaging", "app_icon.ico")
+        assert os.path.exists(ico), "the .ico is missing"
+        assert os.path.exists(icon_path()), "the runtime PNG icon is missing"
+
+        with open(ico, "rb") as handle:
+            blob = handle.read()
+        reserved, kind, count = struct.unpack("<HHH", blob[:6])
+        assert (reserved, kind) == (0, 1), "not an icon file"
+        sizes = sorted((blob[6 + 16 * i] or 256) for i in range(count))
+        assert 16 in sizes and 32 in sizes and 256 in sizes, sizes
+
+        # At 16px an icon that is nearly all one colour has turned to mush.
+        smallest = min(
+            (struct.unpack("<II", blob[6 + 16 * i + 8:6 + 16 * i + 16]), blob[6 + 16 * i] or 256)
+            for i in range(count)
+        )
+        (length, offset), _ = smallest
+        image = QImage.fromData(blob[offset:offset + length], "PNG")
+        assert not image.isNull() and image.width() == 16
+        shades = {image.pixelColor(x, y).name()
+                  for y in range(16) for x in range(16)}
+        assert len(shades) > 6, f"the 16px icon is a flat blob ({len(shades)} shades)"
+
+        # And the running window must carry it, or the taskbar shows Python's.
+        assert not app.windowIcon().isNull(), "the application has no window icon"
+    check("the shortcut icon is a real multi-size icon and survives 16px",
+          the_icon_is_real_and_usable)
 
     print("\n" + "=" * 52)
     if failures:

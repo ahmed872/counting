@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
 from ui.common_widgets import page_header, fill_table, compact_form, pin_height
+from logic.money import parse_money
 
 
 class SuppliersModule(QWidget):
@@ -152,9 +153,10 @@ class SuppliersModule(QWidget):
         tax_id = self.tax_id_input.text().strip()
         phone = self.phone_input.text().strip()
         try:
-            opening_balance = float(self.opening_balance_input.text() or 0)
-        except ValueError:
-            QMessageBox.warning(self, "تنبيه", "الرصيد الافتتاحي غير صحيح")
+            opening_balance = parse_money(self.opening_balance_input.text(),
+                                          "الرصيد الافتتاحي")
+        except ValueError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
             return
 
         supplier_id = self.db.insert_and_return_id(
@@ -225,11 +227,12 @@ class SuppliersModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "اختر مورداً من القائمة أولاً")
             return
         try:
-            amount = float(self.payment_amount.text())
+            amount = parse_money(self.payment_amount.text(), "مبلغ السداد",
+                                 allow_blank=False, allow_zero=False)
             if amount <= 0:
                 raise ValueError
-        except ValueError:
-            QMessageBox.warning(self, "تنبيه", "ادخل مبلغاً صحيحاً")
+        except ValueError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
             return
 
         method = self.payment_method.currentData()

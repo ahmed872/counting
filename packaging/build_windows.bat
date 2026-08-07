@@ -42,7 +42,8 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [2/4] توليد دليل الاستخدام PDF...
+echo [2/4] توليد الايقونة ودليل الاستخدام PDF...
+python packaging\build_icon.py
 python docs\build_manual.py
 if errorlevel 1 (
     echo [تحذير] لم يتم توليد الدليل. سيتم استخدام النسخة الموجودة.
