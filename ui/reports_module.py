@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtCore import QDate
 from PyQt6.QtGui import QTextDocument
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from PyQt6.QtWidgets import (

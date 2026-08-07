@@ -1,5 +1,4 @@
 import sqlite3
-import os
 
 class DBManager:
     def __init__(self, db_path='restaurant_erp.db'):

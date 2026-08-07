@@ -52,6 +52,59 @@ a = Analysis(
     noarchive=False,
 )
 
+# ---------------------------------------------------------------------------
+# Trimming.
+#
+# The app imports exactly four Qt modules - QtCore, QtGui, QtWidgets and
+# QtPrintSupport - but PyInstaller collects the whole of Qt's plugin and
+# translation trees regardless, because it cannot know which of them Qt will
+# decide to load at runtime. Most of that is dead weight in this program.
+#
+# Everything below is dropped by name rather than by a blanket wildcard, and
+# each one is dropped for a stated reason. Over-trimming a Qt build produces
+# failures that appear only on the customer's machine - a dialog that will not
+# open, an icon that will not draw - so anything whose absence could not be
+# proven harmless was left in.
+
+def _drop(entry):
+    name = entry[0].replace("\\", "/")
+    # Plugin files are qjpeg.dll on Windows and libqjpeg.so on Linux, so match
+    # on the stem with the platform's decoration stripped off.
+    stem = os.path.basename(name)
+    for prefix in ("lib",):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+    stem = stem.split(".")[0]
+
+    # Qt's own UI translations. Every string this program shows is its own, and
+    # QTranslator is never installed, so none of these is ever loaded.
+    if "/translations/" in name or name.startswith("PyQt6/Qt6/translations"):
+        return True
+
+    # Image formats. The only image the program loads is its own PNG icon, and
+    # ICO is kept because that is what the window icon may be read from.
+    if "imageformats/" in name and stem in (
+        "qjpeg", "qgif", "qtiff", "qwebp", "qicns", "qtga", "qwbmp", "qpdf", "qsvg"
+    ):
+        return True
+
+    # Whole plugin families this program has no path to: it opens no sockets,
+    # runs no QML, plays no media, and talks to no database through Qt (SQLite
+    # goes through Python's own sqlite3).
+    for family in ("sqldrivers/", "qmltooling/", "multimedia/", "position/",
+                   "sensors/", "texttospeech/", "webview/", "networkinformation/",
+                   "designer/", "assetimporters/", "renderers/", "geometryloaders/"):
+        if family in name:
+            return True
+
+    return False
+
+
+_before = len(a.binaries) + len(a.datas)
+a.binaries = TOC([entry for entry in a.binaries if not _drop(entry)])
+a.datas = TOC([entry for entry in a.datas if not _drop(entry)])
+print(f"[spec] trimmed {_before - len(a.binaries) - len(a.datas)} bundled files")
+
 pyz = PYZ(a.pure)
 
 if onefile:

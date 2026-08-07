@@ -53,10 +53,46 @@ jobs:
         # nothing, so the tests gate the artifact.
         run: python tests/test_app.py
 
-      - name: توليد الأيقونة ودليل الاستخدام
+      # The manual and the icon are NOT regenerated here. They are committed,
+      # and they are committed because they were checked by eye - pages
+      # rendered to images and actually looked at, the icon inspected at every
+      # size it ships in.
+      #
+      # Regenerating the manual on the runner produced a PDF whose every glyph
+      # was an empty box: Qt found no font with Arabic coverage on a headless
+      # Windows image and silently substituted one, and the build happily
+      # shipped it. A document nobody can read is worse than no document, and
+      # nothing in the job could have noticed. So the build uses the file that
+      # was verified, and verify_artifacts below refuses to continue if that
+      # file is not intact.
+      - name: التحقق من الدليل والأيقونة
+        run: python packaging/verify_artifacts.py
+
+      # The activation secret. It lives in this repository's Actions secrets and
+      # is written into a git-ignored module just before packaging, so it is
+      # baked into the executable without ever appearing in the source.
+      #
+      # The build stops if it is not configured. Shipping with the placeholder
+      # that is published in logic/licence.py would mean anyone who reads the
+      # repository can mint activation keys, and the whole thing would be
+      # decoration - a failure that would not show up until it mattered.
+      - name: تجهيز سرّ التفعيل
+        shell: pwsh
+        env:
+          LICENCE_SECRET: ${{ secrets.RESTAURANT_ERP_SECRET }}
         run: |
-          python packaging/build_icon.py
-          python docs/build_manual.py
+          if ([string]::IsNullOrWhiteSpace($env:LICENCE_SECRET)) {
+            Write-Host "::error::سرّ التفعيل غير مضبوط."
+            Write-Host "أضفه من: Settings -> Secrets and variables -> Actions -> New repository secret"
+            Write-Host "الاسم: RESTAURANT_ERP_SECRET   القيمة: أي نص طويل تحتفظ به لنفسك"
+            Write-Host "بدونه تخرج النسخة بسرّ منشور في الكود، ويستطيع أي شخص توليد مفاتيح."
+            exit 1
+          }
+          $escaped = $env:LICENCE_SECRET -replace '\\','\\\\' -replace '"','\"'
+          Set-Content -Path logic/_secret.py -Encoding utf8 -Value "SECRET = `"$escaped`""
+          python -c "import sys; sys.path.insert(0,'.'); from logic.licence import using_development_secret; sys.exit(1 if using_development_secret() else 0)"
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::لم يُحمَّل السرّ"; exit 1 }
+          Write-Host "تم تجهيز سرّ التفعيل."
 
       # Both builds come from the same spec, so they need separate --workpath
       # directories: PyInstaller caches its intermediates under a name derived
@@ -110,4 +146,4 @@ jobs:
             "نظام-إدارة-المطعم-مجلد.zip" `
             "docs/دليل-الاستخدام.pdf" `
             --title "نظام إدارة المطعم ${{ github.ref_name }}" `
-            --notes "نسخة تجريبية تعمل 7 أيام من أول تشغيل على كل جهاز. حمّل ملف exe وشغّله مباشرة - لا يحتاج تثبيت."
+            --notes "نسخة تجريبية تعمل 20 يوماً من أول تشغيل على كل جهاز. حمّل ملف exe وشغّله مباشرة - لا يحتاج تثبيت."

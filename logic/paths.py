@@ -55,7 +55,33 @@ def database_path():
 
 
 def manual_path():
-    return resource_path("docs", "دليل-الاستخدام.pdf")
+    """The manual, at a path that outlives the program.
+
+    Inside a one-file build the bundled copy lives in a temp folder that is
+    deleted the moment the app closes - so opening it handed the PDF reader a
+    file that vanished from under the reader while it was being read. The
+    bundled copy is therefore taken out to the data folder first, and that is
+    what gets opened.
+    """
+    bundled = resource_path("docs", "دليل-الاستخدام.pdf")
+    if not is_frozen():
+        return bundled
+
+    import shutil
+
+    permanent = os.path.join(data_dir(), "دليل-الاستخدام.pdf")
+    try:
+        need_copy = (
+            not os.path.exists(permanent)
+            or os.path.getsize(permanent) != os.path.getsize(bundled)
+        )
+        if need_copy and os.path.exists(bundled):
+            shutil.copyfile(bundled, permanent)
+        if os.path.exists(permanent):
+            return permanent
+    except OSError:
+        pass          # fall back to the bundled copy rather than failing to open
+    return bundled
 
 
 def icon_path():

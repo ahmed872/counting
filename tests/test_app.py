@@ -7,7 +7,6 @@ VAT handling, stylesheet leaking onto child widgets, invisible buttons,
 RTL date formatting, and content being cut off below the window.
 """
 
-import collections
 import re
 import os
 import shutil
@@ -22,7 +21,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
 )
 from PyQt6.QtGui import QPixmap, QImage
-from PyQt6.QtCore import Qt, QPoint, QDate
+from PyQt6.QtCore import Qt, QDate
 
 from database.db_manager import DBManager
 from ui.main_window import MainWindow
@@ -61,15 +60,6 @@ def render(widget):
     pixmap.fill(Qt.GlobalColor.white)
     widget.render(pixmap)
     return pixmap.toImage()
-
-
-def dominant_colour(widget):
-    image = render(widget)
-    counts = collections.Counter()
-    for y in range(2, image.height() - 2, 2):
-        for x in range(2, image.width() - 2, 2):
-            counts[image.pixelColor(x, y).name()] += 1
-    return counts.most_common(1)[0][0]
 
 
 def is_near_white(hex_colour):
@@ -185,6 +175,78 @@ def main():
         balance = window.accounting.accounting.get_supplier_statement(sid)["balance"]
         assert abs(balance - 600) < 0.01, balance
     check("supplier opening balance minus payment", supplier_ledger)
+
+    def paying_a_supplier_needs_no_other_screen():
+        """Choosing who is being paid belongs on the screen where the payment
+        is entered. It used to be a read-only label that only filled in after
+        selecting a row on a different tab, so the payment screen could not
+        answer 'who am I paying?' on its own."""
+        from PyQt6.QtWidgets import QComboBox
+        goto("suppliers")
+        s = window.suppliers
+        assert isinstance(s.payment_supplier, QComboBox)
+        assert s.payment_supplier.count() > 0, "the picker is empty"
+        # Every supplier in the list must be choosable from it.
+        names = {s.payment_supplier.itemText(i) for i in range(s.payment_supplier.count())}
+        stored = {r["name"] for r in db.fetch_all("SELECT name FROM suppliers")}
+        assert stored <= names, stored - names
+        # Picking one there must actually point the payment at them.
+        sid = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد الاختبار'")["id"]
+        s.payment_supplier.setCurrentIndex(s.payment_supplier.findData(sid))
+        app.processEvents()
+        assert s.selected_supplier_id == sid
+        assert "ريال" in s.payment_balance_label.text() or "مسدد" in s.payment_balance_label.text()
+    check("a supplier can be picked on the payment screen itself",
+          paying_a_supplier_needs_no_other_screen)
+
+    def overpaying_a_supplier_asks_first():
+        """Paying more than is owed is almost always an extra zero or the wrong
+        supplier. It went through silently and the balance just went negative."""
+        asked = []
+        original = QMessageBox.question
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No)
+        try:
+            goto("suppliers")
+            s = window.suppliers
+            sid = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد الاختبار'")["id"]
+            s.payment_supplier.setCurrentIndex(s.payment_supplier.findData(sid))
+            app.processEvents()
+            before = db.fetch_one("SELECT COUNT(*) c FROM supplier_payments")["c"]
+            s.payment_amount.setText("999999")
+            s.record_payment()
+            assert asked, "an overpayment was accepted without asking"
+            after = db.fetch_one("SELECT COUNT(*) c FROM supplier_payments")["c"]
+            assert after == before, "answering no still recorded the payment"
+        finally:
+            QMessageBox.question = original
+            window.suppliers.payment_amount.clear()
+    check("paying more than is owed asks before going through",
+          overpaying_a_supplier_asks_first)
+
+    def negative_money_reads_correctly():
+        """In a right-to-left line the bidi algorithm throws a leading minus to
+        the visual right, so -1000 was displayed as '1,000.00-' - which scans as
+        a positive number with a stray dash, on the screen where owing and being
+        owed are the entire distinction."""
+        from ui.formatting import money, LTR_ISOLATE, POP_ISOLATE
+        negative = money(-1000)
+
+        # Checking the order of the characters proves nothing - the minus is
+        # first in the string either way. What was broken is how the string is
+        # laid out, and the only thing that fixes that is the directional
+        # control, so that is what gets asserted.
+        assert negative.startswith(LTR_ISOLATE) and negative.endswith(POP_ISOLATE), (
+            f"a negative amount carries no direction mark, so Arabic layout will "
+            f"push the minus to the far side: {negative!r}")
+        assert "-1,000.00" in negative
+
+        # Positive amounts must stay clean: no invisible characters leaking into
+        # exported reports or into anything compared as text.
+        assert money(1000) == "1,000.00", repr(money(1000))
+        assert money(0) == "0.00", repr(money(0))
+    check("a negative amount still reads as negative in Arabic",
+          negative_money_reads_correctly)
 
     def purchases_route_by_category():
         goto("purchases")
@@ -641,7 +703,142 @@ def main():
             if os.path.exists(trial_db_path):
                 os.remove(trial_db_path)
             shutil.rmtree(sandbox, ignore_errors=True)
-    check("the trial expires after a week and cannot be reset", trial_expires_and_survives_a_reset)
+    check("the trial expires and cannot be reset", trial_expires_and_survives_a_reset)
+
+    def paying_unlocks_it_without_losing_anything():
+        """The whole promise of activation: the books survive it.
+
+        A customer who pays on day 21 must get his program back with every
+        number still in it. If activation reset anything, or if he had to
+        reinstall to apply the key, the sale would cost him his accounts."""
+        import datetime as dt
+        import tempfile
+        import logic.trial as trial
+        import logic.licence as licence
+
+        sandbox = tempfile.mkdtemp(prefix="_erp_licence_")
+        saved = (os.environ.get("XDG_CONFIG_HOME"), os.environ.get("APPDATA"),
+                 os.environ.get("RESTAURANT_ERP_SECRET"))
+        os.environ["XDG_CONFIG_HOME"] = sandbox
+        os.environ.pop("APPDATA", None)
+        real_date = dt.date
+        licence_db_path = DB_PATH.replace(".db", "_licence.db")
+
+        class FrozenDate(real_date):
+            offset = 0
+
+            @classmethod
+            def today(cls):
+                return real_date.today() + dt.timedelta(days=cls.offset)
+
+        trial.date = FrozenDate
+        try:
+            if os.path.exists(licence_db_path):
+                os.remove(licence_db_path)
+            fresh = DBManager(licence_db_path)
+
+            # The customer works for a while.
+            fresh.execute_query(
+                "INSERT INTO suppliers (name, opening_balance) VALUES (?, ?)",
+                ("مورد قبل التفعيل", 5000),
+            )
+            before = fresh.fetch_one("SELECT COUNT(*) c FROM suppliers")["c"]
+
+            # Record day one first. Without this the first check ever made is
+            # the one taken from the future, so that becomes the install date
+            # and the trial has not started, let alone expired.
+            FrozenDate.offset = 0
+            assert trial.TrialManager(fresh).check()[0], "day one was not allowed"
+
+            FrozenDate.offset = trial.TRIAL_DAYS + 1
+            allowed, _, message = trial.TrialManager(fresh).check()
+            assert not allowed and message, "the trial did not expire"
+
+            code = licence.device_code(fresh)
+            assert len(code) == 8, code
+
+            # A key for someone else's machine must not open this one.
+            assert not licence.activate(fresh, licence.key_for_device("ZZZZ2345"))
+            assert not licence.activate(fresh, "AAAA-BBBB-CCCC-DDDD")
+            assert not licence.is_activated(fresh)
+
+            key = licence.key_for_device(code)
+            assert licence.activate(fresh, key), "the correct key was rejected"
+            assert licence.is_activated(fresh)
+
+            # However it comes back from WhatsApp.
+            assert licence.is_valid(code, key.lower().replace("-", " "))
+
+            # Time no longer matters.
+            FrozenDate.offset = 900
+            assert licence.is_activated(fresh), "activation expired with the trial"
+
+            # And nothing was lost.
+            after = fresh.fetch_one("SELECT COUNT(*) c FROM suppliers")["c"]
+            assert after == before, f"activation lost data: {before} -> {after}"
+
+            # Restoring a backup over the database must not deactivate a paid
+            # copy - the licence is remembered outside it too.
+            os.remove(licence_db_path)
+            restored = DBManager(licence_db_path)
+            assert licence.is_activated(restored), \
+                "restoring a backup deactivated a paid copy"
+        finally:
+            trial.date = real_date
+            for name, value in zip(
+                    ("XDG_CONFIG_HOME", "APPDATA", "RESTAURANT_ERP_SECRET"), saved):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            if os.path.exists(licence_db_path):
+                os.remove(licence_db_path)
+            shutil.rmtree(sandbox, ignore_errors=True)
+    check("paying unlocks it in place, with every number still there",
+          paying_unlocks_it_without_losing_anything)
+
+    def the_expiry_screen_can_actually_activate():
+        """Blocking startup with a message and exiting leaves nowhere to type
+        the key. The box that stops the customer has to be the box that lets
+        him in."""
+        from PyQt6.QtWidgets import QLineEdit
+        from ui.activation_dialog import ActivationDialog
+        import logic.licence as licence
+
+        dialog = ActivationDialog(db, "انتهت المدة")
+        try:
+            shown = dialog.code_field.text()
+            assert shown == licence.device_code(db), shown
+            assert dialog.code_field.isReadOnly(), "the device code is editable"
+            assert isinstance(dialog.key_field, QLineEdit)
+
+            # A wrong key must say so and must not let the program open.
+            dialog.key_field.setText("WRON-GKEY-WRON-GKEY")
+            dialog.try_activate()
+            assert not dialog.activated
+            # isVisibleTo, not isVisible: the dialog is never shown in a
+            # headless run, and every child of an unshown window reports itself
+            # hidden regardless of what the code did to it.
+            assert dialog.status.isVisibleTo(dialog), "no error was shown"
+            assert dialog.status.text(), "the error message is empty"
+
+            buttons = [b.text() for b in dialog.findChildren(QPushButton)]
+            assert any("تفعيل" in b for b in buttons), buttons
+            assert any("نسخ" in b for b in buttons), buttons
+        finally:
+            dialog.deleteLater()
+    check("the expiry screen is where the key is entered",
+          the_expiry_screen_can_actually_activate)
+
+    def arabic_day_counts_agree():
+        """"20 أيام" is broken Arabic. Numbers 11 and up take the singular."""
+        from logic.trial import arabic_days
+        assert arabic_days(1) == "يوم واحد"
+        assert arabic_days(2) == "يومان"
+        assert arabic_days(5) == "5 أيام"
+        assert arabic_days(20) == "20 يوماً"
+        assert "أيام" not in arabic_days(20)
+    check("day counts are written in correct Arabic", arabic_day_counts_agree)
 
     def manual_ships_and_opens():
         # Navigate here rather than relying on whichever page an earlier check
@@ -681,6 +878,40 @@ def main():
         assert os.path.samefile(opened[0], path), (opened[0], path)
     check("the manual is shipped and reachable from the settings page", manual_ships_and_opens)
 
+    def the_manual_is_readable():
+        """The customer opened the manual and every glyph was an empty box.
+
+        The build was regenerating the PDF on a headless Windows runner, where
+        Qt found no font with Arabic coverage and silently substituted one. The
+        job stayed green and shipped a booklet of rectangles. The manual is now
+        committed rather than regenerated, and this is the check that the
+        committed file is still whole - fonts embedded, so it renders the same
+        on a machine that has none of them installed."""
+        import subprocess
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # The same verification the build runs, exercised here so a broken
+        # manual fails locally too rather than only in CI.
+        result = subprocess.run(
+            [sys.executable, os.path.join(root, "packaging", "verify_artifacts.py")],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        with open(window.settings.manual_path(), "rb") as handle:
+            blob = handle.read()
+        assert b"FontFile2" in blob or b"FontFile3" in blob or b"FontFile" in blob, \
+            "the manual's fonts are not embedded - it will render as empty boxes"
+
+        # And the build must not quietly replace it with a regenerated one.
+        workflow = os.path.join(root, ".github", "workflows", "build-windows.yml")
+        if os.path.exists(workflow):
+            text = open(workflow, encoding="utf-8").read()
+            assert "build_manual.py" not in text, \
+                "the build regenerates the manual again - that is what broke it"
+    check("the manual is readable and the build cannot replace it",
+          the_manual_is_readable)
+
     def packaging_bundles_every_data_file():
         """Files loaded through resource_path() are data, not code, so
         PyInstaller cannot discover them by following imports. Anything missing
@@ -715,11 +946,130 @@ def main():
             assert os.path.exists(path), path
     check("the Windows build bundles every file the app loads", packaging_bundles_every_data_file)
 
+    def sending_a_newer_version_keeps_his_books():
+        """The customer asks for a change, gets a newer copy, replaces the old
+        program with it - and every number he has entered is still there.
+
+        This is the single most damaging thing this program could get wrong, and
+        it is not covered by testing against a database the current code created.
+        The database is built from the layout of the *first* released version,
+        filled the way a working restaurant fills one, and only then opened with
+        the code as it stands today.
+        """
+        import sqlite3
+        from logic.upgrade import backup_before_upgrade, record_version, APP_VERSION
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        old_schema = os.path.join(root, "tests", "fixtures", "schema_v1.sql")
+        assert os.path.exists(old_schema), "the old schema fixture is missing"
+
+        workdir = tempfile.mkdtemp(prefix="_erp_upgrade_")
+        old_db = os.path.join(workdir, "restaurant_erp.db")
+        try:
+            conn = sqlite3.connect(old_db)
+            conn.executescript(open(old_schema, encoding="utf-8").read())
+            cur = conn.cursor()
+            cur.execute("INSERT INTO employees (name, job_title, base_salary, "
+                        "allowances, branch_id) VALUES ('محمد أحمد','طباخ',5000,500,1)")
+            cur.execute("INSERT INTO suppliers (name, opening_balance) "
+                        "VALUES ('مورد اللحوم', 20000)")
+            for day in range(1, 16):
+                cur.execute(
+                    "INSERT INTO sales (branch_id, date, total_amount, vat_amount, "
+                    "payment_method) VALUES (1,?,?,?,'Cash')",
+                    (f"2026-07-{day:02d}", 4600.0, 600.0))
+            cur.execute("INSERT INTO purchases (supplier_id, branch_id, date, "
+                        "total_amount, vat_amount, payment_status) "
+                        "VALUES (1,1,'2026-07-05',2300,300,'Cash')")
+            cur.execute("INSERT INTO journal_entries (date, description, branch_id) "
+                        "VALUES ('2026-07-01','قيد قديم',1)")
+            entry = cur.lastrowid
+            cur.execute("INSERT INTO journal_items (entry_id, account_code, debit, "
+                        "credit) VALUES (?, '1000', 4600, 0)", (entry,))
+            cur.execute("INSERT INTO journal_items (entry_id, account_code, debit, "
+                        "credit) VALUES (?, '4000', 0, 4600)", (entry,))
+            conn.commit()
+
+            def counts(path):
+                c = sqlite3.connect(path)
+                try:
+                    out = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                           for t in ("employees", "suppliers", "sales", "purchases",
+                                     "journal_entries", "journal_items")}
+                    out["sales_total"] = c.execute(
+                        "SELECT COALESCE(SUM(total_amount),0) FROM sales").fetchone()[0]
+                    return out
+                finally:
+                    c.close()
+
+            before = counts(old_db)
+            conn.close()
+
+            import hashlib
+
+            def digest(path):
+                with open(path, "rb") as handle:
+                    return hashlib.sha256(handle.read()).hexdigest()
+
+            untouched = digest(old_db)
+
+            # The copy must be taken before the migrations run, so this is
+            # called on the path, exactly as main.py does it.
+            backup = backup_before_upgrade(old_db)
+            assert backup and os.path.exists(backup), "no backup was taken"
+            assert counts(backup) == before, "the backup is not a faithful copy"
+            # Byte-for-byte, not just the same row counts. Comparing counts
+            # cannot tell a pre-migration copy from a post-migration one - the
+            # migrations do not change how many rows there are - and taking the
+            # copy after they have already rewritten the file is the whole bug
+            # this is here to prevent.
+            assert digest(backup) == untouched, \
+                "the backup was taken after the migrations had already run"
+
+            upgraded = DBManager(old_db)
+            record_version(upgraded)
+
+            after = counts(old_db)
+            assert after == before, f"the upgrade changed the data: {before} -> {after}"
+
+            # Every screen has to open against it, not just the tables survive.
+            upgraded_window = MainWindow(upgraded)
+            upgraded_window.resize(1280, 720)
+            upgraded_window.show()
+            app.processEvents()
+            try:
+                for item in upgraded_window.nav_entries:
+                    upgraded_window.set_active_page(item["index"])
+                    app.processEvents()
+            finally:
+                upgraded_window.close()
+                upgraded_window.deleteLater()
+
+            # And the books still balance on his data.
+            from logic.accounting import AccountingLogic
+            rows = AccountingLogic(upgraded).get_trial_balance()
+            debit = sum(r["total_debit"] or 0 for r in rows)
+            credit = sum(r["total_credit"] or 0 for r in rows)
+            assert abs(debit - credit) < 0.01, (debit, credit)
+
+            # Running the same version again must not pile up more backups.
+            assert backup_before_upgrade(old_db) is None, \
+                "a backup was taken again for the same version"
+            assert upgraded.get_setting("app_version") == APP_VERSION
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+    check("sending a newer version keeps every number he entered",
+          sending_a_newer_version_keeps_his_books)
+
     def the_icon_is_real_and_usable():
         """The shortcut icon is the first thing the customer sees, before the
-        program has run at all. It has to exist, be a real multi-size .ico, and
-        still be legible at 16px - which is the size Explorer and the taskbar
-        actually draw."""
+        program has run at all.
+
+        The small entries must be BMP, not PNG. PNG inside an .ico is legal and
+        every image viewer reads it, but the Windows taskbar ignores those
+        entries and falls back to a generic icon - which is what shipped once,
+        with a correct-looking icon file that the taskbar refused to draw.
+        """
         import struct
         from logic.paths import icon_path
 
@@ -732,19 +1082,33 @@ def main():
             blob = handle.read()
         reserved, kind, count = struct.unpack("<HHH", blob[:6])
         assert (reserved, kind) == (0, 1), "not an icon file"
-        sizes = sorted((blob[6 + 16 * i] or 256) for i in range(count))
-        assert 16 in sizes and 32 in sizes and 256 in sizes, sizes
 
-        # At 16px an icon that is nearly all one colour has turned to mush.
-        smallest = min(
-            (struct.unpack("<II", blob[6 + 16 * i + 8:6 + 16 * i + 16]), blob[6 + 16 * i] or 256)
-            for i in range(count)
-        )
-        (length, offset), _ = smallest
-        image = QImage.fromData(blob[offset:offset + length], "PNG")
-        assert not image.isNull() and image.width() == 16
-        shades = {image.pixelColor(x, y).name()
-                  for y in range(16) for x in range(16)}
+        entries = {}
+        for i in range(count):
+            head = 6 + 16 * i
+            width = blob[head] or 256
+            length, offset = struct.unpack("<II", blob[head + 8:head + 16])
+            payload = blob[offset:offset + length]
+            assert len(payload) == length, f"entry {width} is truncated"
+            entries[width] = payload
+
+        for required in (16, 32, 256):
+            assert required in entries, f"missing the {required}px size: {sorted(entries)}"
+
+        for width, payload in entries.items():
+            if width <= 64:
+                assert payload[:4] != b"\x89PNG", (
+                    f"the {width}px entry is PNG - the taskbar will not draw it")
+
+        # Decode the 16px BMP by hand and confirm it is still a picture rather
+        # than a flat blob: at that size a design either survives or it does not.
+        payload = entries[16]
+        header = struct.unpack("<IiiHHIIiiII", payload[:40])
+        width, doubled_height, bpp = header[1], header[2], header[4]
+        height = doubled_height // 2
+        assert (width, height, bpp) == (16, 16, 32), (width, height, bpp)
+        pixels = payload[40:40 + width * height * 4]
+        shades = {pixels[i:i + 3] for i in range(0, len(pixels), 4)}
         assert len(shades) > 6, f"the 16px icon is a flat blob ({len(shades)} shades)"
 
         # And the running window must carry it, or the taskbar shows Python's.

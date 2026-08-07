@@ -50,6 +50,7 @@ class SettingsModule(QWidget):
         layout.addWidget(self.build_branches_box())
         layout.addWidget(self.build_backup_box())
         layout.addWidget(self.build_manual_box())
+        layout.addWidget(self.build_licence_box())
         layout.addStretch()
 
         self.load_all()
@@ -270,6 +271,89 @@ class SettingsModule(QWidget):
                 "تعذّر فتح الملف تلقائياً. افتحه يدوياً من المسار:\n" + path,
             )
 
+    # ---------------- licence ----------------
+
+    def build_licence_box(self):
+        """Activation is reachable here as well as from the expiry screen, so a
+        customer who pays on day three does not have to wait to be locked out
+        before he can use the key he has already been sent."""
+        box = QGroupBox("ترخيص البرنامج")
+        outer = QVBoxLayout(box)
+
+        self.licence_status = QLabel()
+        self.licence_status.setWordWrap(True)
+        outer.addWidget(self.licence_status)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        code_label = QLabel("رقم الجهاز:")
+        code_label.setStyleSheet("font-weight:700; color:#334155;")
+        self.device_code_field = QLineEdit()
+        self.device_code_field.setReadOnly(True)
+        self.device_code_field.setStyleSheet(
+            "font-weight:800; letter-spacing:2px; color:#1f3b57; background:#eef6ff;")
+        copy_btn = QPushButton("نسخ")
+        copy_btn.clicked.connect(self.copy_device_code)
+        row.addWidget(code_label)
+        row.addWidget(self.device_code_field, 1)
+        row.addWidget(copy_btn)
+        outer.addLayout(row)
+
+        key_row = QHBoxLayout()
+        key_row.setSpacing(8)
+        key_label = QLabel("مفتاح التفعيل:")
+        key_label.setStyleSheet("font-weight:700; color:#334155;")
+        self.licence_key_input = QLineEdit()
+        self.licence_key_input.setPlaceholderText("XXXX-XXXX-XXXX-XXXX")
+        self.licence_key_input.returnPressed.connect(self.apply_licence_key)
+        self.activate_btn = QPushButton("تفعيل")
+        self.activate_btn.clicked.connect(self.apply_licence_key)
+        key_row.addWidget(key_label)
+        key_row.addWidget(self.licence_key_input, 1)
+        key_row.addWidget(self.activate_btn)
+        outer.addLayout(key_row)
+        return box
+
+    def copy_device_code(self):
+        from PyQt6.QtWidgets import QApplication
+        QApplication.clipboard().setText(self.device_code_field.text())
+        QMessageBox.information(self, "تم", "تم نسخ رقم الجهاز. أرسله لمزوّد البرنامج.")
+
+    def apply_licence_key(self):
+        from logic.licence import activate
+        if activate(self.db, self.licence_key_input.text().strip()):
+            QMessageBox.information(
+                self, "تم التفعيل",
+                "تم تفعيل البرنامج بنجاح.\nكل بياناتك كما هي، والبرنامج يعمل الآن بلا مدة.",
+            )
+            self.licence_key_input.clear()
+            self.load_licence()
+        else:
+            QMessageBox.warning(
+                self, "مفتاح غير صحيح",
+                "هذا المفتاح لا يخص هذا الجهاز.\n"
+                "تأكد أنك أرسلت رقم الجهاز الظاهر أعلاه، وأن المفتاح كما وصلك تماماً.",
+            )
+
+    def load_licence(self):
+        from logic.licence import device_code, is_activated
+        self.device_code_field.setText(device_code(self.db))
+        if is_activated(self.db):
+            self.licence_status.setText("الحالة: النسخة مفعّلة بالكامل ✓ — لا توجد مدة انتهاء")
+            self.licence_status.setStyleSheet("font-weight:800; color:#15803d;")
+            self.licence_key_input.setEnabled(False)
+            self.activate_btn.setEnabled(False)
+        else:
+            from logic.trial import TRIAL_DAYS
+            self.licence_status.setText(
+                f"الحالة: نسخة تجريبية ({TRIAL_DAYS} يوماً). "
+                "لتفعيلها بشكل دائم أرسل رقم الجهاز أدناه لمزوّد البرنامج، "
+                "ثم اكتب المفتاح الذي يصلك."
+            )
+            self.licence_status.setStyleSheet("font-weight:800; color:#b45309;")
+            self.licence_key_input.setEnabled(True)
+            self.activate_btn.setEnabled(True)
+
     def backup(self):
         default = f"backup-{datetime.now().strftime('%Y-%m-%d-%H%M')}.db"
         path, _ = QFileDialog.getSaveFileName(self, "حفظ نسخة احتياطية", default, "قاعدة بيانات (*.db)")
@@ -325,6 +409,7 @@ class SettingsModule(QWidget):
             self.branches_table.setItem(i, 1, QTableWidgetItem(r["location"] or ""))
 
     def load_all(self):
+        self.load_licence()
         self.company_name.setText(self.db.get_setting("company_name", "") or "")
         self.company_tax.setText(self.db.get_setting("company_tax_number", "") or "")
         self.load_opening()

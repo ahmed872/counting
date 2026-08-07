@@ -1,5 +1,3 @@
-import base64
-from datetime import datetime
 
 class AccountingLogic:
     def __init__(self, db_manager):
@@ -16,30 +14,6 @@ class AccountingLogic:
         amount = total_amount / (1 + rate)
         vat = total_amount - amount
         return amount, vat
-
-    def generate_zatca_qr(self, seller_name, tax_no, timestamp, total_amount, vat_amount):
-        """
-        ZATCA QR Code TLV (Tag-Length-Value) format:
-        Tag 1: Seller Name
-        Tag 2: Tax Number
-        Tag 3: Timestamp
-        Tag 4: Total Amount (with VAT)
-        Tag 5: VAT Amount
-        """
-        def get_tlv(tag, value):
-            tag_bytes = bytes([tag])
-            length_bytes = bytes([len(str(value).encode('utf-8'))])
-            value_bytes = str(value).encode('utf-8')
-            return tag_bytes + length_bytes + value_bytes
-
-        tlv_data = (
-            get_tlv(1, seller_name) +
-            get_tlv(2, tax_no) +
-            get_tlv(3, timestamp) +
-            get_tlv(4, total_amount) +
-            get_tlv(5, vat_amount)
-        )
-        return base64.b64encode(tlv_data).decode('utf-8')
 
     def get_trial_balance(self):
         query = """

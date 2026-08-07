@@ -1,8 +1,7 @@
 from datetime import datetime
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QTableWidget,
-                             QTableWidgetItem, QLabel, QHeaderView, QFrame, QComboBox)
-from PyQt6.QtCore import Qt
+                             QTableWidgetItem, QLabel, QHeaderView, QComboBox)
 from PyQt6.QtGui import QColor
 from logic.hr import HRLogic
 from logic.accounting import AccountingLogic
@@ -173,9 +172,6 @@ class DashboardModule(QWidget):
             f"color:{fg}; background:{bg}; border:1px solid {border};"
             "border-radius:10px; padding:11px 14px; font-weight:700;"
         )
-
-    def get_urgent_alerts(self, days=30):
-        return self.hr_logic.get_document_alerts(days=days)
 
     def refresh_on_show(self):
         self.refresh_dashboard()

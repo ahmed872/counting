@@ -40,16 +40,29 @@ def apply_app_icon(app):
 
 
 def enforce_trial(db):
-    """Blocks startup once the evaluation period is over. Returns days left."""
+    """Blocks startup once the evaluation period is over, unless the copy has
+    been paid for.
+
+    Returns the days left to show in the sidebar, or None when the copy is
+    activated and there is no countdown to show at all.
+    """
+    from logic.licence import is_activated
+
+    if is_activated(db):
+        return None
+
     allowed, days_left, message = TrialManager(db).check()
     if allowed:
         return days_left
 
-    box = QMessageBox()
-    box.setWindowTitle("النسخة التجريبية")
-    box.setIcon(QMessageBox.Icon.Warning)
-    box.setText(message)
-    box.exec()
+    # Not a message box and an exit. The customer needs somewhere to put the key
+    # he was sent, and a program that has already closed is not somewhere.
+    from ui.activation_dialog import ActivationDialog
+
+    dialog = ActivationDialog(db, message)
+    dialog.exec()
+    if dialog.activated:
+        return None
     sys.exit(0)
 
 
@@ -73,7 +86,15 @@ def show_expiry_notifications(db):
 
 
 def main():
-    db = DBManager(database_path())
+    # Order matters: the copy is taken before DBManager exists, because
+    # constructing one runs the schema migrations, and a backup taken after
+    # those have rewritten the file is not a backup of anything.
+    from logic.upgrade import backup_before_upgrade, record_version
+
+    path = database_path()
+    upgrade_backup = backup_before_upgrade(path)
+    db = DBManager(path)
+    record_version(db)
 
     app = QApplication(sys.argv)
     apply_theme(app)
@@ -84,6 +105,14 @@ def main():
     window = MainWindow(db)
     window.set_trial_banner(days_left)
     window.show()
+
+    if upgrade_backup:
+        QMessageBox.information(
+            None, "تم تحديث البرنامج",
+            "تم تحديث البرنامج إلى نسخة أحدث.\n\n"
+            "بياناتك كما هي ولم يتغيّر فيها شيء، وتم حفظ نسخة احتياطية "
+            "منها قبل التحديث في:\n" + upgrade_backup,
+        )
 
     show_expiry_notifications(db)
 

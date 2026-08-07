@@ -6,7 +6,6 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QGroupBox,
-    QFormLayout,
     QLabel,
     QLineEdit,
     QComboBox,
@@ -99,11 +98,27 @@ class SuppliersModule(QWidget):
         pay_layout = QVBoxLayout(pay_tab)
         pay_layout.setSpacing(10)
 
-        self.payment_supplier_label = QLabel("اختر مورداً من تبويب «الموردون والأرصدة» أولاً")
-        self.payment_supplier_label.setStyleSheet(
+        # The supplier is picked here, on the screen where the payment is
+        # entered. It used to be a read-only label that only filled in after
+        # selecting a row on the other tab, which meant the payment screen had
+        # no way to answer "who am I paying?" on its own.
+        self.payment_supplier = QComboBox()
+        self.payment_supplier.setMinimumWidth(240)
+        self.payment_supplier.currentIndexChanged.connect(self.on_payment_supplier_changed)
+
+        self.payment_balance_label = QLabel()
+        self.payment_balance_label.setStyleSheet(
             "font-weight: 800; color: #1f3b57; background:#eef6ff;"
             "border:1px solid #cfe0f5; border-radius:8px; padding:9px 12px;")
-        pay_layout.addWidget(self.payment_supplier_label)
+
+        picker_row = QHBoxLayout()
+        picker_row.setSpacing(8)
+        picker_label = QLabel("المورد:")
+        picker_label.setStyleSheet("font-weight:700; color:#334155;")
+        picker_row.addWidget(picker_label)
+        picker_row.addWidget(self.payment_supplier)
+        picker_row.addWidget(self.payment_balance_label, 1)
+        pay_layout.addLayout(picker_row)
 
         self.payment_amount = QLineEdit()
         self.payment_amount.setPlaceholderText("0.00")
@@ -181,6 +196,7 @@ class SuppliersModule(QWidget):
 
     def load_suppliers(self):
         balances = self.accounting.get_all_supplier_balances()
+        self.reload_payment_picker(balances)
         total = 0
         if not fill_table(self.suppliers_table, len(balances), "لا يوجد موردون مسجلون بعد"):
             self.total_balance_label.setText("")
@@ -194,17 +210,75 @@ class SuppliersModule(QWidget):
             item = QTableWidgetItem(status)
             self.suppliers_table.setItem(row, 3, item)
             self.suppliers_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, s['id'])
-        self.total_balance_label.setText(f"إجمالي أرصدة الموردين الدائنة: {money(total)} ريال")
+        # "إجمالي الأرصدة الدائنة: -1,000" is a contradiction in terms and reads
+        # as a mistake. Say which direction the money actually goes.
+        if total > 0.01:
+            summary = f"إجمالي المستحق للموردين: {money(total)} ريال"
+        elif total < -0.01:
+            summary = f"مدفوع للموردين بالزيادة: {money(abs(total))} ريال"
+        else:
+            summary = "لا يوجد مستحق للموردين — كل الحسابات مسددة"
+        self.total_balance_label.setText(summary)
+
+    def reload_payment_picker(self, balances):
+        """Refill the dropdown, keeping whoever was selected still selected.
+
+        Rebuilding a combo box fires currentIndexChanged for every item that
+        goes in, so the signal is muted for the duration - otherwise adding a
+        supplier would silently repoint an in-progress payment at someone else.
+        """
+        previous = self.selected_supplier_id
+        self.payment_supplier.blockSignals(True)
+        self.payment_supplier.clear()
+        for s in balances:
+            self.payment_supplier.addItem(s['name'], s['id'])
+        index = self.payment_supplier.findData(previous) if previous else -1
+        if index < 0:
+            index = 0 if self.payment_supplier.count() else -1
+        self.payment_supplier.setCurrentIndex(index)
+        self.payment_supplier.blockSignals(False)
+        self.selected_supplier_id = self.payment_supplier.currentData()
+        self.update_payment_balance()
+
+    def update_payment_balance(self):
+        """Show what is owed right next to the amount being paid, so paying the
+        wrong figure takes ignoring the number sitting beside the box."""
+        if not self.selected_supplier_id:
+            self.payment_balance_label.setText("لا يوجد موردون مسجلون")
+            return
+        balance = self.accounting.get_supplier_statement(self.selected_supplier_id)["balance"]
+        if balance > 0.01:
+            text, colour = f"المستحق عليه الآن: {money(balance)} ريال", "#1f3b57"
+        elif balance < -0.01:
+            text, colour = f"مدفوع بالزيادة: {money(abs(balance))} ريال", "#b45309"
+        else:
+            text, colour = "الحساب مسدد بالكامل", "#15803d"
+        self.payment_balance_label.setText(text)
+        self.payment_balance_label.setStyleSheet(
+            f"font-weight: 800; color: {colour}; background:#eef6ff;"
+            "border:1px solid #cfe0f5; border-radius:8px; padding:9px 12px;")
+
+    def on_payment_supplier_changed(self):
+        self.selected_supplier_id = self.payment_supplier.currentData()
+        self.update_payment_balance()
+        self.refresh_statement()
 
     def on_supplier_selected(self):
+        """Selecting a row on the list tab still points the payment tab at that
+        supplier - the dropdown is an addition, not a replacement, so the habit
+        of clicking the row keeps working."""
         rows = self.suppliers_table.selectionModel().selectedRows()
         if not rows:
             return
         row = rows[0].row()
         supplier_id = self.suppliers_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        name = self.suppliers_table.item(row, 0).text()
         self.selected_supplier_id = supplier_id
-        self.payment_supplier_label.setText(f"المورد المحدد: {name}")
+        index = self.payment_supplier.findData(supplier_id)
+        if index >= 0:
+            self.payment_supplier.blockSignals(True)
+            self.payment_supplier.setCurrentIndex(index)
+            self.payment_supplier.blockSignals(False)
+        self.update_payment_balance()
         self.refresh_statement()
 
     def refresh_statement(self):
@@ -234,6 +308,24 @@ class SuppliersModule(QWidget):
         except ValueError as exc:
             QMessageBox.warning(self, "تنبيه", str(exc))
             return
+
+        # Paying more than is owed is almost always a typo - an extra zero, or
+        # the wrong supplier picked. It is legal (a deposit, an advance), so it
+        # is a question and not a refusal, but it must not go through silently:
+        # the balance simply went negative and nothing said a word.
+        outstanding = self.accounting.get_supplier_statement(self.selected_supplier_id)["balance"]
+        if amount > outstanding + 0.01:
+            supplier_name = self.payment_supplier.currentText()
+            owed = (f"المستحق عليه {money(outstanding)} ريال فقط"
+                    if outstanding > 0.01 else "لا يوجد أي مبلغ مستحق عليه")
+            answer = QMessageBox.question(
+                self, "المبلغ أكبر من المستحق",
+                f"أنت تسجّل سداد {money(amount)} ريال للمورد «{supplier_name}»، و{owed}.\n\n"
+                "لو كان هذا مقصوداً (دفعة مقدمة) اضغط نعم.\n"
+                "لو كان خطأ في الرقم أو في اختيار المورد اضغط لا.",
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                return
 
         method = self.payment_method.currentData()
         notes = self.payment_notes.text().strip()
