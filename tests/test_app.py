@@ -705,6 +705,141 @@ def main():
             shutil.rmtree(sandbox, ignore_errors=True)
     check("the trial expires and cannot be reset", trial_expires_and_survives_a_reset)
 
+    def paying_unlocks_it_without_losing_anything():
+        """The whole promise of activation: the books survive it.
+
+        A customer who pays on day 21 must get his program back with every
+        number still in it. If activation reset anything, or if he had to
+        reinstall to apply the key, the sale would cost him his accounts."""
+        import datetime as dt
+        import tempfile
+        import logic.trial as trial
+        import logic.licence as licence
+
+        sandbox = tempfile.mkdtemp(prefix="_erp_licence_")
+        saved = (os.environ.get("XDG_CONFIG_HOME"), os.environ.get("APPDATA"),
+                 os.environ.get("RESTAURANT_ERP_SECRET"))
+        os.environ["XDG_CONFIG_HOME"] = sandbox
+        os.environ.pop("APPDATA", None)
+        real_date = dt.date
+        licence_db_path = DB_PATH.replace(".db", "_licence.db")
+
+        class FrozenDate(real_date):
+            offset = 0
+
+            @classmethod
+            def today(cls):
+                return real_date.today() + dt.timedelta(days=cls.offset)
+
+        trial.date = FrozenDate
+        try:
+            if os.path.exists(licence_db_path):
+                os.remove(licence_db_path)
+            fresh = DBManager(licence_db_path)
+
+            # The customer works for a while.
+            fresh.execute_query(
+                "INSERT INTO suppliers (name, opening_balance) VALUES (?, ?)",
+                ("مورد قبل التفعيل", 5000),
+            )
+            before = fresh.fetch_one("SELECT COUNT(*) c FROM suppliers")["c"]
+
+            # Record day one first. Without this the first check ever made is
+            # the one taken from the future, so that becomes the install date
+            # and the trial has not started, let alone expired.
+            FrozenDate.offset = 0
+            assert trial.TrialManager(fresh).check()[0], "day one was not allowed"
+
+            FrozenDate.offset = trial.TRIAL_DAYS + 1
+            allowed, _, message = trial.TrialManager(fresh).check()
+            assert not allowed and message, "the trial did not expire"
+
+            code = licence.device_code(fresh)
+            assert len(code) == 8, code
+
+            # A key for someone else's machine must not open this one.
+            assert not licence.activate(fresh, licence.key_for_device("ZZZZ2345"))
+            assert not licence.activate(fresh, "AAAA-BBBB-CCCC-DDDD")
+            assert not licence.is_activated(fresh)
+
+            key = licence.key_for_device(code)
+            assert licence.activate(fresh, key), "the correct key was rejected"
+            assert licence.is_activated(fresh)
+
+            # However it comes back from WhatsApp.
+            assert licence.is_valid(code, key.lower().replace("-", " "))
+
+            # Time no longer matters.
+            FrozenDate.offset = 900
+            assert licence.is_activated(fresh), "activation expired with the trial"
+
+            # And nothing was lost.
+            after = fresh.fetch_one("SELECT COUNT(*) c FROM suppliers")["c"]
+            assert after == before, f"activation lost data: {before} -> {after}"
+
+            # Restoring a backup over the database must not deactivate a paid
+            # copy - the licence is remembered outside it too.
+            os.remove(licence_db_path)
+            restored = DBManager(licence_db_path)
+            assert licence.is_activated(restored), \
+                "restoring a backup deactivated a paid copy"
+        finally:
+            trial.date = real_date
+            for name, value in zip(
+                    ("XDG_CONFIG_HOME", "APPDATA", "RESTAURANT_ERP_SECRET"), saved):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            if os.path.exists(licence_db_path):
+                os.remove(licence_db_path)
+            shutil.rmtree(sandbox, ignore_errors=True)
+    check("paying unlocks it in place, with every number still there",
+          paying_unlocks_it_without_losing_anything)
+
+    def the_expiry_screen_can_actually_activate():
+        """Blocking startup with a message and exiting leaves nowhere to type
+        the key. The box that stops the customer has to be the box that lets
+        him in."""
+        from PyQt6.QtWidgets import QLineEdit
+        from ui.activation_dialog import ActivationDialog
+        import logic.licence as licence
+
+        dialog = ActivationDialog(db, "انتهت المدة")
+        try:
+            shown = dialog.code_field.text()
+            assert shown == licence.device_code(db), shown
+            assert dialog.code_field.isReadOnly(), "the device code is editable"
+            assert isinstance(dialog.key_field, QLineEdit)
+
+            # A wrong key must say so and must not let the program open.
+            dialog.key_field.setText("WRON-GKEY-WRON-GKEY")
+            dialog.try_activate()
+            assert not dialog.activated
+            # isVisibleTo, not isVisible: the dialog is never shown in a
+            # headless run, and every child of an unshown window reports itself
+            # hidden regardless of what the code did to it.
+            assert dialog.status.isVisibleTo(dialog), "no error was shown"
+            assert dialog.status.text(), "the error message is empty"
+
+            buttons = [b.text() for b in dialog.findChildren(QPushButton)]
+            assert any("تفعيل" in b for b in buttons), buttons
+            assert any("نسخ" in b for b in buttons), buttons
+        finally:
+            dialog.deleteLater()
+    check("the expiry screen is where the key is entered",
+          the_expiry_screen_can_actually_activate)
+
+    def arabic_day_counts_agree():
+        """"20 أيام" is broken Arabic. Numbers 11 and up take the singular."""
+        from logic.trial import arabic_days
+        assert arabic_days(1) == "يوم واحد"
+        assert arabic_days(2) == "يومان"
+        assert arabic_days(5) == "5 أيام"
+        assert arabic_days(20) == "20 يوماً"
+        assert "أيام" not in arabic_days(20)
+    check("day counts are written in correct Arabic", arabic_day_counts_agree)
+
     def manual_ships_and_opens():
         # Navigate here rather than relying on whichever page an earlier check
         # happened to leave open - a widget on a page that is not current is

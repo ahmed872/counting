@@ -130,10 +130,11 @@ class MainWindow(QMainWindow):
         if days_left is None:
             self.trial_banner.setVisible(False)
             return
+        from logic.trial import arabic_days
         urgent = days_left <= 2
         self.trial_banner.setText(
             "نسخة تجريبية\nينتهي غداً" if days_left == 1
-            else f"نسخة تجريبية\nمتبقٍ {days_left} أيام"
+            else f"نسخة تجريبية\nمتبقٍ {arabic_days(days_left)}"
         )
         self.trial_banner.setStyleSheet(
             f"color: {'#ffd8d4' if urgent else 'rgba(255,255,255,0.72)'};"

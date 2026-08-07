@@ -54,3 +54,6 @@ htmlcov/
 # PyInstaller output
 dist-single/
 dist-folder/
+
+# Build-time licence secret, written by the release build. Never committed.
+logic/_secret.py

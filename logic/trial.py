@@ -23,6 +23,24 @@ _LAST_RUN_KEY = "trial_last_run"
 _TAMPER_KEY = "trial_tampered"
 
 
+def arabic_days(count):
+    """Arabic agreement for a number of days.
+
+    1 -> يوم واحد, 2 -> يومان, 3-10 -> أيام, 11+ -> يوماً. Writing "20 أيام"
+    everywhere is the kind of thing that makes a program feel machine-made to
+    the people who have to read it all day.
+    """
+    count = int(count)
+    if count == 1:
+        return "يوم واحد"
+    if count == 2:
+        return "يومان"
+    if 3 <= count <= 10:
+        return f"{count} أيام"
+    return f"{count} يوماً"
+
+
+
 def _marker_path():
     base = (
         os.environ.get("APPDATA")                       # Windows
@@ -106,7 +124,7 @@ class TrialManager:
 
         if days_left <= 0:
             return False, 0, (
-                f"انتهت مدة النسخة التجريبية ({self.trial_days} أيام).\n\n"
+                f"انتهت مدة النسخة التجريبية ({arabic_days(self.trial_days)}).\n\n"
                 "بياناتك محفوظة ولم تُحذف.\n"
                 "للحصول على النسخة الكاملة يرجى التواصل مع مزوّد البرنامج."
             )

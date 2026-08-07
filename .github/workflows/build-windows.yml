@@ -68,6 +68,32 @@ jobs:
       - name: التحقق من الدليل والأيقونة
         run: python packaging/verify_artifacts.py
 
+      # The activation secret. It lives in this repository's Actions secrets and
+      # is written into a git-ignored module just before packaging, so it is
+      # baked into the executable without ever appearing in the source.
+      #
+      # The build stops if it is not configured. Shipping with the placeholder
+      # that is published in logic/licence.py would mean anyone who reads the
+      # repository can mint activation keys, and the whole thing would be
+      # decoration - a failure that would not show up until it mattered.
+      - name: تجهيز سرّ التفعيل
+        shell: pwsh
+        env:
+          LICENCE_SECRET: ${{ secrets.RESTAURANT_ERP_SECRET }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:LICENCE_SECRET)) {
+            Write-Host "::error::سرّ التفعيل غير مضبوط."
+            Write-Host "أضفه من: Settings -> Secrets and variables -> Actions -> New repository secret"
+            Write-Host "الاسم: RESTAURANT_ERP_SECRET   القيمة: أي نص طويل تحتفظ به لنفسك"
+            Write-Host "بدونه تخرج النسخة بسرّ منشور في الكود، ويستطيع أي شخص توليد مفاتيح."
+            exit 1
+          }
+          $escaped = $env:LICENCE_SECRET -replace '\\','\\\\' -replace '"','\"'
+          Set-Content -Path logic/_secret.py -Encoding utf8 -Value "SECRET = `"$escaped`""
+          python -c "import sys; sys.path.insert(0,'.'); from logic.licence import using_development_secret; sys.exit(1 if using_development_secret() else 0)"
+          if ($LASTEXITCODE -ne 0) { Write-Host "::error::لم يُحمَّل السرّ"; exit 1 }
+          Write-Host "تم تجهيز سرّ التفعيل."
+
       # Both builds come from the same spec, so they need separate --workpath
       # directories: PyInstaller caches its intermediates under a name derived
       # from the spec, and the second build would otherwise pick up the first

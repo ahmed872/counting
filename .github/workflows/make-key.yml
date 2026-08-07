@@ -1,0 +1,72 @@
+# Generates one customer's activation key, without needing anything installed.
+#
+#   Actions -> "توليد مفتاح تفعيل" -> Run workflow -> paste the device code
+#
+# The key appears in the run summary. Works from a phone browser, which is where
+# the WhatsApp message with the device code arrives in the first place.
+#
+# Only people with write access to the repository can start a workflow, so this
+# is not a public key vending machine. It is worth knowing that on a *public*
+# repository the run summary is readable by anyone; each key unlocks exactly one
+# device, so a leak is contained, but making the repository private closes that
+# gap entirely and is worth doing once real customers are paying.
+
+name: توليد مفتاح تفعيل
+
+on:
+  workflow_dispatch:
+    inputs:
+      device_code:
+        description: "رقم الجهاز كما يظهر عند العميل (8 خانات)"
+        required: true
+        type: string
+      customer:
+        description: "اسم العميل (للتسجيل فقط)"
+        required: false
+        type: string
+
+jobs:
+  key:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: التحقق من وجود السرّ
+        env:
+          LICENCE_SECRET: ${{ secrets.RESTAURANT_ERP_SECRET }}
+        run: |
+          if [ -z "$LICENCE_SECRET" ]; then
+            echo "::error::سرّ التفعيل غير مضبوط في إعدادات المستودع."
+            echo "أضفه من Settings -> Secrets and variables -> Actions"
+            echo "بنفس القيمة التي بُنيت بها نسخة العميل، وإلا لن يقبل البرنامج المفتاح."
+            exit 1
+          fi
+
+      - name: توليد المفتاح
+        env:
+          RESTAURANT_ERP_SECRET: ${{ secrets.RESTAURANT_ERP_SECRET }}
+          DEVICE_CODE: ${{ inputs.device_code }}
+          CUSTOMER: ${{ inputs.customer }}
+        run: |
+          # The device code goes in through the environment, not interpolated
+          # into the command line, so whatever was pasted into the form cannot
+          # be read as shell.
+          OUTPUT=$(python packaging/make_key.py "$DEVICE_CODE")
+          echo "$OUTPUT"
+          KEY=$(echo "$OUTPUT" | grep "مفتاح التفعيل" | sed 's/.*: //')
+          {
+            echo "## مفتاح التفعيل"
+            echo ""
+            [ -n "$CUSTOMER" ] && echo "**العميل:** $CUSTOMER" && echo ""
+            echo "**رقم الجهاز:** \`$DEVICE_CODE\`"
+            echo ""
+            echo "**المفتاح — أرسل هذا السطر فقط:**"
+            echo ""
+            echo "\`\`\`"
+            echo "$KEY"
+            echo "\`\`\`"
+          } >> "$GITHUB_STEP_SUMMARY"
