@@ -176,6 +176,78 @@ def main():
         assert abs(balance - 600) < 0.01, balance
     check("supplier opening balance minus payment", supplier_ledger)
 
+    def paying_a_supplier_needs_no_other_screen():
+        """Choosing who is being paid belongs on the screen where the payment
+        is entered. It used to be a read-only label that only filled in after
+        selecting a row on a different tab, so the payment screen could not
+        answer 'who am I paying?' on its own."""
+        from PyQt6.QtWidgets import QComboBox
+        goto("suppliers")
+        s = window.suppliers
+        assert isinstance(s.payment_supplier, QComboBox)
+        assert s.payment_supplier.count() > 0, "the picker is empty"
+        # Every supplier in the list must be choosable from it.
+        names = {s.payment_supplier.itemText(i) for i in range(s.payment_supplier.count())}
+        stored = {r["name"] for r in db.fetch_all("SELECT name FROM suppliers")}
+        assert stored <= names, stored - names
+        # Picking one there must actually point the payment at them.
+        sid = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد الاختبار'")["id"]
+        s.payment_supplier.setCurrentIndex(s.payment_supplier.findData(sid))
+        app.processEvents()
+        assert s.selected_supplier_id == sid
+        assert "ريال" in s.payment_balance_label.text() or "مسدد" in s.payment_balance_label.text()
+    check("a supplier can be picked on the payment screen itself",
+          paying_a_supplier_needs_no_other_screen)
+
+    def overpaying_a_supplier_asks_first():
+        """Paying more than is owed is almost always an extra zero or the wrong
+        supplier. It went through silently and the balance just went negative."""
+        asked = []
+        original = QMessageBox.question
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No)
+        try:
+            goto("suppliers")
+            s = window.suppliers
+            sid = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد الاختبار'")["id"]
+            s.payment_supplier.setCurrentIndex(s.payment_supplier.findData(sid))
+            app.processEvents()
+            before = db.fetch_one("SELECT COUNT(*) c FROM supplier_payments")["c"]
+            s.payment_amount.setText("999999")
+            s.record_payment()
+            assert asked, "an overpayment was accepted without asking"
+            after = db.fetch_one("SELECT COUNT(*) c FROM supplier_payments")["c"]
+            assert after == before, "answering no still recorded the payment"
+        finally:
+            QMessageBox.question = original
+            window.suppliers.payment_amount.clear()
+    check("paying more than is owed asks before going through",
+          overpaying_a_supplier_asks_first)
+
+    def negative_money_reads_correctly():
+        """In a right-to-left line the bidi algorithm throws a leading minus to
+        the visual right, so -1000 was displayed as '1,000.00-' - which scans as
+        a positive number with a stray dash, on the screen where owing and being
+        owed are the entire distinction."""
+        from ui.formatting import money, LTR_ISOLATE, POP_ISOLATE
+        negative = money(-1000)
+
+        # Checking the order of the characters proves nothing - the minus is
+        # first in the string either way. What was broken is how the string is
+        # laid out, and the only thing that fixes that is the directional
+        # control, so that is what gets asserted.
+        assert negative.startswith(LTR_ISOLATE) and negative.endswith(POP_ISOLATE), (
+            f"a negative amount carries no direction mark, so Arabic layout will "
+            f"push the minus to the far side: {negative!r}")
+        assert "-1,000.00" in negative
+
+        # Positive amounts must stay clean: no invisible characters leaking into
+        # exported reports or into anything compared as text.
+        assert money(1000) == "1,000.00", repr(money(1000))
+        assert money(0) == "0.00", repr(money(0))
+    check("a negative amount still reads as negative in Arabic",
+          negative_money_reads_correctly)
+
     def purchases_route_by_category():
         goto("purchases")
         p = window.purchases
