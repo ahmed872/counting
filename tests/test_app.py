@@ -946,6 +946,121 @@ def main():
             assert os.path.exists(path), path
     check("the Windows build bundles every file the app loads", packaging_bundles_every_data_file)
 
+    def sending_a_newer_version_keeps_his_books():
+        """The customer asks for a change, gets a newer copy, replaces the old
+        program with it - and every number he has entered is still there.
+
+        This is the single most damaging thing this program could get wrong, and
+        it is not covered by testing against a database the current code created.
+        The database is built from the layout of the *first* released version,
+        filled the way a working restaurant fills one, and only then opened with
+        the code as it stands today.
+        """
+        import sqlite3
+        from logic.upgrade import backup_before_upgrade, record_version, APP_VERSION
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        old_schema = os.path.join(root, "tests", "fixtures", "schema_v1.sql")
+        assert os.path.exists(old_schema), "the old schema fixture is missing"
+
+        workdir = tempfile.mkdtemp(prefix="_erp_upgrade_")
+        old_db = os.path.join(workdir, "restaurant_erp.db")
+        try:
+            conn = sqlite3.connect(old_db)
+            conn.executescript(open(old_schema, encoding="utf-8").read())
+            cur = conn.cursor()
+            cur.execute("INSERT INTO employees (name, job_title, base_salary, "
+                        "allowances, branch_id) VALUES ('محمد أحمد','طباخ',5000,500,1)")
+            cur.execute("INSERT INTO suppliers (name, opening_balance) "
+                        "VALUES ('مورد اللحوم', 20000)")
+            for day in range(1, 16):
+                cur.execute(
+                    "INSERT INTO sales (branch_id, date, total_amount, vat_amount, "
+                    "payment_method) VALUES (1,?,?,?,'Cash')",
+                    (f"2026-07-{day:02d}", 4600.0, 600.0))
+            cur.execute("INSERT INTO purchases (supplier_id, branch_id, date, "
+                        "total_amount, vat_amount, payment_status) "
+                        "VALUES (1,1,'2026-07-05',2300,300,'Cash')")
+            cur.execute("INSERT INTO journal_entries (date, description, branch_id) "
+                        "VALUES ('2026-07-01','قيد قديم',1)")
+            entry = cur.lastrowid
+            cur.execute("INSERT INTO journal_items (entry_id, account_code, debit, "
+                        "credit) VALUES (?, '1000', 4600, 0)", (entry,))
+            cur.execute("INSERT INTO journal_items (entry_id, account_code, debit, "
+                        "credit) VALUES (?, '4000', 0, 4600)", (entry,))
+            conn.commit()
+
+            def counts(path):
+                c = sqlite3.connect(path)
+                try:
+                    out = {t: c.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                           for t in ("employees", "suppliers", "sales", "purchases",
+                                     "journal_entries", "journal_items")}
+                    out["sales_total"] = c.execute(
+                        "SELECT COALESCE(SUM(total_amount),0) FROM sales").fetchone()[0]
+                    return out
+                finally:
+                    c.close()
+
+            before = counts(old_db)
+            conn.close()
+
+            import hashlib
+
+            def digest(path):
+                with open(path, "rb") as handle:
+                    return hashlib.sha256(handle.read()).hexdigest()
+
+            untouched = digest(old_db)
+
+            # The copy must be taken before the migrations run, so this is
+            # called on the path, exactly as main.py does it.
+            backup = backup_before_upgrade(old_db)
+            assert backup and os.path.exists(backup), "no backup was taken"
+            assert counts(backup) == before, "the backup is not a faithful copy"
+            # Byte-for-byte, not just the same row counts. Comparing counts
+            # cannot tell a pre-migration copy from a post-migration one - the
+            # migrations do not change how many rows there are - and taking the
+            # copy after they have already rewritten the file is the whole bug
+            # this is here to prevent.
+            assert digest(backup) == untouched, \
+                "the backup was taken after the migrations had already run"
+
+            upgraded = DBManager(old_db)
+            record_version(upgraded)
+
+            after = counts(old_db)
+            assert after == before, f"the upgrade changed the data: {before} -> {after}"
+
+            # Every screen has to open against it, not just the tables survive.
+            upgraded_window = MainWindow(upgraded)
+            upgraded_window.resize(1280, 720)
+            upgraded_window.show()
+            app.processEvents()
+            try:
+                for item in upgraded_window.nav_entries:
+                    upgraded_window.set_active_page(item["index"])
+                    app.processEvents()
+            finally:
+                upgraded_window.close()
+                upgraded_window.deleteLater()
+
+            # And the books still balance on his data.
+            from logic.accounting import AccountingLogic
+            rows = AccountingLogic(upgraded).get_trial_balance()
+            debit = sum(r["total_debit"] or 0 for r in rows)
+            credit = sum(r["total_credit"] or 0 for r in rows)
+            assert abs(debit - credit) < 0.01, (debit, credit)
+
+            # Running the same version again must not pile up more backups.
+            assert backup_before_upgrade(old_db) is None, \
+                "a backup was taken again for the same version"
+            assert upgraded.get_setting("app_version") == APP_VERSION
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+    check("sending a newer version keeps every number he entered",
+          sending_a_newer_version_keeps_his_books)
+
     def the_icon_is_real_and_usable():
         """The shortcut icon is the first thing the customer sees, before the
         program has run at all.
