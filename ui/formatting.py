@@ -36,13 +36,3 @@ def money_item(value, bold=False, colour=None, blank_if_zero=False):
         item.setForeground(QColor(colour))
     return item
 
-
-def text_item(value, bold=False, colour=None):
-    item = QTableWidgetItem("" if value is None else str(value))
-    if bold:
-        font = item.font()
-        font.setBold(True)
-        item.setFont(font)
-    if colour:
-        item.setForeground(QColor(colour))
-    return item

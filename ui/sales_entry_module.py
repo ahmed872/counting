@@ -1,11 +1,9 @@
-from datetime import datetime
 
 from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
-    QFormLayout,
     QGroupBox,
     QLabel,
     QLineEdit,
@@ -19,7 +17,7 @@ from PyQt6.QtWidgets import (
 )
 
 from logic.accounting import AccountingLogic
-from ui.formatting import money_item, money
+from ui.formatting import money_item
 from ui.common_widgets import (page_header, danger_button, fill_table, pin_height,
                               collapsible)
 from logic.money import parse_money

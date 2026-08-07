@@ -54,12 +54,6 @@ class HRLogic:
             (employee_id, date, entry_type, amount, notes)
         )
 
-    def get_employee_entries(self, employee_id, limit=50):
-        return self.db.fetch_all(
-            "SELECT * FROM employee_deductions WHERE employee_id = ? ORDER BY date DESC, id DESC LIMIT ?",
-            (employee_id, limit)
-        )
-
     def get_outstanding_advances_total(self):
         row = self.db.fetch_one(
             "SELECT COALESCE(SUM(amount), 0) as total FROM employee_deductions WHERE type = 'Advance' AND settled_run_id IS NULL"

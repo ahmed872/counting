@@ -10,12 +10,9 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDoubleSpinBox,
-    QFrame,
     QGroupBox,
     QGridLayout,
     QTabWidget,
-    QScrollArea,
-    QMessageBox,
 )
 from PyQt6.QtCore import QDate, Qt
 from logic.accounting import AccountingLogic

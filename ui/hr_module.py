@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QTableWidgetItem, QPushButton, QFormLayout, QLineEdit,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
-                             QGroupBox, QTabWidget, QScrollArea, QSizePolicy)
+                             QGroupBox, QTabWidget, QScrollArea)
 from PyQt6.QtCore import QDate, Qt
 from ui.common_widgets import create_stat_card, page_header, fill_table
 from ui.formatting import money_item, money

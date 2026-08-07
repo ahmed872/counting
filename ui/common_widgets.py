@@ -66,21 +66,6 @@ def compact_form(pairs, columns=2, field_min_width=200):
     return wrapper
 
 
-def section_title(text, action_button=None):
-    """A titled row above a table, optionally with a right-hand action."""
-    wrapper = QWidget()
-    row = QHBoxLayout(wrapper)
-    row.setContentsMargins(0, 4, 0, 0)
-    row.setSpacing(8)
-    label = QLabel(text)
-    label.setStyleSheet("font-size: 15px; font-weight: 700; color: #334155;")
-    row.addWidget(label)
-    row.addStretch()
-    if action_button is not None:
-        row.addWidget(action_button)
-    return wrapper
-
-
 def danger_button(text):
     """Destructive actions are outlined rather than filled: a solid red block
     sitting next to the save button reads as the primary action at a glance."""

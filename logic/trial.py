@@ -16,7 +16,7 @@ import json
 import os
 from datetime import date, datetime, timedelta
 
-TRIAL_DAYS = 7
+TRIAL_DAYS = 20
 
 _INSTALL_KEY = "trial_install_date"
 _LAST_RUN_KEY = "trial_last_run"
@@ -112,8 +112,3 @@ class TrialManager:
             )
 
         return True, days_left, ""
-
-    def banner_text(self, days_left):
-        if days_left == 1:
-            return "نسخة تجريبية — ينتهي اليوم الأخير غداً"
-        return f"نسخة تجريبية — متبقٍ {days_left} أيام"

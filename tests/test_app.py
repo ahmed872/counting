@@ -7,7 +7,6 @@ VAT handling, stylesheet leaking onto child widgets, invisible buttons,
 RTL date formatting, and content being cut off below the window.
 """
 
-import collections
 import re
 import os
 import shutil
@@ -22,7 +21,7 @@ from PyQt6.QtWidgets import (
     QTableWidget,
 )
 from PyQt6.QtGui import QPixmap, QImage
-from PyQt6.QtCore import Qt, QPoint, QDate
+from PyQt6.QtCore import Qt, QDate
 
 from database.db_manager import DBManager
 from ui.main_window import MainWindow
@@ -61,15 +60,6 @@ def render(widget):
     pixmap.fill(Qt.GlobalColor.white)
     widget.render(pixmap)
     return pixmap.toImage()
-
-
-def dominant_colour(widget):
-    image = render(widget)
-    counts = collections.Counter()
-    for y in range(2, image.height() - 2, 2):
-        for x in range(2, image.width() - 2, 2):
-            counts[image.pixelColor(x, y).name()] += 1
-    return counts.most_common(1)[0][0]
 
 
 def is_near_white(hex_colour):
@@ -641,7 +631,7 @@ def main():
             if os.path.exists(trial_db_path):
                 os.remove(trial_db_path)
             shutil.rmtree(sandbox, ignore_errors=True)
-    check("the trial expires after a week and cannot be reset", trial_expires_and_survives_a_reset)
+    check("the trial expires and cannot be reset", trial_expires_and_survives_a_reset)
 
     def manual_ships_and_opens():
         # Navigate here rather than relying on whichever page an earlier check
@@ -681,6 +671,40 @@ def main():
         assert os.path.samefile(opened[0], path), (opened[0], path)
     check("the manual is shipped and reachable from the settings page", manual_ships_and_opens)
 
+    def the_manual_is_readable():
+        """The customer opened the manual and every glyph was an empty box.
+
+        The build was regenerating the PDF on a headless Windows runner, where
+        Qt found no font with Arabic coverage and silently substituted one. The
+        job stayed green and shipped a booklet of rectangles. The manual is now
+        committed rather than regenerated, and this is the check that the
+        committed file is still whole - fonts embedded, so it renders the same
+        on a machine that has none of them installed."""
+        import subprocess
+
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        # The same verification the build runs, exercised here so a broken
+        # manual fails locally too rather than only in CI.
+        result = subprocess.run(
+            [sys.executable, os.path.join(root, "packaging", "verify_artifacts.py")],
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+
+        with open(window.settings.manual_path(), "rb") as handle:
+            blob = handle.read()
+        assert b"FontFile2" in blob or b"FontFile3" in blob or b"FontFile" in blob, \
+            "the manual's fonts are not embedded - it will render as empty boxes"
+
+        # And the build must not quietly replace it with a regenerated one.
+        workflow = os.path.join(root, ".github", "workflows", "build-windows.yml")
+        if os.path.exists(workflow):
+            text = open(workflow, encoding="utf-8").read()
+            assert "build_manual.py" not in text, \
+                "the build regenerates the manual again - that is what broke it"
+    check("the manual is readable and the build cannot replace it",
+          the_manual_is_readable)
+
     def packaging_bundles_every_data_file():
         """Files loaded through resource_path() are data, not code, so
         PyInstaller cannot discover them by following imports. Anything missing
@@ -717,9 +741,13 @@ def main():
 
     def the_icon_is_real_and_usable():
         """The shortcut icon is the first thing the customer sees, before the
-        program has run at all. It has to exist, be a real multi-size .ico, and
-        still be legible at 16px - which is the size Explorer and the taskbar
-        actually draw."""
+        program has run at all.
+
+        The small entries must be BMP, not PNG. PNG inside an .ico is legal and
+        every image viewer reads it, but the Windows taskbar ignores those
+        entries and falls back to a generic icon - which is what shipped once,
+        with a correct-looking icon file that the taskbar refused to draw.
+        """
         import struct
         from logic.paths import icon_path
 
@@ -732,19 +760,33 @@ def main():
             blob = handle.read()
         reserved, kind, count = struct.unpack("<HHH", blob[:6])
         assert (reserved, kind) == (0, 1), "not an icon file"
-        sizes = sorted((blob[6 + 16 * i] or 256) for i in range(count))
-        assert 16 in sizes and 32 in sizes and 256 in sizes, sizes
 
-        # At 16px an icon that is nearly all one colour has turned to mush.
-        smallest = min(
-            (struct.unpack("<II", blob[6 + 16 * i + 8:6 + 16 * i + 16]), blob[6 + 16 * i] or 256)
-            for i in range(count)
-        )
-        (length, offset), _ = smallest
-        image = QImage.fromData(blob[offset:offset + length], "PNG")
-        assert not image.isNull() and image.width() == 16
-        shades = {image.pixelColor(x, y).name()
-                  for y in range(16) for x in range(16)}
+        entries = {}
+        for i in range(count):
+            head = 6 + 16 * i
+            width = blob[head] or 256
+            length, offset = struct.unpack("<II", blob[head + 8:head + 16])
+            payload = blob[offset:offset + length]
+            assert len(payload) == length, f"entry {width} is truncated"
+            entries[width] = payload
+
+        for required in (16, 32, 256):
+            assert required in entries, f"missing the {required}px size: {sorted(entries)}"
+
+        for width, payload in entries.items():
+            if width <= 64:
+                assert payload[:4] != b"\x89PNG", (
+                    f"the {width}px entry is PNG - the taskbar will not draw it")
+
+        # Decode the 16px BMP by hand and confirm it is still a picture rather
+        # than a flat blob: at that size a design either survives or it does not.
+        payload = entries[16]
+        header = struct.unpack("<IiiHHIIiiII", payload[:40])
+        width, doubled_height, bpp = header[1], header[2], header[4]
+        height = doubled_height // 2
+        assert (width, height, bpp) == (16, 16, 32), (width, height, bpp)
+        pixels = payload[40:40 + width * height * 4]
+        shades = {pixels[i:i + 3] for i in range(0, len(pixels), 4)}
         assert len(shades) > 6, f"the 16px icon is a flat blob ({len(shades)} shades)"
 
         # And the running window must carry it, or the taskbar shows Python's.

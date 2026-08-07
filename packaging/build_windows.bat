@@ -42,11 +42,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [2/4] توليد الايقونة ودليل الاستخدام PDF...
-python packaging\build_icon.py
-python docs\build_manual.py
+REM The manual and the icon are committed, not regenerated, and this refuses
+REM to build if either has been damaged. Regenerating the manual on a machine
+REM without the right fonts produces a PDF of empty boxes.
+echo [2/4] التحقق من الدليل والايقونة...
+python packaging\verify_artifacts.py
 if errorlevel 1 (
-    echo [تحذير] لم يتم توليد الدليل. سيتم استخدام النسخة الموجودة.
+    echo [خطأ] الدليل او الايقونة غير سليمة.
+    pause
+    exit /b 1
 )
 
 echo [3/4] بناء نسخة الملف الواحد...

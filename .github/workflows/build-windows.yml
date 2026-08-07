@@ -53,10 +53,20 @@ jobs:
         # nothing, so the tests gate the artifact.
         run: python tests/test_app.py
 
-      - name: توليد الأيقونة ودليل الاستخدام
-        run: |
-          python packaging/build_icon.py
-          python docs/build_manual.py
+      # The manual and the icon are NOT regenerated here. They are committed,
+      # and they are committed because they were checked by eye - pages
+      # rendered to images and actually looked at, the icon inspected at every
+      # size it ships in.
+      #
+      # Regenerating the manual on the runner produced a PDF whose every glyph
+      # was an empty box: Qt found no font with Arabic coverage on a headless
+      # Windows image and silently substituted one, and the build happily
+      # shipped it. A document nobody can read is worse than no document, and
+      # nothing in the job could have noticed. So the build uses the file that
+      # was verified, and verify_artifacts below refuses to continue if that
+      # file is not intact.
+      - name: التحقق من الدليل والأيقونة
+        run: python packaging/verify_artifacts.py
 
       # Both builds come from the same spec, so they need separate --workpath
       # directories: PyInstaller caches its intermediates under a name derived
@@ -110,4 +120,4 @@ jobs:
             "نظام-إدارة-المطعم-مجلد.zip" `
             "docs/دليل-الاستخدام.pdf" `
             --title "نظام إدارة المطعم ${{ github.ref_name }}" `
-            --notes "نسخة تجريبية تعمل 7 أيام من أول تشغيل على كل جهاز. حمّل ملف exe وشغّله مباشرة - لا يحتاج تثبيت."
+            --notes "نسخة تجريبية تعمل 20 يوماً من أول تشغيل على كل جهاز. حمّل ملف exe وشغّله مباشرة - لا يحتاج تثبيت."

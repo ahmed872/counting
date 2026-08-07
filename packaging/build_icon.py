@@ -18,8 +18,10 @@ Design notes, because they are the whole job here:
     geometry can be nudged where a size needs it: below 32px the dome is widened
     and the plate thickened, otherwise they thin out and the silhouette breaks.
 
-  - The .ico is assembled by hand. Qt ships the ICO plugin read-only in most
-    builds, and the format is simply a header, a directory, and PNG payloads.
+  - The .ico is assembled by hand, because Qt ships the ICO plugin read-only in
+    most builds. The small entries are written as BMP/DIB rather than PNG: the
+    PNG-in-ICO form is legal but not honoured everywhere, and the taskbar was
+    silently falling back to a generic icon because of it.
 """
 
 import os
@@ -64,13 +66,11 @@ def draw(size):
     painter.setBrush(QBrush(gradient))
     painter.drawRoundedRect(QRectF(0, 0, s, s), radius, radius)
 
-    # --- cloche ------------------------------------------------------------
-    # Widened and dropped slightly at small sizes; the default proportions
-    # leave too little ink and the dome reads as a smudge.
-    dome_w = s * (0.72 if small else 0.64)
-    dome_h = dome_w * 0.52
+    # --- cloche: the restaurant half of the idea --------------------------
+    dome_w = s * (0.74 if small else 0.66)
+    dome_h = dome_w * 0.54
     cx = s / 2
-    base_y = s * (0.66 if small else 0.64)
+    base_y = s * (0.66 if small else 0.65)
 
     dome = QPainterPath()
     dome.moveTo(cx - dome_w / 2, base_y)
@@ -79,13 +79,30 @@ def draw(size):
     painter.setBrush(DOME)
     painter.drawPath(dome)
 
-    # knob on top of the dome
     knob_r = s * (0.075 if small else 0.055)
     painter.setBrush(KNOB)
     painter.drawEllipse(QPointF(cx, base_y - dome_h - knob_r * 0.55), knob_r, knob_r)
 
+    # --- rising bars inside the dome: the accounting half -----------------
+    # Dropped entirely below 32px. Three bars in eleven pixels is not a chart,
+    # it is noise, and it eats the dome that carries the whole silhouette.
+    if not small:
+        bar_w = dome_w * 0.13
+        gap = bar_w * 0.55
+        heights = (0.30, 0.52, 0.74)
+        total_w = 3 * bar_w + 2 * gap
+        x = cx - total_w / 2
+        painter.setBrush(NAVY_BOTTOM)
+        for factor in heights:
+            bar_h = dome_h * factor
+            painter.drawRoundedRect(
+                QRectF(x, base_y - bar_h - dome_h * 0.06, bar_w, bar_h),
+                bar_w * 0.3, bar_w * 0.3,
+            )
+            x += bar_w + gap
+
     # --- plate -------------------------------------------------------------
-    plate_w = s * (0.84 if small else 0.76)
+    plate_w = s * (0.86 if small else 0.78)
     plate_h = s * (0.11 if small else 0.085)
     painter.setBrush(PLATE)
     painter.drawRoundedRect(
@@ -108,15 +125,54 @@ def png_bytes(pixmap):
     return bytes(storage)
 
 
-def write_ico(path, images):
-    """images: list of (size, png_bytes). Windows accepts PNG payloads inside
-    an .ico for Vista and later, which every target machine is."""
-    count = len(images)
+def dib_bytes(image):
+    """The classic ICO payload: a BITMAPINFOHEADER, bottom-up BGRA pixels, then
+    a 1-bit AND mask.
+
+    Windows has accepted PNG payloads inside .ico since Vista, but only
+    reliably for the large sizes. Several shell surfaces - the taskbar among
+    them - still expect the small entries in this format, and quietly fall back
+    to a default icon when they are PNG. That is exactly what happened: the
+    executable carried the icon and the taskbar showed a generic one.
+    """
+    width, height = image.width(), image.height()
+
+    header = struct.pack(
+        "<IiiHHIIiiII",
+        40,                 # header size
+        width,
+        height * 2,         # colour data plus the mask, per the ICO convention
+        1,                  # planes
+        32,                 # bits per pixel
+        0,                  # BI_RGB, uncompressed
+        width * height * 4,
+        0, 0, 0, 0,
+    )
+
+    pixels = bytearray()
+    for y in range(height - 1, -1, -1):          # bottom-up
+        for x in range(width):
+            colour = image.pixelColor(x, y)
+            pixels += bytes((colour.blue(), colour.green(),
+                             colour.red(), colour.alpha()))
+
+    # AND mask: one bit per pixel, rows padded to four bytes. With a real alpha
+    # channel it is ignored, but a missing or misaligned mask makes some
+    # versions of the shell reject the entry outright.
+    row_bytes = ((width + 31) // 32) * 4
+    mask = bytearray(row_bytes * height)
+
+    return bytes(header) + bytes(pixels) + bytes(mask)
+
+
+def write_ico(path, entries):
+    """entries: list of (size, payload_bytes)."""
+    count = len(entries)
     header = struct.pack("<HHH", 0, 1, count)          # reserved, type=icon, count
     directory = b""
     payload = b""
     offset = 6 + 16 * count
-    for size, data in images:
+    for size, data in entries:
         directory += struct.pack(
             "<BBBBHHII",
             0 if size >= 256 else size,                # width  (0 means 256)
@@ -136,13 +192,18 @@ def write_ico(path, images):
 
 def build():
     app = QApplication.instance() or QApplication(sys.argv)  # noqa: F841
-    images = []
+    entries = []
     for size in SIZES:
         pixmap = draw(size)
-        images.append((size, png_bytes(pixmap)))
+        # PNG only for the big entries, where it saves real space; BMP for
+        # everything the shell draws small.
+        if size >= 128:
+            entries.append((size, png_bytes(pixmap)))
+        else:
+            entries.append((size, dib_bytes(pixmap.toImage())))
         if size == 256:
             pixmap.save(PNG_PATH, "PNG")
-    write_ico(ICO_PATH, images)
+    write_ico(ICO_PATH, entries)
     print(f"تم إنشاء الأيقونة: {ICO_PATH} ({os.path.getsize(ICO_PATH):,} بايت)")
     print(f"المقاسات: {', '.join(str(s) for s in SIZES)}")
     return ICO_PATH
