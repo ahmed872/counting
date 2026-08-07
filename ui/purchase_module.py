@@ -22,7 +22,9 @@ from logic.accounting import AccountingLogic
 from ui.labels import PAYMENT_STATUS_LABELS, REFUND_METHOD_LABELS, label_for
 from ui.formatting import money_item, money
 from ui.common_widgets import (page_header, danger_button, fill_table, compact_form,
-                              pin_height, collapsible)
+                              pin_height, collapsible,
+                              collapse_when_short)
+from logic.money import parse_money
 
 CATEGORY_LABELS = {
     'raw_material': 'مواد خام',
@@ -119,9 +121,10 @@ class PurchaseModule(QWidget):
         table_label.setStyleSheet("font-weight:700; color:#334155;")
         table_header.addWidget(table_label)
         table_header.addStretch()
-        table_header.addWidget(collapsible(
+        self.form_toggle = collapsible(
             form_box, "إظهار نموذج الفاتورة", "إخفاء النموذج",
-            start_collapsed=self._short_screen()))
+            start_collapsed=self._short_screen())
+        table_header.addWidget(self.form_toggle)
         delete_btn = danger_button("حذف الفاتورة المحددة")
         delete_btn.clicked.connect(self.delete_selected_purchase)
         table_header.addWidget(delete_btn)
@@ -135,6 +138,10 @@ class PurchaseModule(QWidget):
 
         self.on_category_changed()
         self.load_purchases()
+        # _short_screen() only knows about the monitor. Someone on a big screen
+        # can still drag the window down to where the form and the table cannot
+        # both fit, and the invoice list was left at 94px - two rows.
+        collapse_when_short(self, self.form_toggle)
         return widget
 
     def _short_screen(self):
@@ -261,9 +268,8 @@ class PurchaseModule(QWidget):
             if not amount_text:
                 raise ValueError("يرجى إدخال المبلغ قبل الضريبة")
 
-            amount = float(amount_text)
-            if amount <= 0:
-                raise ValueError("يجب أن يكون المبلغ أكبر من صفر")
+            amount = parse_money(amount_text, "المبلغ قبل الضريبة",
+                                 allow_blank=False, allow_zero=False)
 
             status = self.payment_status.currentData()
             if status == 'Credit' and not supplier_id:
@@ -348,9 +354,8 @@ class PurchaseModule(QWidget):
             amount_text = self.return_amount_input.text().strip()
             if not amount_text:
                 raise ValueError("يرجى إدخال مبلغ المرتجع")
-            amount = float(amount_text)
-            if amount <= 0:
-                raise ValueError("يجب أن يكون المبلغ أكبر من صفر")
+            amount = parse_money(amount_text, "مبلغ المرتجع",
+                                 allow_blank=False, allow_zero=False)
 
             refund_method = self.return_method_input.currentData()
             notes = self.return_notes_input.text().strip()

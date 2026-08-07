@@ -195,3 +195,50 @@ def collapsible(form_widget, show_text, hide_text, start_collapsed=False):
     button.setChecked(start_collapsed)
     apply_state()
     return button
+
+
+def hide_when_short(page, widgets, min_height=660):
+    """Hide decorative widgets while the page is too short to afford them.
+
+    A page built around a table has a fixed budget of vertical pixels. Headers,
+    summary cards and hint boxes take theirs first and the table gets whatever
+    is left - which on a 1024x600 laptop was 78 pixels, about one visible row.
+
+    The signal is the page's own height, not the size of the monitor. Someone on
+    a large screen can still drag the window small, and a check against
+    screen().availableGeometry() never notices. This reacts to the actual
+    resize, in both directions, so the cards come back when there is room.
+    """
+    original_resize = page.resizeEvent
+
+    def resizeEvent(event):
+        original_resize(event)
+        roomy = event.size().height() >= min_height
+        for widget in widgets:
+            if widget is not None:
+                widget.setVisible(roomy)
+
+    page.resizeEvent = resizeEvent
+    return page
+
+
+def collapse_when_short(page, toggle_button, min_height=660):
+    """Fold a collapsible form away while the page is too short for it.
+
+    Deliberately fires only when the page crosses the threshold, not on every
+    resize: if the user opens the form on a short window they mean it, and
+    slamming it shut on the next stray resize event would be infuriating. Their
+    choice stands until the window actually changes between short and roomy.
+    """
+    original_resize = page.resizeEvent
+    state = {"short": None}
+
+    def resizeEvent(event):
+        original_resize(event)
+        short = event.size().height() < min_height
+        if short != state["short"]:
+            state["short"] = short
+            toggle_button.setChecked(short)
+
+    page.resizeEvent = resizeEvent
+    return page

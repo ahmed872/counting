@@ -22,7 +22,7 @@ from logic.accounting import AccountingLogic
 from ui.common_widgets import create_stat_card
 from ui.labels import ACCOUNT_TYPE_LABELS, label_for
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header
+from ui.common_widgets import page_header, hide_when_short
 
 
 class AccountingModule(QWidget):
@@ -66,7 +66,9 @@ class AccountingModule(QWidget):
         controls.addWidget(self.refresh_btn, 0, 6)
         layout.addWidget(controls_box)
 
-        summary_row = QHBoxLayout()
+        self.summary_container = QWidget()
+        summary_row = QHBoxLayout(self.summary_container)
+        summary_row.setContentsMargins(0, 0, 0, 0)
         summary_row.setSpacing(10)
         self.sales_card = create_stat_card("المبيعات", "0.00", "#27ae60")
         self.purchases_card = create_stat_card("المشتريات", "0.00", "#8e44ad")
@@ -76,7 +78,7 @@ class AccountingModule(QWidget):
         summary_row.addWidget(self.purchases_card)
         summary_row.addWidget(self.profit_card)
         summary_row.addWidget(self.vat_card)
-        layout.addLayout(summary_row)
+        layout.addWidget(self.summary_container)
 
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
@@ -86,6 +88,11 @@ class AccountingModule(QWidget):
         tabs.addTab(self.build_income_tab(), "قائمة الدخل")
         tabs.addTab(self.build_trading_tab(), "حساب المتاجرة")
         tabs.addTab(self.build_balance_sheet_tab(), "المركز المالي")
+
+        # On a short window the four summary cards left the trial balance table
+        # 78 pixels - one row. The numbers on the cards are all repeated inside
+        # the tabs, so they are the right thing to drop when space is tight.
+        hide_when_short(self, [self.summary_container])
 
         self.refresh_data()
 

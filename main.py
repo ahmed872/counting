@@ -10,7 +10,33 @@ from ui.main_window import MainWindow
 from ui.theme import apply_theme
 from logic.hr import HRLogic
 from logic.trial import TrialManager
-from logic.paths import database_path
+from logic.paths import database_path, icon_path
+
+
+def apply_app_icon(app):
+    """Sets the icon shown in the title bar, the taskbar and Alt-Tab.
+
+    The packager embeds the .ico into the .exe, which covers Explorer and the
+    desktop shortcut, but not the running window - Qt draws that from whatever
+    the application sets here."""
+    from PyQt6.QtGui import QIcon
+
+    path = icon_path()
+    if os.path.exists(path):
+        app.setWindowIcon(QIcon(path))
+
+    if sys.platform == "win32":
+        # Without an explicit AppUserModelID, Windows groups the window under
+        # the launching process and shows its icon on the taskbar instead of
+        # ours. Harmless if it fails.
+        try:
+            import ctypes
+
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+                "RestaurantERP.Desktop.1"
+            )
+        except Exception:
+            pass
 
 
 def enforce_trial(db):
@@ -51,6 +77,7 @@ def main():
 
     app = QApplication(sys.argv)
     apply_theme(app)
+    apply_app_icon(app)
 
     days_left = enforce_trial(db)
 

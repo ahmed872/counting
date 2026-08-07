@@ -5,6 +5,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
 from PyQt6.QtCore import QDate, Qt
 from ui.common_widgets import create_stat_card, page_header, fill_table
 from ui.formatting import money_item, money
+from logic.money import parse_money
 
 
 class HRModule(QWidget):
@@ -339,12 +340,12 @@ class HRModule(QWidget):
         job = self.job_input.text().strip()
         branch_id = self.branch_input.currentData()
         try:
-            salary = float(self.salary_input.text() or 0)
-            allowance = float(self.allowance_input.text() or 0)
+            salary = parse_money(self.salary_input.text(), "الراتب الأساسي")
+            allowance = parse_money(self.allowance_input.text(), "البدلات")
             if salary < 0 or allowance < 0:
                 raise ValueError
-        except ValueError:
-            QMessageBox.warning(self, "تنبيه", "الراتب أو البدلات غير صحيحة")
+        except ValueError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
             return
 
         values = (
@@ -421,11 +422,12 @@ class HRModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "اختر العامل أولاً")
             return
         try:
-            amount = float(self.deduction_amount.text())
+            amount = parse_money(self.deduction_amount.text(), "المبلغ",
+                                 allow_blank=False, allow_zero=False)
             if amount <= 0:
                 raise ValueError
-        except ValueError:
-            QMessageBox.warning(self, "تنبيه", "ادخل مبلغاً صحيحاً")
+        except ValueError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
             return
 
         entry_type = self.deduction_type.currentData()

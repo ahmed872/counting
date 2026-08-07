@@ -31,7 +31,12 @@ datas = [
     (os.path.join(project_root, "database", "schema.sql"), "database"),
     # The manual, opened by the button on the settings page.
     (os.path.join(project_root, "docs", "دليل-الاستخدام.pdf"), "docs"),
+    # Window / taskbar icon. The .ico below is embedded into the executable and
+    # is not read at runtime; this PNG is what Qt draws on the window.
+    (os.path.join(project_root, "packaging", "app_icon.png"), "packaging"),
 ]
+
+icon_file = os.path.join(project_root, "packaging", "app_icon.ico")
 
 a = Analysis(
     [os.path.join(project_root, "main.py")],
@@ -61,6 +66,7 @@ if onefile:
         strip=False,
         upx=False,
         console=False,      # no black terminal window behind the app
+        icon=icon_file,
     )
 else:
     exe = EXE(
@@ -72,6 +78,7 @@ else:
         strip=False,
         upx=False,
         console=False,
+        icon=icon_file,
     )
 
     coll = COLLECT(

@@ -53,8 +53,10 @@ jobs:
         # nothing, so the tests gate the artifact.
         run: python tests/test_app.py
 
-      - name: توليد دليل الاستخدام
-        run: python docs/build_manual.py
+      - name: توليد الأيقونة ودليل الاستخدام
+        run: |
+          python packaging/build_icon.py
+          python docs/build_manual.py
 
       # Both builds come from the same spec, so they need separate --workpath
       # directories: PyInstaller caches its intermediates under a name derived
