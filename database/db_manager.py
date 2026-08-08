@@ -124,6 +124,25 @@ class DBManager:
             cursor.execute("ALTER TABLE suppliers ADD COLUMN is_active INTEGER DEFAULT 1")
             cursor.execute("UPDATE suppliers SET is_active = 1 WHERE is_active IS NULL")
 
+        if 'terminated_date' not in employee_columns:
+            # Deactivating an employee used to drop them from payroll
+            # immediately, including an unposted PAST month they had actually
+            # worked - the query only ever knew "active right now", not "was
+            # this person employed during the period being calculated".
+            cursor.execute("ALTER TABLE employees ADD COLUMN terminated_date DATE")
+
+        if self.table_exists(cursor, 'payroll_run_items'):
+            payroll_run_items_columns = table_columns('payroll_run_items')
+            for column_name in ('absent_days', 'present_days'):
+                if column_name not in payroll_run_items_columns:
+                    # A posted month used to have no stored record of the
+                    # attendance behind its numbers, so displaying "what was
+                    # posted" always meant recalculating live from current
+                    # data instead - which drifts the moment attendance or a
+                    # deduction is edited after the fact.
+                    cursor.execute(
+                        f"ALTER TABLE payroll_run_items ADD COLUMN {column_name} INTEGER DEFAULT 0")
+
         self.arabise_account_names(cursor)
         self.enforce_uniqueness(cursor)
 

@@ -31,6 +31,8 @@ class ActivationDialog(QDialog):
         self.db = db
         self.activated = False
         self.setWindowTitle("تفعيل البرنامج")
+        from logic.paths import set_window_icon
+        set_window_icon(self)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.setMinimumWidth(560)
         self.build(message)

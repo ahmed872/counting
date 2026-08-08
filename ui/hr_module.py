@@ -106,6 +106,21 @@ class HRModule(QWidget):
         picker_row.addWidget(self.employee_picker, 1)
         form_outer.insertLayout(0, picker_row)
 
+        # Asked at deactivation time rather than assumed to be "today": an
+        # owner often does the paperwork a few days after someone's actual
+        # last day, and payroll for the month they still worked must not
+        # silently drop them just because today's date is later.
+        termination_row = QHBoxLayout()
+        termination_row.setSpacing(8)
+        termination_label = QLabel("آخر يوم عمل (عند إنهاء الخدمة):")
+        termination_label.setStyleSheet("color:#64748b; font-size:12px;")
+        self.termination_date = QDateEdit(QDate.currentDate())
+        self.termination_date.setCalendarPopup(True)
+        termination_row.addWidget(termination_label)
+        termination_row.addWidget(self.termination_date)
+        termination_row.addStretch()
+        form_outer.addLayout(termination_row)
+
         buttons_row = QHBoxLayout()
         buttons_row.setSpacing(8)
         self.save_btn = QPushButton("إضافة موظف")
@@ -212,6 +227,10 @@ class HRModule(QWidget):
         payroll_layout.addRow(buttons_row)
         payroll_tab_layout.addWidget(payroll_group)
 
+        self.payroll_status_label = QLabel()
+        self.payroll_status_label.setWordWrap(True)
+        payroll_tab_layout.addWidget(self.payroll_status_label)
+
         self.payroll_table = QTableWidget()
         self.payroll_table.setColumnCount(10)
         self.payroll_table.setHorizontalHeaderLabels([
@@ -310,6 +329,7 @@ class HRModule(QWidget):
             field.clear()
         self.save_btn.setText("إضافة موظف")
         self.deactivate_btn.setEnabled(False)
+        self.termination_date.setDate(QDate.currentDate())
 
     def clear_employee_form(self):
         """Resets the form back to 'add a new employee'.
@@ -420,14 +440,19 @@ class HRModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "اختر موظفاً من القائمة أولاً")
             return
         name = self.name_input.text().strip()
+        last_day = self.termination_date.date().toString("yyyy-MM-dd")
         answer = QMessageBox.question(
             self, "إنهاء خدمة موظف",
-            f"سيتم إنهاء خدمة «{name}» فلا يظهر في الرواتب ولا التنبيهات.\n\n"
+            f"سيتم إنهاء خدمة «{name}» اعتباراً من {last_day}.\n\n"
+            "لن يظهر بعد ذلك في التنبيهات ولا في رواتب الشهور التالية، لكنه "
+            "يبقى محسوباً في رواتب أي شهر لم يُرحَّل بعد ويكون قد عمل خلاله.\n"
             "بياناته وسجله المحاسبي القديم يبقى محفوظاً ولا يُحذف.\n\nمتابعة؟",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.db.execute_query("UPDATE employees SET is_active = 0 WHERE id = ?", (emp_id,))
+        self.db.execute_query(
+            "UPDATE employees SET is_active = 0, terminated_date = ? WHERE id = ?",
+            (last_day, emp_id))
         QMessageBox.information(self, "تم", "تم إنهاء خدمة الموظف")
         self.load_employees()
         self.clear_employee_form()
@@ -489,6 +514,11 @@ class HRModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "سنة غير صحيحة")
             return
 
+        if self.hr_logic.is_payroll_posted(month, year):
+            QMessageBox.information(self, "مُرحَّل بالفعل",
+                                    f"رواتب شهر {month:02d}/{year} مُرحَّلة مسبقاً ولا يمكن ترحيلها مرة أخرى.")
+            return
+
         confirm = QMessageBox.question(
             self, "تأكيد الترحيل",
             f"سيتم ترحيل رواتب شهر {month:02d}/{year} إلى دفتر اليومية بشكل نهائي. متابعة؟",
@@ -511,7 +541,28 @@ class HRModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "سنة غير صحيحة")
             return
 
-        payroll = self.hr_logic.get_monthly_payroll(month, year)
+        # A posted month is a closed book: what actually went to the journal
+        # is fixed, so the screen must show that frozen snapshot rather than
+        # recalculating live - editing attendance or a deduction afterwards
+        # must not make this table quietly disagree with the accounting
+        # entry that has already gone out.
+        posted = self.hr_logic.is_payroll_posted(month, year)
+        if posted:
+            payroll = self.hr_logic.get_posted_payroll(month, year)
+            self.payroll_status_label.setText(
+                f"رواتب شهر {month:02d}/{year} مُرحَّلة بالفعل - المعروض هو ما تم ترحيله فعلياً، "
+                "وليس حساباً حياً. أي تعديل لاحق على الحضور أو السلف لا يغيّر هذا الشهر.")
+            self.payroll_status_label.setStyleSheet(
+                "color:#1f3b57; background:#eef6ff; border:1px solid #cfe0f5;"
+                "border-radius:8px; padding:8px 12px; font-weight:700;")
+        else:
+            payroll = self.hr_logic.get_monthly_payroll(month, year)
+            self.payroll_status_label.setText(
+                f"معاينة حية لرواتب شهر {month:02d}/{year} - لم تُرحَّل بعد.")
+            self.payroll_status_label.setStyleSheet(
+                "color:#9a5a06; background:#fdf3e2; border:1px solid #f0d4a3;"
+                "border-radius:8px; padding:8px 12px; font-weight:700;")
+
         total_absent = 0
         if not fill_table(self.payroll_table, len(payroll), "لا يوجد موظفون مسجلون"):
             self.absent_card.value_label.setText("0")

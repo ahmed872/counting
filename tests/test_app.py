@@ -280,6 +280,59 @@ def main():
     check("a month with 31 absences cannot deduct below zero pay",
           a_31_day_month_cannot_deduct_more_than_the_salary)
 
+    def terminated_employee_still_counted_in_the_month_they_worked():
+        """The owner deactivating someone used to drop them from payroll
+        immediately, including an unposted PAST month they had actually
+        worked - is_active alone cannot tell "gone before this month" from
+        "gone during/after it"."""
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances, "
+            "is_active, terminated_date) VALUES (?,?,?,?,?,?,?)",
+            ("موظف منتهي الخدمة", "عامل", 1, 3000, 0, 0, "2026-03-20"))
+        march = next((p for p in window.hr_logic.get_monthly_payroll(3, 2026) if p["id"] == emp_id), None)
+        assert march is not None, "an employee terminated mid-month is missing from that month's payroll"
+        april = next((p for p in window.hr_logic.get_monthly_payroll(4, 2026) if p["id"] == emp_id), None)
+        assert april is None, "a terminated employee still appears in a month entirely after their last day"
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+    check("an employee terminated mid-month is still counted in that month's payroll",
+          terminated_employee_still_counted_in_the_month_they_worked)
+
+    def posted_payroll_is_a_frozen_snapshot():
+        """Once a month is posted, the journal entry it produced is fixed -
+        the screen must keep showing what was actually posted, not silently
+        drift if attendance or a deduction for that same month is edited
+        afterwards."""
+        journal_marker = newest_journal_entry_id()
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("لقطة الرواتب المرحلة", "عامل", 1, 3000, 0))
+        window.hr_logic.record_attendance(emp_id, "2026-04-05", "Absent")
+        window.hr_logic.post_payroll(4, 2026)
+
+        snapshot_before = next(p for p in window.hr_logic.get_posted_payroll(4, 2026) if p["id"] == emp_id)
+        assert snapshot_before["absent_days"] == 1, snapshot_before["absent_days"]
+        assert abs(snapshot_before["net_salary"] - 2900) < 0.01, snapshot_before["net_salary"]
+
+        # Edit the same month's attendance after posting.
+        window.hr_logic.record_attendance(emp_id, "2026-04-06", "Absent")
+        live_after = next(p for p in window.hr_logic.get_monthly_payroll(4, 2026) if p["id"] == emp_id)
+        assert live_after["absent_days"] == 2, \
+            "sanity check: the live recalculation should see the new absence"
+
+        snapshot_after = next(p for p in window.hr_logic.get_posted_payroll(4, 2026) if p["id"] == emp_id)
+        assert snapshot_after["absent_days"] == 1, \
+            "the posted snapshot changed after editing attendance for that month"
+        assert abs(snapshot_after["net_salary"] - 2900) < 0.01, snapshot_after["net_salary"]
+
+        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE month=4 AND year=2026 AND "
+                          "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+        db.execute_query("DELETE FROM attendance WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("a posted month's payroll is a frozen snapshot, not a live recalculation",
+          posted_payroll_is_a_frozen_snapshot)
+
     def supplier_ledger():
         goto("suppliers")
         s = window.suppliers
@@ -1704,6 +1757,32 @@ def main():
         assert not app.windowIcon().isNull(), "the application has no window icon"
     check("the shortcut icon is a real multi-size icon and survives 16px",
           the_icon_is_real_and_usable)
+
+    def every_top_level_window_sets_its_own_taskbar_icon():
+        """The owner reported the Windows taskbar showing a generic icon while
+        the app was running, even though the title bar and shortcut were both
+        correct. A window that only ever inherits QApplication.windowIcon()
+        can still show a generic icon on the taskbar specifically - that
+        inheritance is not reliable for the native taskbar button icon across
+        every Qt/DWM combination. Proven here by clearing the application
+        icon and confirming each top-level window still carries its own."""
+        from PyQt6.QtGui import QIcon
+        from ui.activation_dialog import ActivationDialog
+        original = app.windowIcon()
+        app.setWindowIcon(QIcon())
+        try:
+            fresh = MainWindow(db)
+            assert not fresh.windowIcon().isNull(), \
+                "the main window has no icon of its own once the app-level default is gone"
+            fresh.close()
+            dialog = ActivationDialog(db, "رسالة اختبار")
+            assert not dialog.windowIcon().isNull(), \
+                "the activation dialog has no icon of its own once the app-level default is gone"
+            dialog.close()
+        finally:
+            app.setWindowIcon(original)
+    check("every top-level window sets its own taskbar icon, not just the application default",
+          every_top_level_window_sets_its_own_taskbar_icon)
 
     print("\n" + "=" * 52)
     if failures:

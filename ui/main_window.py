@@ -20,6 +20,8 @@ class MainWindow(QMainWindow):
         self.db = db_manager
         self.nav_entries = []
         self.setWindowTitle("نظام إدارة المطعم")
+        from logic.paths import set_window_icon
+        set_window_icon(self)
         self.setMinimumSize(1040, 640)
         self.resize(1440, 900)
 

@@ -78,13 +78,18 @@ class HRLogic:
             LEFT JOIN attendance a ON a.employee_id = e.id
                 AND strftime('%m', a.date) = ?
                 AND strftime('%Y', a.date) = ?
-            WHERE e.is_active = 1
+            WHERE e.is_active = 1 OR e.terminated_date >= ?
             GROUP BY e.id
             ORDER BY e.name
         """
         month_str = f"{month:02d}"
         year_str = str(year)
-        rows = self.db.fetch_all(query, (month_str, year_str))
+        period_start = f"{year:04d}-{month:02d}-01"
+        # A terminated employee still belongs in any period they were
+        # actually employed during - only periods entirely after their last
+        # working day should drop them. is_active alone cannot tell "gone
+        # before this month" from "gone during/after it".
+        rows = self.db.fetch_all(query, (month_str, year_str, period_start))
         payroll = []
         for row in rows:
             gross = (row['base_salary'] or 0) + (row['allowances'] or 0)
@@ -152,6 +157,37 @@ class HRLogic:
             "SELECT id FROM payroll_runs WHERE month = ? AND year = ?", (month, year)
         ) is not None
 
+    def get_posted_payroll(self, month, year):
+        """The frozen record of what was actually posted to the journal for
+        this month, not a live recalculation. Editing attendance or a
+        deduction after posting must not make the screen disagree with the
+        accounting entry that has already gone out - the entry is fixed, so
+        what is shown for that month must be too."""
+        rows = self.db.fetch_all(
+            """SELECT i.*, e.name, e.job_title, b.name as branch_name
+               FROM payroll_run_items i
+               JOIN payroll_runs r ON r.id = i.run_id
+               JOIN employees e ON e.id = i.employee_id
+               LEFT JOIN branches b ON b.id = e.branch_id
+               WHERE r.month = ? AND r.year = ?
+               ORDER BY e.name""",
+            (month, year)
+        )
+        return [{
+            'id': row['employee_id'],
+            'name': row['name'],
+            'job_title': row['job_title'],
+            'branch_name': row['branch_name'],
+            'gross_salary': row['gross_salary'],
+            'absent_days': row['absent_days'] or 0,
+            'present_days': row['present_days'] or 0,
+            'absence_deduction': row['absence_deduction'],
+            'other_deductions': row['other_deductions'],
+            'bonuses': row['bonuses'],
+            'advances_recovered': row['advances_recovered'],
+            'net_salary': row['net_salary'],
+        } for row in rows]
+
     def post_payroll(self, month, year):
         """Posts the month's payroll to the accounting journal:
         Debit Salaries Expense (5100) for gross-less-deductions-plus-bonuses,
@@ -179,10 +215,11 @@ class HRLogic:
         for p in payroll:
             self.db.execute_query(
                 """INSERT INTO payroll_run_items
-                   (run_id, employee_id, gross_salary, absence_deduction, other_deductions, bonuses, advances_recovered, net_salary)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (run_id, employee_id, gross_salary, absence_deduction, other_deductions, bonuses,
+                    advances_recovered, net_salary, absent_days, present_days)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (run_id, p['id'], p['gross_salary'], p['absence_deduction'], p['other_deductions'],
-                 p['bonuses'], p['advances_recovered'], p['net_salary'])
+                 p['bonuses'], p['advances_recovered'], p['net_salary'], p['absent_days'], p['present_days'])
             )
             # Apply the recovered amount to the oldest outstanding advances
             # first, and only as far as it actually reaches. A row is marked

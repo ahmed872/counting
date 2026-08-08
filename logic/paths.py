@@ -89,3 +89,23 @@ def icon_path():
     into the .exe by the packager and is never read at runtime, and Qt's ICO
     support is not guaranteed to be present in every build."""
     return resource_path("packaging", "app_icon.png")
+
+
+def set_window_icon(widget):
+    """Sets the icon on this specific top-level window, not just once on the
+    QApplication.
+
+    The owner reported the taskbar showing a generic icon while the app was
+    running, even though the title bar and shortcut are both correct. On
+    Windows, the taskbar button's icon comes from the native window handle
+    (WM_SETICON), and a widget that never set its own icon is only supposed
+    to fall back to QApplication.windowIcon() - that inheritance is not
+    reliable for the taskbar specifically across every Qt/DWM combination.
+    Every top-level window (the main window, and the activation screen shown
+    before it on an expired trial) now sets its own icon explicitly instead
+    of depending on that fallback."""
+    from PyQt6.QtGui import QIcon
+
+    path = icon_path()
+    if os.path.exists(path):
+        widget.setWindowIcon(QIcon(path))
