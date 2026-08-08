@@ -20,7 +20,12 @@ import shutil
 import sqlite3
 from datetime import datetime
 
-APP_VERSION = "1.1.0"
+# Bump this on every release that ships a schema change (new table, new
+# column, a migration). backup_before_upgrade() below skips the backup
+# entirely once a database is already stamped with the current value - this
+# constant sitting still while the schema kept moving is exactly how a build
+# could ship a real migration with the safety net silently turned off.
+APP_VERSION = "1.2.0"
 
 _VERSION_KEY = "app_version"
 _BACKUP_PREFIX = "قبل-التحديث-"
