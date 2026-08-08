@@ -236,6 +236,7 @@ class ReportsModule(QWidget):
             {row("صافي المبيعات", d['net_sales'])}
             {row("تكلفة المبيعات", d['cost_of_sales'])}
             {row("مجمل الربح", d['gross_profit'], bold=True)}
+            {row("الرواتب والأجور", d['salaries_expense'])}
             {row("المصروفات التشغيلية", d['operating_expenses'])}
             {row("صافي الربح", d['net_profit'], bold=True, color=profit_color)}
           </table>

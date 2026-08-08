@@ -733,6 +733,25 @@ def main():
     check("the dashboard and the accounting tab show the same profit",
           dashboard_and_accounting_agree_on_profit)
 
+    def printed_report_shows_the_arithmetic_it_uses():
+        """The report used to print gross_profit, then المصروفات التشغيلية,
+        then a net_profit that had already subtracted salaries the reader was
+        never shown - the two lines above it did not add up to the one below
+        it. A restaurant owner handing this to his accountant on paper, which
+        is exactly what this button is for, would be handing over numbers
+        that visibly do not reconcile."""
+        goto("reports")
+        window.reports.generate_report()
+        d = window.accounting.accounting.get_period_report(
+            window.reports.resolve_period()[0], window.reports.resolve_period()[1],
+            window.reports.branch_input.currentData())
+        computed = d["gross_profit"] - d["salaries_expense"] - d["operating_expenses"]
+        assert abs(computed - d["net_profit"]) < 0.01, (computed, d["net_profit"])
+        html = window.reports.current_report_html()
+        assert "الرواتب والأجور" in html, "the printed report does not show the salaries line it subtracts"
+    check("the printed report's own numbers add up to the profit it shows",
+          printed_report_shows_the_arithmetic_it_uses)
+
     def pdf_export_works():
         goto("reports")
         from PyQt6.QtPrintSupport import QPrinter
