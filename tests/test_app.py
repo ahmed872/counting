@@ -1156,6 +1156,43 @@ def main():
     check("the printed report's own numbers add up to the profit it shows",
           printed_report_shows_the_arithmetic_it_uses)
 
+    def printed_report_covers_every_module():
+        """The report used to cover only sales/purchases/profit/VAT for the
+        chosen period - every other screen (suppliers, customers, loans,
+        prepaid expenses, payroll, the balance sheet) had no printed record
+        at all. Cross-checks each new section's total against the same live
+        data the report itself pulls from, computed fresh right before the
+        check so it can never drift from whatever the shared test database
+        happens to hold by this point in the run."""
+        from ui.formatting import money
+        goto("reports")
+        html = window.reports.current_report_html()
+        for heading in ("الموردون - المستحق عليهم", "العملاء - المستحق لنا",
+                        "القروض القائمة", "المصروفات المقدمة المتبقية",
+                        "طاقم العمل الحالي", "ملخص الوضع المالي العام"):
+            assert heading in html, f"missing report section: {heading}"
+
+        acc = window.accounting.accounting
+        expected_suppliers = sum(s['balance'] for s in acc.get_all_supplier_balances() if abs(s['balance']) > 0.01)
+        expected_customers = sum(c['balance'] for c in acc.get_all_customer_balances() if abs(c['balance']) > 0.01)
+        expected_loans = sum(l['balance'] for l in acc.get_all_loans_with_balances() if abs(l['balance']) > 0.01)
+        expected_prepaid = sum(p['remaining'] for p in acc.get_prepaid_expenses_with_balances() if p['remaining'] > 0.01)
+        expected_employees = sum(e['gross'] for e in window.hr_logic.get_active_employees_summary())
+        bs = acc.get_balance_sheet()
+
+        assert expected_suppliers > 0, "sanity check: the shared test data should include a supplier balance"
+        assert expected_employees > 0, "sanity check: the shared test data should include active employees"
+        assert money(expected_suppliers) in html, "supplier total in the report does not match live balances"
+        assert money(expected_customers) in html, "customer total in the report does not match live balances"
+        assert money(expected_loans) in html, "loan total in the report does not match live balances"
+        assert money(expected_prepaid) in html, "prepaid total in the report does not match live balances"
+        assert money(expected_employees) in html, "employee payroll total in the report does not match live data"
+        assert money(bs['assets']) in html, "balance sheet assets total in the report does not match get_balance_sheet()"
+        assert money(bs['liabilities']) in html, "balance sheet liabilities total in the report does not match get_balance_sheet()"
+        assert ("متوازنة ✓" in html) == bs['balanced'], "the report's balance-sheet status contradicts get_balance_sheet()"
+    check("the printed report covers suppliers, customers, loans, prepaid expenses, payroll, and the balance sheet",
+          printed_report_covers_every_module)
+
     def pdf_export_works():
         goto("reports")
         from PyQt6.QtPrintSupport import QPrinter

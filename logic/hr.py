@@ -61,6 +61,20 @@ class HRLogic:
         )
         return row['total'] or 0
 
+    def get_active_employees_summary(self):
+        """Who is currently on payroll and what they cost - for the printed
+        report, not tied to any one month's attendance/deductions."""
+        rows = self.db.fetch_all(
+            """SELECT e.name, e.job_title, e.base_salary, e.allowances, b.name as branch_name
+               FROM employees e
+               LEFT JOIN branches b ON b.id = e.branch_id
+               WHERE e.is_active = 1
+               ORDER BY e.name"""
+        )
+        return [{'name': r['name'], 'job_title': r['job_title'] or '', 'branch_name': r['branch_name'] or '',
+                'base_salary': r['base_salary'] or 0, 'allowances': r['allowances'] or 0,
+                'gross': (r['base_salary'] or 0) + (r['allowances'] or 0)} for r in rows]
+
     def get_monthly_payroll(self, month, year):
         period_end = f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
         query = """

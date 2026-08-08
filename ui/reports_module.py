@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
 )
 
 from logic.accounting import AccountingLogic
+from logic.hr import HRLogic
 
 PERIOD_DAILY = "يومي"
 PERIOD_WEEKLY = "أسبوعي"
@@ -44,6 +45,7 @@ class ReportsModule(QWidget):
         super().__init__()
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
+        self.hr_logic = HRLogic(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -162,7 +164,19 @@ class ReportsModule(QWidget):
         branch_id = self.branch_input.currentData()
         branch_name = self.branch_input.currentText()
         data = self.accounting.get_period_report(start, end, branch_id)
-        return self.build_html(data, self.period_input.currentText(), branch_name)
+        # Everything below is a snapshot of where the business stands right
+        # now, not filtered to the chosen period - a supplier balance or a
+        # loan does not belong to one date range the way a sale does.
+        snapshot = {
+            'suppliers': self.accounting.get_all_supplier_balances(),
+            'customers': self.accounting.get_all_customer_balances(),
+            'loans': self.accounting.get_all_loans_with_balances(),
+            'prepaid': self.accounting.get_prepaid_expenses_with_balances(),
+            'employees': self.hr_logic.get_active_employees_summary(),
+            'accrued_wages': self.accounting.get_account_balance('2200'),
+            'balance_sheet': self.accounting.get_balance_sheet(),
+        }
+        return self.build_html(data, self.period_input.currentText(), branch_name, snapshot)
 
     def generate_report(self):
         try:
@@ -170,10 +184,11 @@ class ReportsModule(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
 
-    def build_html(self, d, period_label, branch_name):
+    def build_html(self, d, period_label, branch_name, snapshot=None):
         sales = d['sales']
         purchases = d['purchases']
         returns = d['returns']
+        snapshot = snapshot or {}
 
         def row(label, value, bold=False, color=None):
             style = "font-weight:800;" if bold else ""
@@ -221,6 +236,63 @@ class ReportsModule(QWidget):
                                     "لا توجد مشتريات في هذه الفترة</td></tr>")
 
         profit_color = "#16a34a" if d['net_profit'] >= 0 else "#dc2626"
+
+        # Everything from here down is "where the business stands right now"
+        # rather than a period total - a supplier's balance, a loan, an
+        # employee's salary do not belong to the date range picked above.
+        suppliers = [s for s in snapshot.get('suppliers', []) if abs(s['balance']) > 0.01]
+        suppliers_rows = "".join(
+            f"<tr><td style='padding:5px 8px'>{s['name']}{' (متوقف)' if not s['is_active'] else ''}</td>"
+            f"<td style='padding:5px 8px;text-align:left'>{money(s['balance'])}</td></tr>"
+            for s in suppliers
+        ) or ("<tr><td colspan='2' style='padding:12px;text-align:center;color:#64748b'>"
+              "لا يوجد مستحق لأي مورد حالياً</td></tr>")
+        suppliers_total = sum(s['balance'] for s in suppliers)
+
+        customers = [c for c in snapshot.get('customers', []) if abs(c['balance']) > 0.01]
+        customers_rows = "".join(
+            f"<tr><td style='padding:5px 8px'>{c['name']}{' (متوقف)' if not c['is_active'] else ''}</td>"
+            f"<td style='padding:5px 8px;text-align:left'>{money(c['balance'])}</td></tr>"
+            for c in customers
+        ) or ("<tr><td colspan='2' style='padding:12px;text-align:center;color:#64748b'>"
+              "لا يوجد مستحق على أي عميل حالياً</td></tr>")
+        customers_total = sum(c['balance'] for c in customers)
+
+        loans = [l for l in snapshot.get('loans', []) if abs(l['balance']) > 0.01]
+        loans_rows = "".join(
+            f"<tr><td style='padding:5px 8px'>{l['lender_name']}</td>"
+            f"<td style='padding:5px 8px'>{l['date'] or ''}</td>"
+            f"<td style='padding:5px 8px;text-align:left'>{money(l['balance'])}</td></tr>"
+            for l in loans
+        ) or ("<tr><td colspan='3' style='padding:12px;text-align:center;color:#64748b'>"
+              "لا يوجد قروض قائمة حالياً</td></tr>")
+        loans_total = sum(l['balance'] for l in loans)
+
+        prepaid = [p for p in snapshot.get('prepaid', []) if p['remaining'] > 0.01]
+        prepaid_rows = "".join(
+            f"<tr><td style='padding:5px 8px'>{p['description']}</td>"
+            f"<td style='padding:5px 8px;text-align:left'>{money(p['amount'])}</td>"
+            f"<td style='padding:5px 8px;text-align:left'>{money(p['remaining'])}</td></tr>"
+            for p in prepaid
+        ) or ("<tr><td colspan='3' style='padding:12px;text-align:center;color:#64748b'>"
+              "لا يوجد مصروفات مقدمة متبقية حالياً</td></tr>")
+        prepaid_total = sum(p['remaining'] for p in prepaid)
+
+        employees = snapshot.get('employees', [])
+        employees_rows = "".join(
+            f"<tr><td style='padding:5px 8px'>{e['name']}</td>"
+            f"<td style='padding:5px 8px'>{e['job_title']}</td>"
+            f"<td style='padding:5px 8px'>{e['branch_name']}</td>"
+            f"<td style='padding:5px 8px;text-align:left'>{money(e['gross'])}</td></tr>"
+            for e in employees
+        ) or ("<tr><td colspan='4' style='padding:12px;text-align:center;color:#64748b'>"
+              "لا يوجد موظفون نشطون حالياً</td></tr>")
+        employees_total = sum(e['gross'] for e in employees)
+
+        bs = snapshot.get('balance_sheet') or {}
+        accrued_wages = snapshot.get('accrued_wages', 0)
+        bs_balanced_text = "متوازنة ✓" if bs.get('balanced') else "غير متوازنة — راجع القيود"
+        bs_balanced_color = "#16a34a" if bs.get('balanced') else "#dc2626"
 
         return f"""
         <div dir="rtl" style="font-family:'Segoe UI',Tahoma,sans-serif; color:#1f2937;">
@@ -289,6 +361,71 @@ class ReportsModule(QWidget):
               <th style="padding:6px 8px;">ضريبة المشتريات</th>
             </tr>
             {purchases_daily_rows}
+          </table>
+
+          <div style="color:#94a3b8;font-size:11px;margin:16px 0 4px;">
+            الأقسام التالية تعرض الأرصدة الحالية وقت إصدار التقرير، وليست محصورة بالفترة المختارة أعلاه.
+          </div>
+
+          <h3 style="color:#1f3b57;">7) الموردون - المستحق عليهم حالياً</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;">
+            {suppliers_rows}
+            <tr><td style='padding:6px 10px;font-weight:800;'>الإجمالي</td>
+                <td style='padding:6px 10px;text-align:left;font-weight:800;'>{money(suppliers_total)}</td></tr>
+          </table>
+
+          <h3 style="color:#1f3b57;">8) العملاء - المستحق لنا حالياً</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;">
+            {customers_rows}
+            <tr><td style='padding:6px 10px;font-weight:800;'>الإجمالي</td>
+                <td style='padding:6px 10px;text-align:left;font-weight:800;'>{money(customers_total)}</td></tr>
+          </table>
+
+          <h3 style="color:#1f3b57;">9) القروض القائمة</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:12px;">
+            <tr style="background:#1f3b57;color:white;">
+              <th style="padding:6px 8px;">المُقرض</th>
+              <th style="padding:6px 8px;">تاريخ القرض</th>
+              <th style="padding:6px 8px;">المتبقي</th>
+            </tr>
+            {loans_rows}
+            <tr><td colspan='2' style='padding:6px 8px;font-weight:800;'>الإجمالي</td>
+                <td style='padding:6px 8px;text-align:left;font-weight:800;'>{money(loans_total)}</td></tr>
+          </table>
+
+          <h3 style="color:#1f3b57;">10) المصروفات المقدمة المتبقية</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:12px;">
+            <tr style="background:#1f3b57;color:white;">
+              <th style="padding:6px 8px;">البيان</th>
+              <th style="padding:6px 8px;">المبلغ الكلي</th>
+              <th style="padding:6px 8px;">المتبقي</th>
+            </tr>
+            {prepaid_rows}
+            <tr><td style='padding:6px 8px;font-weight:800;'>الإجمالي</td><td></td>
+                <td style='padding:6px 8px;text-align:left;font-weight:800;'>{money(prepaid_total)}</td></tr>
+          </table>
+
+          <h3 style="color:#1f3b57;">11) طاقم العمل الحالي</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:12px;">
+            <tr style="background:#1f3b57;color:white;">
+              <th style="padding:6px 8px;">الاسم</th>
+              <th style="padding:6px 8px;">الوظيفة</th>
+              <th style="padding:6px 8px;">الفرع</th>
+              <th style="padding:6px 8px;">الراتب الإجمالي الشهري</th>
+            </tr>
+            {employees_rows}
+            <tr><td colspan='3' style='padding:6px 8px;font-weight:800;'>الإجمالي</td>
+                <td style='padding:6px 8px;text-align:left;font-weight:800;'>{money(employees_total)}</td></tr>
+          </table>
+
+          <h3 style="color:#1f3b57;">12) ملخص الوضع المالي العام</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;">
+            {row("إجمالي الأصول", bs.get('assets', 0))}
+            {row("إجمالي الالتزامات", bs.get('liabilities', 0))}
+            {row("منها: رواتب مستحقة الدفع", accrued_wages)}
+            {row("حقوق الملكية (شاملة الأرباح المرحّلة)", bs.get('equity', 0))}
+            <tr><td style='padding:6px 10px;font-weight:800;'>حالة الميزانية</td>
+                <td style='padding:6px 10px;text-align:left;font-weight:800;color:{bs_balanced_color};'>{bs_balanced_text}</td></tr>
           </table>
         </div>
         """
