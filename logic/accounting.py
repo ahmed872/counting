@@ -17,6 +17,42 @@ class AccountingLogic:
             "FROM journal_items WHERE account_code = ?", (account_code,))
         return row['v'] or 0
 
+    def get_all_accounts(self):
+        return self.db.fetch_all("SELECT code, name, type FROM chart_of_accounts ORDER BY code")
+
+    def get_account_ledger(self, account_code):
+        """Every journal item ever posted to one account, in date order, with
+        a running balance - the actual "أستاذ عام" for that account, not just
+        its final total the way the trial balance shows it. The running
+        balance grows with debit for an Asset/Expense account and with
+        credit for a Liability/Equity/Revenue account, so it always reads as
+        a plain increasing/decreasing number regardless of which side of the
+        entry the account normally sits on."""
+        account = self.db.fetch_one(
+            "SELECT code, name, type FROM chart_of_accounts WHERE code = ?", (account_code,))
+        if not account:
+            return None
+
+        rows = self.db.fetch_all(
+            """SELECT je.date, je.description, ji.debit, ji.credit
+               FROM journal_items ji
+               JOIN journal_entries je ON je.id = ji.entry_id
+               WHERE ji.account_code = ?
+               ORDER BY je.date, je.id""",
+            (account_code,),
+        )
+        debit_increases = account['type'] in ('Asset', 'Expense')
+        balance = 0
+        entries = []
+        for row in rows:
+            debit = row['debit'] or 0
+            credit = row['credit'] or 0
+            balance += (debit - credit) if debit_increases else (credit - debit)
+            entries.append({'date': row['date'], 'description': row['description'],
+                            'debit': debit, 'credit': credit, 'balance': balance})
+
+        return {'account': account, 'entries': entries, 'balance': balance}
+
     def reverse_vat(self, total_amount, rate=0.15):
         """Given a VAT-inclusive total (e.g. the actual cash collected end-of-day),
         back out the pre-tax amount and the VAT portion."""

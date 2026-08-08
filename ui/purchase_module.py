@@ -312,8 +312,9 @@ class PurchaseModule(QWidget):
             # journal entry moving money with no invoice behind it to explain
             # it, or a purchase row with no accounting entry at all.
             with self.db.transaction() as cursor:
+                fallback = label_for(PAYMENT_STATUS_LABELS, status)
                 entry_id = self.db.insert_journal_entry(
-                    cursor, timestamp, f"{label} - {description or status}", branch_id, items)
+                    cursor, timestamp, f"{label} - {description or fallback}", branch_id, items)
                 cursor.execute(
                     """INSERT INTO purchases
                        (branch_id, supplier_id, amount, total_amount, vat_amount, payment_status,

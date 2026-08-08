@@ -728,7 +728,45 @@ def main():
         assert abs(balance_of("1100") - 1500) < 0.01, balance_of("1100")   # inventory
         assert abs(balance_of("5150") - 150) < 0.01, balance_of("5150")    # purchase expense
         assert abs(balance_of("5200") - 2000) < 0.01, balance_of("5200")   # operating expense
+
+        # Leaving البيان blank used to fall back to the raw internal status
+        # code ("Cash"/"Credit") instead of a translated label - invisible
+        # until the new "كل حساب بالتفصيل" ledger tab started showing raw
+        # journal descriptions verbatim, which is exactly what surfaced it.
+        descriptions = db.fetch_all(
+            "SELECT description FROM journal_entries WHERE description LIKE '% - Cash' "
+            "OR description LIKE '% - Credit'")
+        assert not descriptions, \
+            f"an untranslated payment status leaked into a journal description: {descriptions}"
     check("purchase categories hit the right accounts", purchases_route_by_category)
+
+    def general_ledger_tab_shows_every_posting_with_a_running_balance():
+        """كل حساب بالتفصيل: the true drill-down general ledger, one account
+        at a time. The table must show exactly the entries and running
+        balance get_account_ledger computes from the same raw journal_items -
+        the same rigor used for the loan/prepaid/customer checks above."""
+        from ui.formatting import money
+        goto("accounting")
+        acc_page = window.accounting
+        idx = acc_page.ledger_account_input.findData('1100')
+        assert idx >= 0, "account 1100 is missing from the ledger picker"
+        acc_page.ledger_account_input.setCurrentIndex(idx)
+        app.processEvents()
+
+        expected = window.accounting.accounting.get_account_ledger('1100')
+        assert len(expected['entries']) > 0, "account 1100 should have postings by this point"
+        assert acc_page.ledger_table.rowCount() == len(expected['entries']), \
+            (acc_page.ledger_table.rowCount(), len(expected['entries']))
+
+        last = expected['entries'][-1]
+        last_row = acc_page.ledger_table.rowCount() - 1
+        assert acc_page.ledger_table.item(last_row, 1).text() == (last['description'] or "")
+        shown_debit = acc_page.ledger_table.item(last_row, 2).text()
+        assert shown_debit == (money(last['debit']) if last['debit'] else ""), shown_debit
+
+        assert acc_page.ledger_balance_label.text() == f"الرصيد: {money(expected['balance'])} ريال"
+    check("the general ledger tab shows every posting to an account with the right running balance",
+          general_ledger_tab_shows_every_posting_with_a_running_balance)
 
     def daily_sales_vat():
         goto("sales")
