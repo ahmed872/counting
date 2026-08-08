@@ -1,3 +1,4 @@
+import calendar
 from datetime import datetime, timedelta
 
 DOC_LABELS = {
@@ -61,6 +62,7 @@ class HRLogic:
         return row['total'] or 0
 
     def get_monthly_payroll(self, month, year):
+        period_end = f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}"
         query = """
             SELECT
                 e.id,
@@ -103,13 +105,28 @@ class HRLogic:
                 elif e['type'] == 'Bonus':
                     bonuses = e['total'] or 0
 
-            unsettled_advances = self.db.fetch_one(
-                "SELECT COALESCE(SUM(amount), 0) as total FROM employee_deductions WHERE employee_id = ? AND type = 'Advance' AND settled_run_id IS NULL",
-                (row['id'],)
+            # Only advances granted on or before this period, not the whole
+            # outstanding balance regardless of date - an advance recorded in
+            # August has no business being recovered out of July's payroll,
+            # which is what a plain "settled_run_id IS NULL" would do.
+            outstanding_advances = self.db.fetch_one(
+                """SELECT COALESCE(SUM(amount - COALESCE(amount_recovered, 0)), 0) as total
+                   FROM employee_deductions
+                   WHERE employee_id = ? AND type = 'Advance' AND settled_run_id IS NULL
+                     AND date(date) <= date(?)""",
+                (row['id'], period_end)
             )['total'] or 0
 
-            expense_amount = gross - absence_deduction - other_deductions + bonuses
-            net_salary = expense_amount - unsettled_advances
+            # A deduction cannot exceed what there is to deduct from: 31
+            # attendance rows in a 31-day month otherwise cost more than the
+            # whole salary, and an advance bigger than one month's pay used to
+            # push net_salary negative - paying the employee to have been
+            # advanced money. Recovery here never exceeds what is actually
+            # available, and whatever is left of the advance simply carries
+            # over to be recovered from a later month.
+            expense_amount = max(0.0, gross - absence_deduction - other_deductions + bonuses)
+            advances_recovered = min(outstanding_advances, expense_amount)
+            net_salary = expense_amount - advances_recovered
 
             payroll.append({
                 'id': row['id'],
@@ -123,7 +140,8 @@ class HRLogic:
                 'absence_deduction': absence_deduction,
                 'other_deductions': other_deductions,
                 'bonuses': bonuses,
-                'advances_recovered': unsettled_advances,
+                'advances_recovered': advances_recovered,
+                'advances_outstanding_after': outstanding_advances - advances_recovered,
                 'expense_amount': expense_amount,
                 'net_salary': net_salary,
             })
@@ -166,10 +184,34 @@ class HRLogic:
                 (run_id, p['id'], p['gross_salary'], p['absence_deduction'], p['other_deductions'],
                  p['bonuses'], p['advances_recovered'], p['net_salary'])
             )
-            self.db.execute_query(
-                "UPDATE employee_deductions SET settled_run_id = ? WHERE employee_id = ? AND type = 'Advance' AND settled_run_id IS NULL",
-                (run_id, p['id'])
-            )
+            # Apply the recovered amount to the oldest outstanding advances
+            # first, and only as far as it actually reaches. A row is marked
+            # settled only once it has been recovered in full; a row that is
+            # only partly covered this run keeps its remaining balance
+            # outstanding for the next one, instead of being wiped either way.
+            remaining = p['advances_recovered']
+            if remaining > 0:
+                rows = self.db.fetch_all(
+                    """SELECT id, amount, COALESCE(amount_recovered, 0) as recovered
+                       FROM employee_deductions
+                       WHERE employee_id = ? AND type = 'Advance' AND settled_run_id IS NULL
+                         AND date(date) <= date(?)
+                       ORDER BY date, id""",
+                    (p['id'], f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}")
+                )
+                for adv in rows:
+                    if remaining <= 0.005:
+                        break
+                    owed = adv['amount'] - adv['recovered']
+                    applied = min(owed, remaining)
+                    new_recovered = adv['recovered'] + applied
+                    fully_settled = new_recovered >= adv['amount'] - 0.005
+                    self.db.execute_query(
+                        "UPDATE employee_deductions SET amount_recovered = ?, "
+                        "settled_run_id = ? WHERE id = ?",
+                        (new_recovered, run_id if fully_settled else None, adv['id'])
+                    )
+                    remaining -= applied
 
         journal_items = [{'account_code': '5100', 'debit': total_expense, 'credit': 0}]
         if total_advances_recovered:

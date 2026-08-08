@@ -293,18 +293,41 @@ class HRModule(QWidget):
     def editing_employee_id(self):
         return self.employee_picker.currentData()
 
+    def _clear_employee_fields(self):
+        for field in (self.name_input, self.job_input, self.salary_input,
+                      self.allowance_input, self.iqama_input, self.passport_input,
+                      self.work_permit_input, self.work_card_input):
+            field.clear()
+        self.save_btn.setText("إضافة موظف")
+        self.deactivate_btn.setEnabled(False)
+
     def clear_employee_form(self):
+        """Resets the form back to 'add a new employee'.
+
+        Cannot rely on setCurrentIndex(0) alone: Qt only emits
+        currentIndexChanged when the index actually changes, and this is most
+        often called while the picker is *already* on index 0 - right after
+        adding someone, or when the form was never in edit mode to begin with.
+        In both of those cases the picker's index does not change, no signal
+        fires, and on_employee_picked() never runs - so the just-typed data
+        silently stayed in the boxes. A second "إضافة موظف" click then saved
+        those same values again, and "موظف جديد" appeared to do nothing at
+        all in the one situation it is used most: reverting a stray click into
+        the picker instead of choosing to edit someone.
+
+        Clearing the fields directly, unconditionally, is what actually fixes
+        both symptoms - the index reset is kept only to make the dropdown's
+        own display consistent.
+        """
+        self.employee_picker.blockSignals(True)
         self.employee_picker.setCurrentIndex(0)
+        self.employee_picker.blockSignals(False)
+        self._clear_employee_fields()
 
     def on_employee_picked(self):
         emp_id = self.editing_employee_id
         if emp_id is None:
-            for field in (self.name_input, self.job_input, self.salary_input,
-                          self.allowance_input, self.iqama_input, self.passport_input,
-                          self.work_permit_input, self.work_card_input):
-                field.clear()
-            self.save_btn.setText("إضافة موظف")
-            self.deactivate_btn.setEnabled(False)
+            self._clear_employee_fields()
             return
 
         emp = self.db.fetch_one("SELECT * FROM employees WHERE id = ?", (emp_id,))
@@ -524,8 +547,11 @@ class HRModule(QWidget):
         self.employee_picker.setCurrentIndex(restored if restored >= 0 else 0)
         self.employee_picker.blockSignals(False)
         if restored < 0:
-            self.save_btn.setText("إضافة موظف")
-            self.deactivate_btn.setEnabled(False)
+            # Whoever was selected is gone (deactivated, or this is the first
+            # load) - the same unconditional clear used elsewhere, since
+            # relying on the blocked signal here would leave stale text typed
+            # for someone who no longer exists in the picker.
+            self._clear_employee_fields()
 
         if not fill_table(self.table, len(employees), "لا يوجد موظفون مسجلون بعد"):
             self.total_employees_card.value_label.setText("0")

@@ -4,6 +4,8 @@ import os
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from database.db_manager import DBManager
 from ui.main_window import MainWindow
@@ -85,7 +87,32 @@ def show_expiry_notifications(db):
     box.exec()
 
 
+def pin_dpi_policy():
+    """Makes window and font sizing consistent across different customer
+    machines, rather than however each one's Qt build happens to default.
+
+    Windows laptops run at a mix of display scales - 100%, 125%, 150% are all
+    common on ordinary hardware, not just high-end screens. Qt has to turn that
+    scale into whole logical pixels somehow, and different builds have shipped
+    different defaults for how it rounds a factor like 1.25x: some snap it to
+    the nearest whole number (so 125% renders as if it were 100%, or jumps
+    straight to 200%), others follow it exactly. Nothing in this program set
+    that policy, so two customers on two ordinary laptops could see visibly
+    different proportions from the identical .exe - which is what was reported.
+
+    Qt::HighDpiScaleFactorRoundingPolicy::PassThrough follows the OS scale
+    factor exactly instead of snapping it to a whole number, which is the
+    closest a pixel-styled Qt Widgets app gets to "the same size everywhere."
+    Must be called before QApplication exists - Qt reads it once, at startup.
+    """
+    QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
+        Qt.HighDpiScaleFactorRoundingPolicy.PassThrough
+    )
+
+
 def main():
+    pin_dpi_policy()
+
     # Order matters: the copy is taken before DBManager exists, because
     # constructing one runs the schema migrations, and a backup taken after
     # those have rewritten the file is not a backup of anything.

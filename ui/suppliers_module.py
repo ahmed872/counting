@@ -331,17 +331,19 @@ class SuppliersModule(QWidget):
         notes = self.payment_notes.text().strip()
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        self.db.execute_query(
-            "INSERT INTO supplier_payments (supplier_id, date, amount, method, notes) VALUES (?, ?, ?, ?, ?)",
-            (self.selected_supplier_id, timestamp, amount, method, notes),
-        )
-
         cash_account = '1000' if method == 'Cash' else '1001'
         items = [
             {'account_code': '2000', 'debit': amount, 'credit': 0},
             {'account_code': cash_account, 'debit': 0, 'credit': amount},
         ]
-        self.db.add_journal_entry(timestamp, "سداد لمورد", None, items)
+        # One transaction: a crash between these two writes used to be able to
+        # leave cash moved in the accounts with no payment record behind it.
+        with self.db.transaction() as cursor:
+            self.db.insert_journal_entry(cursor, timestamp, "سداد لمورد", None, items)
+            cursor.execute(
+                "INSERT INTO supplier_payments (supplier_id, date, amount, method, notes) VALUES (?, ?, ?, ?, ?)",
+                (self.selected_supplier_id, timestamp, amount, method, notes),
+            )
 
         QMessageBox.information(self, "نجاح", "تم تسجيل السداد وتحديث رصيد المورد")
         self.payment_amount.clear()

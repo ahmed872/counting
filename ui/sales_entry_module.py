@@ -248,16 +248,18 @@ class SalesEntryModule(QWidget):
         journal_items.append({"account_code": "4000", "debit": 0, "credit": revenue_credit})
         journal_items.append({"account_code": "2100", "debit": 0, "credit": vat_credit})
 
-        entry_id = self.db.add_journal_entry(
-            date_str, f"مبيعات يومية - {branch_name} - {date_str}", branch_id, journal_items
-        )
-
-        for method, total, vat in saved_methods:
-            self.db.execute_query(
-                """INSERT INTO sales (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (branch_id, date_str, total, vat, method, entry_id),
-            )
+        # One transaction: a crash between posting the journal entry and
+        # writing the sales rows used to be able to leave the day's revenue
+        # in the accounts with no sales record behind it to explain it.
+        with self.db.transaction() as cursor:
+            entry_id = self.db.insert_journal_entry(
+                cursor, date_str, f"مبيعات يومية - {branch_name} - {date_str}", branch_id, journal_items)
+            for method, total, vat in saved_methods:
+                cursor.execute(
+                    """INSERT INTO sales (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (branch_id, date_str, total, vat, method, entry_id),
+                )
 
         QMessageBox.information(self, "تم", "تم تسجيل مبيعات اليوم وترحيلها للمحاسبة")
         self.cash_input.clear()
