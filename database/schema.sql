@@ -118,6 +118,44 @@ CREATE TABLE IF NOT EXISTS supplier_payments (
     FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
 );
 
+-- Customers (مدينون / ذمم مدينة) - the mirror image of suppliers.
+CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    tax_id TEXT,
+    opening_balance REAL DEFAULT 0,
+    phone TEXT,
+    is_active INTEGER DEFAULT 1
+);
+
+-- Credit sales to a customer (the mirror of "purchases" on credit from a
+-- supplier): creates the receivable rather than an instant cash/POS/transfer
+-- sale, which is what the daily sales screen handles.
+CREATE TABLE IF NOT EXISTS customer_sales (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id INTEGER,
+    customer_id INTEGER,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
+    vat_amount REAL DEFAULT 0,
+    description TEXT,
+    journal_entry_id INTEGER,
+    FOREIGN KEY (branch_id) REFERENCES branches(id),
+    FOREIGN KEY (customer_id) REFERENCES customers(id)
+);
+
+-- Customer Payments (collecting what a customer owes / opening balances)
+CREATE TABLE IF NOT EXISTS customer_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    customer_id INTEGER,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
+    method TEXT CHECK(method IN ('Cash', 'Bank')),
+    notes TEXT,
+    journal_entry_id INTEGER,
+    FOREIGN KEY (customer_id) REFERENCES customers(id)
+);
+
 -- Purchase Returns
 CREATE TABLE IF NOT EXISTS purchase_returns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -196,8 +234,12 @@ INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1001', 'ال
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1100', 'المخزون', 'Asset');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1200', 'ضريبة المشتريات (مدخلات)', 'Asset');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1300', 'سلف الموظفين', 'Asset');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1400', 'العملاء (ذمم مدينة)', 'Asset');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('1500', 'مصروفات مدفوعة مقدماً', 'Asset');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2000', 'الموردون (ذمم دائنة)', 'Liability');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2100', 'ضريبة المبيعات (مخرجات)', 'Liability');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2200', 'رواتب مستحقة الدفع', 'Liability');
+INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('2300', 'قروض', 'Liability');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('3000', 'رأس المال', 'Equity');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('3900', 'الأرصدة الافتتاحية', 'Equity');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('4000', 'المبيعات', 'Revenue');

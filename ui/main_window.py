@@ -58,6 +58,7 @@ class MainWindow(QMainWindow):
 
         self.btn_dashboard = self.create_nav_btn("لوحة التحكم")
         self.btn_sales = self.create_nav_btn("المبيعات اليومية")
+        self.btn_customers = self.create_nav_btn("العملاء")
         self.btn_purchases = self.create_nav_btn("المشتريات")
         self.btn_suppliers = self.create_nav_btn("الموردون")
         self.btn_hr = self.create_nav_btn("الموارد البشرية")
@@ -70,6 +71,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.nav_group_label("العمل اليومي"))
         sidebar_layout.addWidget(self.btn_sales)
+        sidebar_layout.addWidget(self.btn_customers)
         sidebar_layout.addWidget(self.btn_purchases)
         sidebar_layout.addWidget(self.btn_suppliers)
         sidebar_layout.addWidget(self.nav_group_label("الموظفون"))
@@ -229,6 +231,7 @@ class MainWindow(QMainWindow):
         from ui.sales_entry_module import SalesEntryModule
         from ui.purchase_module import PurchaseModule
         from ui.suppliers_module import SuppliersModule
+        from ui.customers_module import CustomersModule
         from ui.reports_module import ReportsModule
         from ui.settings_module import SettingsModule
         from ui.accounting_module import AccountingModule
@@ -241,6 +244,7 @@ class MainWindow(QMainWindow):
         self.hr = HRModule(self.db, self.hr_logic)
         self.purchases = PurchaseModule(self.db)
         self.suppliers = SuppliersModule(self.db)
+        self.customers = CustomersModule(self.db)
         self.reports = ReportsModule(self.db)
         self.settings = SettingsModule(self.db)
         self.accounting = AccountingModule(self.db)
@@ -255,6 +259,7 @@ class MainWindow(QMainWindow):
         self.add_page("hr", self.hr, scrollable=False)
         self.add_page("purchases", self.purchases, scrollable=False)
         self.add_page("suppliers", self.suppliers, scrollable=False)
+        self.add_page("customers", self.customers, scrollable=False)
         self.add_page("reports", self.reports, scrollable=False)
         self.add_page("accounting", self.accounting, scrollable=False)
         self.add_page("settings", self.settings)

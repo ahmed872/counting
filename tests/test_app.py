@@ -92,7 +92,7 @@ def main():
         app.processEvents()
         return entry
 
-    pages = ["dashboard", "sales", "hr", "purchases", "suppliers", "reports", "accounting"]
+    pages = ["dashboard", "sales", "hr", "purchases", "suppliers", "customers", "reports", "accounting"]
 
     # ---------------- data entry flows ----------------
     print("\n[flows]")
@@ -449,6 +449,110 @@ def main():
             window.purchases.load_suppliers()
     check("stopping a supplier hides it from new purchases but keeps it payable and reversible",
           stopping_a_supplier_hides_it_from_new_purchases_only)
+
+    def customer_credit_sale_and_collection():
+        """The mirror image of the supplier ledger check: a credit sale
+        creates a receivable (debit 1400, credit sales+VAT), a collection
+        reduces it (debit cash, credit 1400) - and both must net out."""
+        journal_marker = newest_journal_entry_id()
+        goto("customers")
+        c = window.customers
+        c.name_input.setText("عميل الاختبار")
+        c.opening_balance_input.setText("0")
+        c.add_customer()
+        cid = db.fetch_one("SELECT id FROM customers WHERE name='عميل الاختبار'")["id"]
+        c.selected_customer_id = cid
+
+        c.sale_amount.setText("1150")  # VAT-inclusive: 1000 net + 150 VAT
+        c.record_credit_sale()
+        balance = window.accounting.accounting.get_customer_statement(cid)["balance"]
+        assert abs(balance - 1150) < 0.01, balance
+
+        c.collect_amount.setText("400")
+        c.record_collection()
+        balance = window.accounting.accounting.get_customer_statement(cid)["balance"]
+        assert abs(balance - 750) < 0.01, balance
+
+        receivable_net = db.fetch_one(
+            "SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1400' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(receivable_net - 750) < 0.01, \
+            "account 1400 does not match the customer's own statement"
+
+        db.execute_query("DELETE FROM customer_payments WHERE customer_id = ?", (cid,))
+        db.execute_query("DELETE FROM customer_sales WHERE customer_id = ?", (cid,))
+        db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+        delete_journal_entries_created_after(journal_marker)
+    check("a credit sale to a customer creates a receivable that collection reduces",
+          customer_credit_sale_and_collection)
+
+    def overcollecting_a_customer_asks_first():
+        """Same guard as overpaying a supplier, mirrored: collecting more
+        than a customer owes is almost always a typo and must not go
+        through silently."""
+        journal_marker = newest_journal_entry_id()
+        goto("customers")
+        c = window.customers
+        c.name_input.setText("عميل التحصيل الزائد")
+        c.opening_balance_input.setText("100")
+        c.add_customer()
+        cid = db.fetch_one("SELECT id FROM customers WHERE name='عميل التحصيل الزائد'")["id"]
+        c.reload_customer_picker(window.accounting.accounting.get_all_customer_balances())
+        c.active_customer.setCurrentIndex(c.active_customer.findData(cid))
+        app.processEvents()
+
+        asked = []
+        original = QMessageBox.question
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No)
+        try:
+            before = db.fetch_one("SELECT COUNT(*) c FROM customer_payments")["c"]
+            c.collect_amount.setText("999999")
+            c.record_collection()
+            assert asked, "an over-collection was accepted without asking"
+            after = db.fetch_one("SELECT COUNT(*) c FROM customer_payments")["c"]
+            assert after == before, "answering no still recorded the collection"
+        finally:
+            QMessageBox.question = original
+            db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+            delete_journal_entries_created_after(journal_marker)
+    check("collecting more than a customer owes asks before going through",
+          overcollecting_a_customer_asks_first)
+
+    def stopping_a_customer_warns_on_new_credit_sales_only():
+        """The mirror of the supplier stop/reactivate toggle: a stopped
+        customer is warned about (not silently blocked, since settling a
+        final balance can still need one more invoice) before a new credit
+        sale, but collection and the statement keep working normally."""
+        goto("customers")
+        c = window.customers
+        c.name_input.setText("عميل سيتم إيقافه")
+        c.add_customer()
+        cid = db.fetch_one("SELECT id FROM customers WHERE name='عميل سيتم إيقافه'")["id"]
+        try:
+            c.selected_customer_id = cid
+            c.toggle_customer_active()
+            assert db.fetch_one("SELECT is_active FROM customers WHERE id=?", (cid,))["is_active"] == 0
+
+            asked = []
+            original = QMessageBox.question
+            QMessageBox.question = staticmethod(
+                lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No)
+            try:
+                c.sale_amount.setText("115")
+                c.record_credit_sale()
+                assert asked, "a credit sale to a stopped customer was accepted without asking"
+            finally:
+                QMessageBox.question = original
+
+            c.selected_customer_id = cid
+            c.toggle_customer_active()
+            assert db.fetch_one("SELECT is_active FROM customers WHERE id=?", (cid,))["is_active"] == 1
+        finally:
+            db.execute_query("DELETE FROM customer_sales WHERE customer_id = ?", (cid,))
+            db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+    check("stopping a customer warns before a new credit sale but never blocks collection",
+          stopping_a_customer_warns_on_new_credit_sales_only)
 
     def negative_money_reads_correctly():
         """In a right-to-left line the bidi algorithm throws a leading minus to

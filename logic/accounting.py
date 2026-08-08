@@ -258,6 +258,56 @@ class AccountingLogic:
                             'balance': statement['balance'], 'is_active': bool(s['is_active'])})
         return results
 
+    def get_customer_statement(self, customer_id):
+        """Running ledger for a single customer: opening balance + credit
+        sales (debit, what they owe us grows) - collections (credit, what
+        they owe us shrinks). The mirror image of get_supplier_statement,
+        with debit/credit read the other way round because a receivable is
+        an asset (debit-increasing), not a liability."""
+        customer = self.db.fetch_one("SELECT * FROM customers WHERE id = ?", (customer_id,))
+        if not customer:
+            return None
+
+        entries = []
+        opening_balance = customer['opening_balance'] or 0
+        if opening_balance:
+            entries.append({'date': '', 'type': 'رصيد افتتاحي', 'debit': opening_balance, 'credit': 0})
+
+        sales = self.db.fetch_all(
+            "SELECT date, amount, vat_amount FROM customer_sales WHERE customer_id = ? ORDER BY date",
+            (customer_id,),
+        )
+        for s in sales:
+            entries.append({'date': s['date'], 'type': 'بيع آجل',
+                            'debit': (s['amount'] or 0) + (s['vat_amount'] or 0), 'credit': 0})
+
+        payments = self.db.fetch_all(
+            "SELECT date, amount, method FROM customer_payments WHERE customer_id = ? ORDER BY date",
+            (customer_id,),
+        )
+        for pay in payments:
+            method_label = 'نقدي' if pay['method'] == 'Cash' else 'تحويل بنكي'
+            entries.append({'date': pay['date'], 'type': f"تحصيل ({method_label})",
+                            'debit': 0, 'credit': pay['amount'] or 0})
+
+        entries.sort(key=lambda e: e['date'] or '')
+
+        balance = 0
+        for e in entries:
+            balance += e['debit'] - e['credit']
+            e['balance'] = balance
+
+        return {'customer': customer, 'entries': entries, 'balance': balance}
+
+    def get_all_customer_balances(self):
+        customers = self.db.fetch_all("SELECT * FROM customers ORDER BY name")
+        results = []
+        for c in customers:
+            statement = self.get_customer_statement(c['id'])
+            results.append({'id': c['id'], 'name': c['name'], 'phone': c['phone'],
+                            'balance': statement['balance'], 'is_active': bool(c['is_active'])})
+        return results
+
     # ------------------------------------------------------------------
     # Reporting helpers
     # ------------------------------------------------------------------
