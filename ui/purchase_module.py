@@ -210,9 +210,15 @@ class PurchaseModule(QWidget):
         ], columns=3, field_min_width=150))
         layout.addWidget(pin_height(return_box))
 
+        returns_header = QHBoxLayout()
         returns_label = QLabel("المرتجعات المسجلة:")
         returns_label.setStyleSheet("font-weight:700; color:#334155;")
-        layout.addWidget(returns_label)
+        returns_header.addWidget(returns_label)
+        returns_header.addStretch()
+        delete_return_btn = danger_button("حذف المرتجع المحدد")
+        delete_return_btn.clicked.connect(self.delete_selected_return)
+        returns_header.addWidget(delete_return_btn)
+        layout.addLayout(returns_header)
 
         self.returns_table = QTableWidget()
         self.returns_table.setColumnCount(5)
@@ -402,13 +408,13 @@ class PurchaseModule(QWidget):
             # return with no journal entry - either way, the accounts and the
             # operational record disagreeing about whether it happened.
             with self.db.transaction() as cursor:
-                self.db.insert_journal_entry(
+                entry_id = self.db.insert_journal_entry(
                     cursor, timestamp, f"مرتجع مشتريات ({label}) - {notes or ''}", branch_id, items)
                 cursor.execute(
                     """INSERT INTO purchase_returns
-                       (branch_id, supplier_id, date, amount, vat_amount, refund_method, notes, category)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (branch_id, supplier_id, timestamp, amount, vat, refund_method, notes, category),
+                       (branch_id, supplier_id, date, amount, vat_amount, refund_method, notes, category, journal_entry_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (branch_id, supplier_id, timestamp, amount, vat, refund_method, notes, category, entry_id),
                 )
 
             QMessageBox.information(self, "نجاح", "تم تسجيل مرتجع المشتريات")
@@ -418,6 +424,24 @@ class PurchaseModule(QWidget):
             self.load_purchases()
         except Exception as e:
             QMessageBox.critical(self, "خطأ", str(e))
+
+    def delete_selected_return(self):
+        row = self.returns_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "تنبيه", "اختر مرتجعاً من الجدول أولاً")
+            return
+        return_id, entry_id = self.returns_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        answer = QMessageBox.question(
+            self, "حذف مرتجع",
+            "سيتم حذف هذا المرتجع وقيده المحاسبي نهائياً.\n\nمتابعة؟",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.db.execute_query("DELETE FROM purchase_returns WHERE id = ?", (return_id,))
+        if entry_id:
+            self.db.delete_journal_entry(entry_id)
+        QMessageBox.information(self, "تم", "تم حذف المرتجع وقيده المحاسبي")
+        self.load_purchase_returns()
 
     def load_purchase_returns(self):
         query = """
@@ -430,7 +454,9 @@ class PurchaseModule(QWidget):
         if not fill_table(self.returns_table, len(rows), "لا توجد مرتجعات مسجلة"):
             return
         for row, r in enumerate(rows):
-            self.returns_table.setItem(row, 0, QTableWidgetItem(str(r['date'])))
+            date_item = QTableWidgetItem(str(r['date']))
+            date_item.setData(Qt.ItemDataRole.UserRole, (r['id'], r['journal_entry_id']))
+            self.returns_table.setItem(row, 0, date_item)
             self.returns_table.setItem(row, 1, QTableWidgetItem(r['supplier_name'] or ""))
             self.returns_table.setItem(row, 2, money_item(r['amount']))
             self.returns_table.setItem(row, 3, money_item(r['vat_amount']))

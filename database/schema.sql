@@ -128,6 +128,7 @@ CREATE TABLE IF NOT EXISTS purchase_returns (
     refund_method TEXT CHECK(refund_method IN ('Cash', 'CreditNote')),
     notes TEXT,
     category TEXT DEFAULT 'raw_material',
+    journal_entry_id INTEGER,
     FOREIGN KEY (branch_id) REFERENCES branches(id),
     FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
 );
@@ -141,6 +142,7 @@ CREATE TABLE IF NOT EXISTS sales_returns (
     vat_amount REAL DEFAULT 0,
     refund_method TEXT CHECK(refund_method IN ('Cash', 'POS', 'Transfer')),
     notes TEXT,
+    journal_entry_id INTEGER,
     FOREIGN KEY (branch_id) REFERENCES branches(id)
 );
 

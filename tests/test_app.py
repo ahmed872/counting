@@ -418,6 +418,78 @@ def main():
         assert after_entries == before_entries, "replacing a day left a stale journal entry"
     check("re-saving a day replaces it instead of doubling it", saving_the_same_day_twice_replaces_it)
 
+    def sales_returns_reduce_revenue_and_reverse_cleanly():
+        """sales_returns already existed in the schema and every report was
+        already reading from it, but nothing had a screen to write to it - a
+        customer refund had no way to be recorded except reopening the whole
+        day's sales entry and retyping the total, which conflates a refund
+        with correcting a typo and leaves no record of why the number
+        changed. Net revenue (credit minus debit on 4000, not just the
+        credit side) must actually drop by the return, and deleting it must
+        put the ledger back exactly where it was."""
+        def net_revenue():
+            return db.fetch_one(
+                "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
+                "WHERE account_code='4000'")["c"]
+
+        goto("sales")
+        sales = window.sales
+        before = net_revenue()
+
+        sales.return_method_input.setCurrentIndex(sales.return_method_input.findData("Cash"))
+        sales.return_amount_input.setText("115")
+        sales.return_notes_input.setText("طلب غلط")
+        sales.save_sales_return()
+        after_return = net_revenue()
+        assert abs((before - after_return) - 100) < 0.01, (before, after_return)
+
+        row = db.fetch_one(
+            "SELECT amount, vat_amount, journal_entry_id FROM sales_returns ORDER BY id DESC LIMIT 1")
+        assert abs(row["amount"] - 100) < 0.01 and abs(row["vat_amount"] - 15) < 0.01
+        assert row["journal_entry_id"], "the return has no journal entry linked to it"
+
+        sales.returns_table.setCurrentCell(0, 0)
+        sales.delete_selected_return()
+        after_delete = net_revenue()
+        assert abs(after_delete - before) < 0.01, "deleting the return did not restore revenue"
+        assert db.fetch_one("SELECT COUNT(*) c FROM sales_returns")["c"] == 0
+    check("a sales return reduces revenue and deleting it reverses cleanly",
+          sales_returns_reduce_revenue_and_reverse_cleanly)
+
+    def purchase_return_can_be_deleted_and_reverses_its_entry():
+        """Purchase returns had no delete at all - the one correction flow
+        every other screen in the app already has."""
+        goto("purchases")
+        pur = window.purchases
+        # rowCount() alone is not a reliable "no rows yet" signal: an empty
+        # table shows a single spanning placeholder row (fill_table), so the
+        # count that actually matters is the database's, not the widget's.
+        returns_before = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"]
+        i = pur.return_category_input.findData("raw_material")
+        pur.return_category_input.setCurrentIndex(i)
+        pur.return_amount_input.setText("80")
+        pur.return_method_input.setCurrentIndex(pur.return_method_input.findData("Cash"))
+        before = db.fetch_one(
+            "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
+            "WHERE account_code='1100'")["c"]
+        pur.save_purchase_return()
+        returns_after = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"]
+        assert returns_after == returns_before + 1, (returns_before, returns_after)
+
+        row = db.fetch_one(
+            "SELECT id, journal_entry_id FROM purchase_returns ORDER BY id DESC LIMIT 1")
+        assert row["journal_entry_id"], "the return has no journal entry linked to it"
+
+        pur.returns_table.setCurrentCell(0, 0)
+        pur.delete_selected_return()
+        after = db.fetch_one(
+            "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
+            "WHERE account_code='1100'")["c"]
+        assert abs(after - before) < 0.01, "deleting the return did not reverse the inventory account"
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"] == returns_before
+    check("a purchase return can be deleted and reverses its own entry",
+          purchase_return_can_be_deleted_and_reverses_its_entry)
+
     def opening_balances_fix_negative_cash():
         goto("settings")
         st = window.settings

@@ -69,6 +69,11 @@ class DBManager:
         if 'employee_deductions' in self.get_existing_tables(cursor):
             if 'settled_run_id' not in employee_deductions_columns:
                 cursor.execute("ALTER TABLE employee_deductions ADD COLUMN settled_run_id INTEGER")
+        if 'sales_returns' in self.get_existing_tables(cursor):
+            sales_returns_columns = table_columns('sales_returns')
+            if 'journal_entry_id' not in sales_returns_columns:
+                cursor.execute("ALTER TABLE sales_returns ADD COLUMN journal_entry_id INTEGER")
+
         purchase_returns_columns = table_columns('purchase_returns') if self.table_exists(cursor, 'purchase_returns') else set()
         if 'purchase_returns' in self.get_existing_tables(cursor):
             if 'category' not in purchase_returns_columns:
@@ -80,6 +85,8 @@ class DBManager:
                 # against (1100) means for the ones recorded so far.
                 cursor.execute(
                     "ALTER TABLE purchase_returns ADD COLUMN category TEXT DEFAULT 'raw_material'")
+            if 'journal_entry_id' not in purchase_returns_columns:
+                cursor.execute("ALTER TABLE purchase_returns ADD COLUMN journal_entry_id INTEGER")
 
         if 'employee_deductions' in self.get_existing_tables(cursor) and 'amount_recovered' not in employee_deductions_columns:
             # An advance bigger than one month's net salary used to be
