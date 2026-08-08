@@ -143,6 +143,17 @@ class DBManager:
                     cursor.execute(
                         f"ALTER TABLE payroll_run_items ADD COLUMN {column_name} INTEGER DEFAULT 0")
 
+        if self.table_exists(cursor, 'payroll_runs'):
+            payroll_runs_columns = table_columns('payroll_runs')
+            if 'paid_now' not in payroll_runs_columns:
+                # Posting used to always assume the whole net amount left the
+                # register the moment it was posted - there was no way to
+                # record "earned this month, still owed" (رواتب مستحقة),
+                # which is exactly what the accountant's balance-sheet
+                # message asked for. Existing rows are assumed paid, which is
+                # what every run before this column existed actually did.
+                cursor.execute("ALTER TABLE payroll_runs ADD COLUMN paid_now INTEGER DEFAULT 1")
+
         self.arabise_account_names(cursor)
         self.enforce_uniqueness(cursor)
 

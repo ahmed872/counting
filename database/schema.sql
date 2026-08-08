@@ -265,6 +265,17 @@ CREATE TABLE IF NOT EXISTS payroll_run_items (
     FOREIGN KEY (employee_id) REFERENCES employees(id)
 );
 
+-- Settling account 2200 (رواتب مستحقة الدفع) when a payroll run was posted
+-- as owed rather than paid in cash on the spot.
+CREATE TABLE IF NOT EXISTS accrued_wage_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
+    method TEXT CHECK(method IN ('Cash', 'Bank')),
+    notes TEXT,
+    journal_entry_id INTEGER
+);
+
 -- Initial Data for Branches
 -- One neutral branch so the app is usable on first run; the owner renames it
 -- and adds his own from Settings. No other data ships with the app.

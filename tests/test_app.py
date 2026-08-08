@@ -334,6 +334,49 @@ def main():
     check("a posted month's payroll is a frozen snapshot, not a live recalculation",
           posted_payroll_is_a_frozen_snapshot)
 
+    def payroll_posted_as_owed_credits_accrued_wages_not_cash():
+        """Posting used to always assume the net pay left the register on the
+        spot. paid_now=False must credit 2200 (رواتب مستحقة الدفع) instead
+        of cash, and settling it later must move the balance from 2200 to
+        cash without touching the original salaries-expense entry."""
+        journal_marker = newest_journal_entry_id()
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("موظف رواتب مستحقة", "عامل", 1, 3000, 0))
+        # The shared test database already has other active employees by
+        # this point in the run, so the run's total is whatever the live
+        # calculation says right now, not just this one employee's salary.
+        expected_total = sum(p['net_salary'] for p in window.hr_logic.get_monthly_payroll(2, 2026))
+        window.hr_logic.post_payroll(2, 2026, paid_now=False)
+
+        cash_moved = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1000' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(cash_moved) < 0.01, f"cash moved even though paid_now=False ({cash_moved})"
+
+        accrued_after_post = window.accounting.accounting.get_account_balance('2200')
+        assert abs(accrued_after_post - expected_total) < 0.01, (accrued_after_post, expected_total)
+
+        goto("hr")
+        hr = window.hr
+        hr.accrued_pay_amount.setText("1000")
+        hr.pay_accrued_wages()
+        accrued_after_partial = window.accounting.accounting.get_account_balance('2200')
+        assert abs(accrued_after_partial - (expected_total - 1000)) < 0.01, accrued_after_partial
+        cash_after_partial = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1000' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(cash_after_partial - 1000) < 0.01, cash_after_partial
+
+        db.execute_query("DELETE FROM accrued_wage_payments")
+        run_id = db.fetch_one("SELECT id FROM payroll_runs WHERE month=2 AND year=2026")["id"]
+        db.execute_query("DELETE FROM payroll_run_items WHERE run_id = ?", (run_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE id = ?", (run_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("payroll posted as owed credits accrued wages, not cash, and can be settled later",
+          payroll_posted_as_owed_credits_accrued_wages_not_cash)
+
     def supplier_ledger():
         goto("suppliers")
         s = window.suppliers

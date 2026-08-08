@@ -8,6 +8,15 @@ class AccountingLogic:
         total = amount + vat
         return vat, total
 
+    def get_account_balance(self, account_code):
+        """Raw balance of one account straight from the ledger - credit minus
+        debit, which is the natural direction for a liability like accrued
+        wages (2200) or loans (2300)."""
+        row = self.db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) - COALESCE(SUM(debit),0) v "
+            "FROM journal_items WHERE account_code = ?", (account_code,))
+        return row['v'] or 0
+
     def reverse_vat(self, total_amount, rate=0.15):
         """Given a VAT-inclusive total (e.g. the actual cash collected end-of-day),
         back out the pre-tax amount and the VAT portion."""

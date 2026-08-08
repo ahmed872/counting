@@ -188,12 +188,15 @@ class HRLogic:
             'net_salary': row['net_salary'],
         } for row in rows]
 
-    def post_payroll(self, month, year):
+    def post_payroll(self, month, year, paid_now=True):
         """Posts the month's payroll to the accounting journal:
         Debit Salaries Expense (5100) for gross-less-deductions-plus-bonuses,
         Credit Employee Advances (1300) for any advances recovered this run,
-        Credit Cash (1000) for the actual net amount paid out.
-        Marks unsettled advances as settled so they are not deducted twice."""
+        Credit Cash (1000) for the actual net amount paid out - or, if
+        paid_now is False, Credit Accrued Wages Payable (2200) instead,
+        because the expense was earned this month but the cash has not
+        actually left yet. Marks unsettled advances as settled so they are
+        not deducted twice."""
         if self.is_payroll_posted(month, year):
             raise ValueError("تم ترحيل رواتب هذا الشهر مسبقاً")
 
@@ -207,9 +210,10 @@ class HRLogic:
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         run_id = self.db.insert_and_return_id(
-            """INSERT INTO payroll_runs (month, year, posted_at, total_expense, total_net_paid, total_advances_recovered)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (month, year, timestamp, total_expense, total_net_paid, total_advances_recovered)
+            """INSERT INTO payroll_runs
+               (month, year, posted_at, total_expense, total_net_paid, total_advances_recovered, paid_now)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (month, year, timestamp, total_expense, total_net_paid, total_advances_recovered, int(paid_now))
         )
 
         for p in payroll:
@@ -253,9 +257,12 @@ class HRLogic:
         journal_items = [{'account_code': '5100', 'debit': total_expense, 'credit': 0}]
         if total_advances_recovered:
             journal_items.append({'account_code': '1300', 'debit': 0, 'credit': total_advances_recovered})
-        journal_items.append({'account_code': '1000', 'debit': 0, 'credit': total_net_paid})
+        credit_account = '1000' if paid_now else '2200'
+        journal_items.append({'account_code': credit_account, 'debit': 0, 'credit': total_net_paid})
 
-        self.db.add_journal_entry(timestamp, f"صرف رواتب شهر {month:02d}/{year}", None, journal_items)
+        description = (f"صرف رواتب شهر {month:02d}/{year}" if paid_now
+                       else f"استحقاق رواتب شهر {month:02d}/{year} (لم تُدفع بعد)")
+        self.db.add_journal_entry(timestamp, description, None, journal_items)
         return run_id
 
     def grant_advance(self, employee_id, date, amount, notes=""):

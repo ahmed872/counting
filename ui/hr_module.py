@@ -6,6 +6,7 @@ from PyQt6.QtCore import QDate, Qt
 from ui.common_widgets import create_stat_card, page_header, fill_table
 from ui.formatting import money_item, money
 from logic.money import parse_money
+from logic.accounting import AccountingLogic
 
 
 class HRModule(QWidget):
@@ -13,6 +14,7 @@ class HRModule(QWidget):
         super().__init__()
         self.db = db_manager
         self.hr_logic = hr_logic
+        self.accounting = AccountingLogic(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -247,6 +249,28 @@ class HRModule(QWidget):
         payroll_box_layout = QVBoxLayout(payroll_box)
         payroll_box_layout.addWidget(self.payroll_table)
         payroll_tab_layout.addWidget(payroll_box, 1)
+
+        # Settles account 2200 (رواتب مستحقة الدفع) built up by runs posted
+        # with "لا" above - a lump-sum payment against the accrued balance,
+        # not tied to any one month's run.
+        accrued_box = QGroupBox("سداد رواتب مستحقة سابقاً")
+        accrued_layout = QFormLayout(accrued_box)
+        accrued_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.accrued_balance_label = QLabel()
+        self.accrued_balance_label.setStyleSheet("font-weight:700; color:#e67e22;")
+        self.accrued_pay_amount = QLineEdit()
+        self.accrued_pay_amount.setPlaceholderText("0.00")
+        self.accrued_pay_method = QComboBox()
+        self.accrued_pay_method.addItem("نقدي", "Cash")
+        self.accrued_pay_method.addItem("تحويل بنكي", "Bank")
+        accrued_pay_btn = QPushButton("تسجيل السداد")
+        accrued_pay_btn.clicked.connect(self.pay_accrued_wages)
+        accrued_layout.addRow("الرصيد المستحق حالياً:", self.accrued_balance_label)
+        accrued_layout.addRow("المبلغ:", self.accrued_pay_amount)
+        accrued_layout.addRow("طريقة السداد:", self.accrued_pay_method)
+        accrued_layout.addRow(accrued_pay_btn)
+        payroll_tab_layout.addWidget(accrued_box)
+
         tabs.addTab(payroll_widget, "الرواتب")
 
         tables_widget = QWidget()
@@ -526,11 +550,60 @@ class HRModule(QWidget):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
+        # Posting used to always assume the whole net amount left the
+        # register the same moment - there was no way to say "earned this
+        # month, still owed" (رواتب مستحقة), which is exactly the gap the
+        # accountant's balance-sheet message pointed at. A "no" here credits
+        # account 2200 instead of cash, and the amount can be settled later
+        # from "سداد رواتب مستحقة" below without touching this month's entry.
+        paid_now = QMessageBox.question(
+            self, "هل تم الدفع؟",
+            "هل تم دفع صافي الرواتب نقداً/تحويلاً الآن؟\n\n"
+            "اختر «نعم» لو الفلوس خرجت فعلاً، أو «لا» لو الرواتب مستحقة "
+            "وهتتدفع لاحقاً - هتتسجل كالتزام (رواتب مستحقة الدفع) بدل ما "
+            "تتخصم من الخزينة على طول.",
+        ) == QMessageBox.StandardButton.Yes
+
         try:
-            self.hr_logic.post_payroll(month, year)
+            self.hr_logic.post_payroll(month, year, paid_now=paid_now)
             QMessageBox.information(self, "نجاح", "تم ترحيل الرواتب إلى المحاسبة بنجاح")
         except Exception as e:
             QMessageBox.critical(self, "خطأ", str(e))
+        self.refresh_payroll()
+
+    def pay_accrued_wages(self):
+        try:
+            amount = parse_money(self.accrued_pay_amount.text(), "المبلغ",
+                                 allow_blank=False, allow_zero=False)
+            if amount <= 0:
+                raise ValueError
+        except ValueError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
+            return
+
+        outstanding = self.accounting.get_account_balance('2200')
+        if amount > outstanding + 0.01:
+            QMessageBox.warning(self, "تنبيه",
+                                f"الرصيد المستحق حالياً {money(outstanding)} ريال فقط، لا يمكن سداد أكثر منه.")
+            return
+
+        method = self.accrued_pay_method.currentData()
+        cash_account = '1000' if method == 'Cash' else '1001'
+        timestamp = QDate.currentDate().toString("yyyy-MM-dd")
+
+        items = [
+            {'account_code': '2200', 'debit': amount, 'credit': 0},
+            {'account_code': cash_account, 'debit': 0, 'credit': amount},
+        ]
+        with self.db.transaction() as cursor:
+            entry_id = self.db.insert_journal_entry(cursor, timestamp, "سداد رواتب مستحقة", None, items)
+            cursor.execute(
+                "INSERT INTO accrued_wage_payments (date, amount, method, journal_entry_id) VALUES (?, ?, ?, ?)",
+                (timestamp, amount, method, entry_id),
+            )
+
+        QMessageBox.information(self, "نجاح", "تم تسجيل سداد الرواتب المستحقة")
+        self.accrued_pay_amount.clear()
         self.refresh_payroll()
 
     def refresh_payroll(self):
@@ -562,6 +635,8 @@ class HRModule(QWidget):
             self.payroll_status_label.setStyleSheet(
                 "color:#9a5a06; background:#fdf3e2; border:1px solid #f0d4a3;"
                 "border-radius:8px; padding:8px 12px; font-weight:700;")
+
+        self.accrued_balance_label.setText(f"{money(self.accounting.get_account_balance('2200'))} ريال")
 
         total_absent = 0
         if not fill_table(self.payroll_table, len(payroll), "لا يوجد موظفون مسجلون"):
@@ -641,3 +716,4 @@ class HRModule(QWidget):
 
     def refresh_on_show(self):
         self.load_employees()
+        self.refresh_payroll()
