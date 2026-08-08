@@ -202,9 +202,21 @@ def main():
             pass
     check("payroll posts once and refuses a duplicate", post_payroll_once)
 
+    def newest_journal_entry_id():
+        return db.fetch_one("SELECT COALESCE(MAX(id),0) m FROM journal_entries")["m"]
+
+    def delete_journal_entries_created_after(marker):
+        """Test-only cleanup: grant_advance() and post_payroll() each post a
+        journal entry with no easy handle back to it from here, so entries
+        created after a captured id watermark are swept up by id range
+        instead of guessed at by description text."""
+        for row in db.fetch_all("SELECT id FROM journal_entries WHERE id > ?", (marker,)):
+            db.delete_journal_entry(row["id"])
+
     def future_advance_does_not_leak_into_an_earlier_month():
         """An advance had no date filter at all on it - one granted in August
         was recoverable out of July's payroll, a month before it existed."""
+        journal_marker = newest_journal_entry_id()
         emp_id = db.insert_and_return_id(
             "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
             "VALUES (?,?,?,?,?)", ("اختبار السلف", "عامل", 1, 3000, 0))
@@ -214,6 +226,7 @@ def main():
         # Children before parent, now that foreign keys are actually enforced.
         db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
         db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
     check("an advance is not recovered from a month before it was granted",
           future_advance_does_not_leak_into_an_earlier_month)
 
@@ -223,6 +236,7 @@ def main():
         have been advanced money - and the whole advance was marked settled
         regardless, so the unrecovered remainder silently vanished from the
         books."""
+        journal_marker = newest_journal_entry_id()
         emp_id = db.insert_and_return_id(
             "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
             "VALUES (?,?,?,?,?)", ("سلفة كبيرة", "عامل", 1, 3000, 0))
@@ -244,6 +258,7 @@ def main():
                           "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
         db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
         db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
     check("an advance bigger than salary is recovered gradually, never below zero pay",
           advance_bigger_than_salary_never_makes_net_pay_negative)
 
@@ -682,12 +697,41 @@ def main():
         assert abs(report["cost_of_sales"] - 1650) < 0.01, report["cost_of_sales"]
         assert abs(report["operating_expenses"] - 2000) < 0.01, report["operating_expenses"]
         assert abs(report["gross_profit"] - (1000 - 1650)) < 0.01, report["gross_profit"]
-        assert abs(report["net_profit"] - (1000 - 1650 - 2000)) < 0.01, report["net_profit"]
+        # Net profit now correctly subtracts salaries too - it used to be
+        # silently missing from this figure entirely. Read what payroll
+        # actually posted rather than hard-coding it a second time, so this
+        # check does not itself start guessing at a number that depends on
+        # exactly which payroll runs happened to post earlier in the suite.
+        salaries = acc.get_salaries_expense("2000-01-01", "2100-01-01")
+        assert salaries > 0, "no salary postings found - the payroll test above did not run"
+        assert abs(report["salaries_expense"] - salaries) < 0.01, report["salaries_expense"]
+        assert abs(report["net_profit"] - (1000 - 1650 - 2000 - salaries)) < 0.01, report["net_profit"]
         # Output VAT 150 ; input VAT 150 + 75 + 22.5 + 300 = 547.5
         assert abs(report["output_vat"] - 150) < 0.01, report["output_vat"]
         assert abs(report["input_vat"] - 547.5) < 0.01, report["input_vat"]
         assert abs(report["net_vat"] - (150 - 547.5)) < 0.01, report["net_vat"]
     check("period report figures match the ledger", report_matches_ledger)
+
+    def dashboard_and_accounting_agree_on_profit():
+        """The dashboard's profit card and the accounting tab's income
+        statement used to compute profit two different ways for the same
+        restaurant on the same day: the income statement's cost of goods sold
+        came from an account nothing ever posts to (always zero, so it was
+        missing food cost entirely), and the dashboard's own formula never
+        subtracted salaries. Two real numbers, silently disagreeing, both
+        wrong in different directions. They now share one calculation."""
+        acc = window.accounting.accounting
+        start, end = "2000-01-01", "2100-01-01"
+        period = acc.get_period_report(start, end, None)
+        summary = acc.get_financial_summary(start, end)
+        assert abs(period["net_profit"] - summary["net_profit"]) < 0.01, \
+            (period["net_profit"], summary["net_profit"])
+        assert abs(period["net_sales"] - summary["revenue"]) < 0.01
+        assert abs(period["cost_of_sales"] - summary["cogs"]) < 0.01
+        assert summary["cogs"] > 0, \
+            "cost of goods sold is zero - the income statement is still reading a dead account"
+    check("the dashboard and the accounting tab show the same profit",
+          dashboard_and_accounting_agree_on_profit)
 
     def pdf_export_works():
         goto("reports")

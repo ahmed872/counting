@@ -30,23 +30,30 @@ class AccountingLogic:
         return self.db.fetch_all(query)
 
     def get_financial_summary(self, start_date, end_date):
-        revenue_query = """
-            SELECT COALESCE(SUM(credit) - SUM(debit), 0) as value
-            FROM journal_items ji
-            JOIN journal_entries je ON ji.entry_id = je.id
-            WHERE ji.account_code = '4000' AND date(je.date) BETWEEN date(?) AND date(?)
-        """
-        cogs_query = """
-            SELECT COALESCE(SUM(debit) - SUM(credit), 0) as value
-            FROM journal_items ji
-            JOIN journal_entries je ON ji.entry_id = je.id
-            WHERE ji.account_code = '5000' AND date(je.date) BETWEEN date(?) AND date(?)
-        """
-        expenses_query = """
-            SELECT COALESCE(SUM(debit) - SUM(credit), 0) as value
-            FROM journal_items ji
-            JOIN journal_entries je ON ji.entry_id = je.id
-            WHERE ji.account_code IN ('5100', '5200') AND date(je.date) BETWEEN date(?) AND date(?)
+        """The income statement's figures - now literally the same call the
+        dashboard makes, reshaped to this method's own key names.
+
+        This used to run its own COGS query against account 5000, and nothing
+        anywhere in the app ever posts to account 5000: no screen moves
+        inventory into cost of goods sold when it is sold rather than when it
+        is bought, because this program does not track item-level stock at
+        all - a deliberate choice made from the start, not an oversight, since
+        the whole design is a daily total rather than a per-order system. The
+        query was not wrong given what it was pointed at; what it was pointed
+        at simply never received a posting, so cogs was silently 0 in every
+        income statement this screen ever showed, and "net profit" here was
+        revenue minus salaries and operating expenses only - every riyal spent
+        on food or ingredients was missing from the figure entirely.
+
+        Meanwhile the dashboard's own profit card used get_period_report(),
+        which proxies cost of sales from purchases instead (the only
+        consumption signal this data model actually has) - correctly, but
+        get_period_report() had never included salaries in its own net profit
+        either, so it was wrong in the opposite direction. The two screens
+        showed two different numbers for the same restaurant on the same day,
+        and neither of them was salaries-and-food-cost-complete.
+
+        One formula now, computed once, read from both places.
         """
         output_vat_query = """
             SELECT COALESCE(SUM(credit) - SUM(debit), 0) as value
@@ -60,23 +67,38 @@ class AccountingLogic:
             JOIN journal_entries je ON ji.entry_id = je.id
             WHERE ji.account_code = '1200' AND date(je.date) BETWEEN date(?) AND date(?)
         """
-
-        revenue = (self.db.fetch_one(revenue_query, (start_date, end_date))['value']) or 0
-        cogs = (self.db.fetch_one(cogs_query, (start_date, end_date))['value']) or 0
-        operating_expenses = (self.db.fetch_one(expenses_query, (start_date, end_date))['value']) or 0
         output_vat = (self.db.fetch_one(output_vat_query, (start_date, end_date))['value']) or 0
         input_vat = (self.db.fetch_one(input_vat_query, (start_date, end_date))['value']) or 0
 
+        period = self.get_period_report(start_date, end_date, branch_id=None)
+
         return {
-            'revenue': revenue,
-            'cogs': cogs,
-            'operating_expenses': operating_expenses,
-            'gross_profit': revenue - cogs,
-            'net_profit': revenue - cogs - operating_expenses,
+            'revenue': period['net_sales'],
+            'cogs': period['cost_of_sales'],
+            'operating_expenses': period['operating_expenses'],
+            'salaries_expense': period['salaries_expense'],
+            'gross_profit': period['gross_profit'],
+            'net_profit': period['net_profit'],
             'output_vat': output_vat,
             'input_vat': input_vat,
             'net_vat': output_vat - input_vat,
         }
+
+    def get_salaries_expense(self, start_date, end_date):
+        """Payroll is posted company-wide (branch_id NULL on the journal
+        entry - this program does not split an employee's salary across
+        branches), so this has no branch filter to offer; a per-branch period
+        report's net profit will not include salary cost. Worth knowing if a
+        multi-branch owner ever compares a single branch's profit against the
+        whole company's."""
+        row = self.db.fetch_one(
+            """SELECT COALESCE(SUM(debit) - SUM(credit), 0) as value
+               FROM journal_items ji
+               JOIN journal_entries je ON ji.entry_id = je.id
+               WHERE ji.account_code = '5100' AND date(je.date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )
+        return row['value'] or 0
 
     def get_balance_sheet(self):
         query = """
@@ -374,9 +396,14 @@ class AccountingLogic:
         cost_of_sales = purchases['raw_material']['net'] + purchases['purchase_expense']['net'] \
             - returns['purchase_returns']
         operating_expenses = purchases['operating_expense']['net']
+        # Payroll is the other real cost of running the place, and it used to
+        # be left out of this figure entirely - "net profit" here was silently
+        # gross profit minus rent and utilities, with staff cost missing.
+        # Company-wide only; see get_salaries_expense for why.
+        salaries_expense = self.get_salaries_expense(start_date, end_date)
 
         gross_profit = net_sales - cost_of_sales
-        net_profit = gross_profit - operating_expenses
+        net_profit = gross_profit - operating_expenses - salaries_expense
 
         return {
             'start_date': start_date,
@@ -387,6 +414,7 @@ class AccountingLogic:
             'net_sales': net_sales,
             'cost_of_sales': cost_of_sales,
             'operating_expenses': operating_expenses,
+            'salaries_expense': salaries_expense,
             'gross_profit': gross_profit,
             'net_profit': net_profit,
             'output_vat': output_vat,

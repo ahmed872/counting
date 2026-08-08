@@ -252,6 +252,7 @@ class AccountingModule(QWidget):
             f"الإيرادات (صافي المبيعات): {money(summary['revenue'])}<br>"
             f"تكلفة البضاعة المباعة: {money(summary['cogs'])}<br>"
             f"<b>مجمل الربح: {money(summary['revenue'] - summary['cogs'])}</b><br>"
+            f"الرواتب والأجور: {money(summary['salaries_expense'])}<br>"
             f"المصروفات التشغيلية: {money(summary['operating_expenses'])}<br>"
             f"<b>صافي الربح: {money(summary['net_profit'])}</b>"
         )
