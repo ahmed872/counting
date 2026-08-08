@@ -13,13 +13,14 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QGridLayout,
     QTabWidget,
+    QScrollArea,
 )
 from PyQt6.QtCore import QDate, Qt
 from logic.accounting import AccountingLogic
 from ui.common_widgets import create_stat_card
 from ui.labels import ACCOUNT_TYPE_LABELS, label_for
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, hide_when_short
+from ui.common_widgets import page_header, hide_when_short, fill_table
 
 
 class AccountingModule(QWidget):
@@ -85,6 +86,7 @@ class AccountingModule(QWidget):
         tabs.addTab(self.build_income_tab(), "قائمة الدخل")
         tabs.addTab(self.build_trading_tab(), "حساب المتاجرة")
         tabs.addTab(self.build_balance_sheet_tab(), "المركز المالي")
+        tabs.addTab(self.build_ledger_tab(), "كشف حساب")
 
         # On a short window the four summary cards left the trial balance table
         # 78 pixels - one row. The numbers on the cards are all repeated inside
@@ -130,8 +132,15 @@ class AccountingModule(QWidget):
             "background:#f8fafc; border:1px solid #dbe3ec; border-radius:12px; padding:14px;"
         )
         self.income_box.setWordWrap(True)
-        v.addWidget(self.income_box)
-        v.addStretch()
+
+        # Same shape of bug as the trading account tab: unbounded text with
+        # nothing to scroll it, so a short window could clip the bottom lines
+        # clean off - net profit among them.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(self.income_box)
+        v.addWidget(scroll, 1)
         return widget
 
     def build_trading_tab(self):
@@ -170,8 +179,18 @@ class AccountingModule(QWidget):
             "background:#f8fafc; border:1px solid #dbe3ec; border-radius:12px; padding:14px;"
         )
         self.trading_box.setWordWrap(True)
-        v.addWidget(self.trading_box)
-        v.addStretch()
+
+        # The result is ten lines - opening inventory through gross profit -
+        # and nothing here bounds how tall it renders. Without its own scroll
+        # area the bottom lines, including the gross profit figure the whole
+        # calculation exists to produce, were cut off flush against the
+        # window edge with no way to reach them; this was reported with a
+        # screenshot ending mid-line at "تكلفة البضاعة المباعة".
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(self.trading_box)
+        v.addWidget(scroll, 1)
         return widget
 
     def build_balance_sheet_tab(self):
@@ -194,6 +213,62 @@ class AccountingModule(QWidget):
         self.bs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         v.addWidget(self.bs_table, 1)
         return widget
+
+    def build_ledger_tab(self):
+        """Every movement on any one account (cash, inventory, a specific
+        expense...), not just its final total the way ميزان المراجعة shows
+        it - the same "كشف حساب" idea already used for a supplier or
+        customer, just pointed at a whole account instead of one person.
+        The owner does not know accounting terms and should never have to;
+        this stays "كشف حساب" everywhere, on screen and in conversation."""
+        widget = QWidget()
+        v = QVBoxLayout(widget)
+
+        picker_row = QHBoxLayout()
+        picker_row.setSpacing(8)
+        picker_label = QLabel("الحساب:")
+        picker_label.setStyleSheet("font-weight:700; color:#334155;")
+        self.ledger_account_input = QComboBox()
+        self.ledger_account_input.setMinimumWidth(260)
+        self.ledger_account_input.currentIndexChanged.connect(self.load_ledger)
+        picker_row.addWidget(picker_label)
+        picker_row.addWidget(self.ledger_account_input)
+        picker_row.addStretch()
+        v.addLayout(picker_row)
+
+        self.ledger_balance_label = QLabel()
+        self.ledger_balance_label.setStyleSheet(
+            "font-weight: 800; color: #1f3b57; background:#eef6ff;"
+            "border:1px solid #cfe0f5; border-radius:8px; padding:9px 12px;")
+        v.addWidget(self.ledger_balance_label)
+
+        self.ledger_table = QTableWidget()
+        self.ledger_table.setColumnCount(4)
+        self.ledger_table.setHorizontalHeaderLabels(["التاريخ", "البيان", "مدين", "دائن"])
+        self.ledger_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.ledger_table.verticalHeader().setVisible(False)
+        self.ledger_table.setAlternatingRowColors(True)
+        self.ledger_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        v.addWidget(self.ledger_table, 1)
+
+        for account in self.accounting.get_all_accounts():
+            self.ledger_account_input.addItem(f"{account['code']} - {account['name']}", account['code'])
+        return widget
+
+    def load_ledger(self):
+        code = self.ledger_account_input.currentData()
+        if not code:
+            return
+        ledger = self.accounting.get_account_ledger(code)
+        if not fill_table(self.ledger_table, len(ledger['entries']), "لا توجد حركات على هذا الحساب"):
+            self.ledger_balance_label.setText(f"الرصيد: {money(ledger['balance'])} ريال")
+            return
+        for row, e in enumerate(ledger['entries']):
+            self.ledger_table.setItem(row, 0, QTableWidgetItem(str(e['date'] or "")))
+            self.ledger_table.setItem(row, 1, QTableWidgetItem(e['description'] or ""))
+            self.ledger_table.setItem(row, 2, money_item(e['debit'], blank_if_zero=True))
+            self.ledger_table.setItem(row, 3, money_item(e['credit'], blank_if_zero=True))
+        self.ledger_balance_label.setText(f"الرصيد: {money(ledger['balance'])} ريال")
 
     # ---------- Behaviour ----------
 
@@ -234,6 +309,7 @@ class AccountingModule(QWidget):
             f"الإيرادات (صافي المبيعات): {money(summary['revenue'])}<br>"
             f"تكلفة البضاعة المباعة: {money(summary['cogs'])}<br>"
             f"<b>مجمل الربح: {money(summary['revenue'] - summary['cogs'])}</b><br>"
+            f"الرواتب والأجور: {money(summary['salaries_expense'])}<br>"
             f"المصروفات التشغيلية: {money(summary['operating_expenses'])}<br>"
             f"<b>صافي الربح: {money(summary['net_profit'])}</b>"
         )
@@ -309,3 +385,4 @@ class AccountingModule(QWidget):
 
     def refresh_on_show(self):
         self.refresh_data()
+        self.load_ledger()

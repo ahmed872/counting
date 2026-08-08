@@ -3,6 +3,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QTableWidget,
                              QTableWidgetItem, QLabel, QHeaderView, QComboBox)
 from PyQt6.QtGui import QColor
+from PyQt6.QtCore import Qt
 from logic.hr import HRLogic
 from logic.accounting import AccountingLogic
 from ui.common_widgets import create_stat_card, page_header, fill_table
@@ -83,8 +84,20 @@ class DashboardModule(QWidget):
         self.alerts_table.setAlternatingRowColors(True)
         self.alerts_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.alerts_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.alerts_table.setMinimumHeight(180)
-        layout.addWidget(self.alerts_table, 1)
+        # No internal scrollbar: a table this deep in an unbounded list (every
+        # expiring document for every employee) used to be squeezed into a
+        # ~180px box with its own tiny scrollbar buried inside it. A row could
+        # sit just past the fold with nothing on screen to suggest it existed,
+        # and the owner reported a warning that "scrolling doesn't bring it
+        # up" - confirmed live: the data and the inner scrollbar both worked,
+        # but 8 of 12 rows never fit in that box. The table now grows to fit
+        # every row, and the page around it scrolls instead (the same big,
+        # high-contrast scrollbar used on every other page), so there is one
+        # obvious way to reach more content, not a hidden one nested inside
+        # another.
+        self.alerts_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.alerts_table.setMinimumHeight(90)
+        layout.addWidget(self.alerts_table)
 
         self.refresh_dashboard()
 
@@ -133,6 +146,7 @@ class DashboardModule(QWidget):
 
         if not fill_table(self.alerts_table, len(alerts),
                           "لا توجد وثائق تقترب من الانتهاء خلال هذه المدة"):
+            self._fit_alerts_table_height()
             return
 
         for row, alert in enumerate(alerts):
@@ -165,6 +179,17 @@ class DashboardModule(QWidget):
                     item = self.alerts_table.item(row, col)
                     if item:
                         item.setBackground(colour)
+
+        self._fit_alerts_table_height()
+
+    def _fit_alerts_table_height(self):
+        """Grow the table to fit every row instead of hiding rows behind its
+        own internal scrollbar (see the comment where the table is built)."""
+        header_height = self.alerts_table.horizontalHeader().height()
+        rows_height = self.alerts_table.verticalHeader().length()
+        frame = self.alerts_table.frameWidth() * 2
+        total = header_height + rows_height + frame + 2
+        self.alerts_table.setFixedHeight(max(total, 90))
 
     def _set_banner(self, text, fg, bg, border):
         self.today_banner.setText(text)

@@ -72,6 +72,8 @@ def main():
         os.remove(DB_PATH)
 
     silence_dialogs()
+    from main import pin_dpi_policy
+    pin_dpi_policy()
     db = DBManager(DB_PATH)
     app = QApplication(sys.argv)
     apply_theme(app)
@@ -90,7 +92,8 @@ def main():
         app.processEvents()
         return entry
 
-    pages = ["dashboard", "sales", "hr", "purchases", "suppliers", "reports", "accounting"]
+    pages = ["dashboard", "sales", "hr", "purchases", "suppliers", "customers", "reports",
+             "accounting", "other_balances"]
 
     # ---------------- data entry flows ----------------
     print("\n[flows]")
@@ -121,6 +124,44 @@ def main():
         hr.save_employee()
         assert db.fetch_one("SELECT COUNT(*) c FROM employees")["c"] == 1, "edit created a duplicate row"
     check("editing an employee updates instead of duplicating", edit_employee_salary)
+
+    def saving_twice_does_not_duplicate_the_employee():
+        """A screenshot showed three identical employees named صابر after the
+        save button was clicked three times with the same data still sitting
+        in the form. The form was never actually cleared: clear_employee_form
+        only reset the picker's index, and Qt does not emit
+        currentIndexChanged when an index is set to the value it already
+        holds - which is exactly the picker's state right after adding
+        someone. The typed values stayed in the boxes, invisible to the user,
+        and the next click saved them again."""
+        hr = window.hr
+        before = db.fetch_one("SELECT COUNT(*) c FROM employees WHERE name='صابر'")["c"]
+        hr.name_input.setText("صابر")
+        hr.job_input.setText("مهم")
+        hr.salary_input.setText("5000")
+        hr.allowance_input.setText("1000")
+        hr.iqama_input.setText("44")
+        for _ in range(3):
+            hr.save_employee()
+        after = db.fetch_one("SELECT COUNT(*) c FROM employees WHERE name='صابر'")["c"]
+        assert after == before + 1, f"expected 1 new صابر, found {after - before}"
+        assert hr.name_input.text() == "", \
+            "the form still holds the saved values after a successful save"
+    check("clicking save more than once does not duplicate the employee",
+          saving_twice_does_not_duplicate_the_employee)
+
+    def new_employee_button_actually_clears_the_form():
+        """The same broken clear made this button feel useless: in the common
+        case (already adding a new employee, picker already on index 0), the
+        click changed nothing a user could see."""
+        hr = window.hr
+        hr.name_input.setText("نص مؤقت")
+        hr.job_input.setText("نص مؤقت")
+        hr.new_btn.click()
+        assert hr.name_input.text() == "", "موظف جديد did not clear the name field"
+        assert hr.job_input.text() == "", "موظف جديد did not clear the job field"
+    check("the 'موظف جديد' button visibly clears the form",
+          new_employee_button_actually_clears_the_form)
 
     def duplicate_attendance_counts_once():
         hr = window.hr
@@ -161,6 +202,180 @@ def main():
         except ValueError:
             pass
     check("payroll posts once and refuses a duplicate", post_payroll_once)
+
+    def newest_journal_entry_id():
+        return db.fetch_one("SELECT COALESCE(MAX(id),0) m FROM journal_entries")["m"]
+
+    def delete_journal_entries_created_after(marker):
+        """Test-only cleanup: grant_advance() and post_payroll() each post a
+        journal entry with no easy handle back to it from here, so entries
+        created after a captured id watermark are swept up by id range
+        instead of guessed at by description text."""
+        for row in db.fetch_all("SELECT id FROM journal_entries WHERE id > ?", (marker,)):
+            db.delete_journal_entry(row["id"])
+
+    def future_advance_does_not_leak_into_an_earlier_month():
+        """An advance had no date filter at all on it - one granted in August
+        was recoverable out of July's payroll, a month before it existed."""
+        journal_marker = newest_journal_entry_id()
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("اختبار السلف", "عامل", 1, 3000, 0))
+        window.hr_logic.grant_advance(emp_id, "2026-08-10", 500, "سلفة أغسطس")
+        july = next(p for p in window.hr_logic.get_monthly_payroll(7, 2026) if p["id"] == emp_id)
+        assert july["advances_recovered"] == 0, july["advances_recovered"]
+        # Children before parent, now that foreign keys are actually enforced.
+        db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("an advance is not recovered from a month before it was granted",
+          future_advance_does_not_leak_into_an_earlier_month)
+
+    def advance_bigger_than_salary_never_makes_net_pay_negative():
+        """An advance larger than one month's salary used to be recovered in
+        full in a single run, driving net pay negative - paying someone to
+        have been advanced money - and the whole advance was marked settled
+        regardless, so the unrecovered remainder silently vanished from the
+        books."""
+        journal_marker = newest_journal_entry_id()
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("سلفة كبيرة", "عامل", 1, 3000, 0))
+        window.hr_logic.grant_advance(emp_id, "2026-05-01", 10000, "سلفة ضخمة")
+        may = next(p for p in window.hr_logic.get_monthly_payroll(5, 2026) if p["id"] == emp_id)
+        assert may["net_salary"] >= 0, may["net_salary"]
+        assert may["advances_recovered"] == may["expense_amount"]
+        window.hr_logic.post_payroll(5, 2026)
+        remainder = db.fetch_one(
+            "SELECT amount, amount_recovered, settled_run_id FROM employee_deductions "
+            "WHERE employee_id = ? AND type='Advance'", (emp_id,))
+        assert remainder["settled_run_id"] is None, \
+            "an under-recovered advance was marked fully settled"
+        assert remainder["amount"] - remainder["amount_recovered"] > 0
+        june = next(p for p in window.hr_logic.get_monthly_payroll(6, 2026) if p["id"] == emp_id)
+        assert june["advances_recovered"] > 0, "the remaining debt did not carry into next month"
+        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE month=5 AND year=2026 AND "
+                          "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+        db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("an advance bigger than salary is recovered gradually, never below zero pay",
+          advance_bigger_than_salary_never_makes_net_pay_negative)
+
+    def a_31_day_month_cannot_deduct_more_than_the_salary():
+        """A 31-day month allows 31 attendance rows, and 31 x daily_rate is
+        more than the whole salary - the deduction used to be able to exceed
+        what there was to deduct from."""
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("غياب كامل الشهر", "عامل", 1, 3000, 0))
+        for day in range(1, 32):
+            window.hr_logic.record_attendance(emp_id, f"2026-07-{day:02d}", "Absent")
+        july = next(p for p in window.hr_logic.get_monthly_payroll(7, 2026) if p["id"] == emp_id)
+        assert july["absent_days"] == 31, july["absent_days"]
+        assert july["expense_amount"] >= 0, july["expense_amount"]
+        db.execute_query("DELETE FROM attendance WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+    check("a month with 31 absences cannot deduct below zero pay",
+          a_31_day_month_cannot_deduct_more_than_the_salary)
+
+    def terminated_employee_still_counted_in_the_month_they_worked():
+        """The owner deactivating someone used to drop them from payroll
+        immediately, including an unposted PAST month they had actually
+        worked - is_active alone cannot tell "gone before this month" from
+        "gone during/after it"."""
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances, "
+            "is_active, terminated_date) VALUES (?,?,?,?,?,?,?)",
+            ("موظف منتهي الخدمة", "عامل", 1, 3000, 0, 0, "2026-03-20"))
+        march = next((p for p in window.hr_logic.get_monthly_payroll(3, 2026) if p["id"] == emp_id), None)
+        assert march is not None, "an employee terminated mid-month is missing from that month's payroll"
+        april = next((p for p in window.hr_logic.get_monthly_payroll(4, 2026) if p["id"] == emp_id), None)
+        assert april is None, "a terminated employee still appears in a month entirely after their last day"
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+    check("an employee terminated mid-month is still counted in that month's payroll",
+          terminated_employee_still_counted_in_the_month_they_worked)
+
+    def posted_payroll_is_a_frozen_snapshot():
+        """Once a month is posted, the journal entry it produced is fixed -
+        the screen must keep showing what was actually posted, not silently
+        drift if attendance or a deduction for that same month is edited
+        afterwards."""
+        journal_marker = newest_journal_entry_id()
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("لقطة الرواتب المرحلة", "عامل", 1, 3000, 0))
+        window.hr_logic.record_attendance(emp_id, "2026-04-05", "Absent")
+        window.hr_logic.post_payroll(4, 2026)
+
+        snapshot_before = next(p for p in window.hr_logic.get_posted_payroll(4, 2026) if p["id"] == emp_id)
+        assert snapshot_before["absent_days"] == 1, snapshot_before["absent_days"]
+        assert abs(snapshot_before["net_salary"] - 2900) < 0.01, snapshot_before["net_salary"]
+
+        # Edit the same month's attendance after posting.
+        window.hr_logic.record_attendance(emp_id, "2026-04-06", "Absent")
+        live_after = next(p for p in window.hr_logic.get_monthly_payroll(4, 2026) if p["id"] == emp_id)
+        assert live_after["absent_days"] == 2, \
+            "sanity check: the live recalculation should see the new absence"
+
+        snapshot_after = next(p for p in window.hr_logic.get_posted_payroll(4, 2026) if p["id"] == emp_id)
+        assert snapshot_after["absent_days"] == 1, \
+            "the posted snapshot changed after editing attendance for that month"
+        assert abs(snapshot_after["net_salary"] - 2900) < 0.01, snapshot_after["net_salary"]
+
+        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE month=4 AND year=2026 AND "
+                          "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+        db.execute_query("DELETE FROM attendance WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("a posted month's payroll is a frozen snapshot, not a live recalculation",
+          posted_payroll_is_a_frozen_snapshot)
+
+    def payroll_posted_as_owed_credits_accrued_wages_not_cash():
+        """Posting used to always assume the net pay left the register on the
+        spot. paid_now=False must credit 2200 (رواتب مستحقة الدفع) instead
+        of cash, and settling it later must move the balance from 2200 to
+        cash without touching the original salaries-expense entry."""
+        journal_marker = newest_journal_entry_id()
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("موظف رواتب مستحقة", "عامل", 1, 3000, 0))
+        # The shared test database already has other active employees by
+        # this point in the run, so the run's total is whatever the live
+        # calculation says right now, not just this one employee's salary.
+        expected_total = sum(p['net_salary'] for p in window.hr_logic.get_monthly_payroll(2, 2026))
+        window.hr_logic.post_payroll(2, 2026, paid_now=False)
+
+        cash_moved = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1000' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(cash_moved) < 0.01, f"cash moved even though paid_now=False ({cash_moved})"
+
+        accrued_after_post = window.accounting.accounting.get_account_balance('2200')
+        assert abs(accrued_after_post - expected_total) < 0.01, (accrued_after_post, expected_total)
+
+        goto("hr")
+        hr = window.hr
+        hr.accrued_pay_amount.setText("1000")
+        hr.pay_accrued_wages()
+        accrued_after_partial = window.accounting.accounting.get_account_balance('2200')
+        assert abs(accrued_after_partial - (expected_total - 1000)) < 0.01, accrued_after_partial
+        cash_after_partial = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1000' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(cash_after_partial - 1000) < 0.01, cash_after_partial
+
+        db.execute_query("DELETE FROM accrued_wage_payments")
+        run_id = db.fetch_one("SELECT id FROM payroll_runs WHERE month=2 AND year=2026")["id"]
+        db.execute_query("DELETE FROM payroll_run_items WHERE run_id = ?", (run_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE id = ?", (run_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("payroll posted as owed credits accrued wages, not cash, and can be settled later",
+          payroll_posted_as_owed_credits_accrued_wages_not_cash)
 
     def supplier_ledger():
         goto("suppliers")
@@ -224,6 +439,244 @@ def main():
     check("paying more than is owed asks before going through",
           overpaying_a_supplier_asks_first)
 
+    def stopping_a_supplier_hides_it_from_new_purchases_only():
+        """The owner asked how to delete a supplier - there was no way to, and
+        a hard delete would either be blocked by (or silently orphan) every
+        past purchase, payment, and journal entry tied to it. 'Stop dealing
+        with' is the safe equivalent: the supplier drops out of the new
+        purchase picker, but stays fully visible and payable everywhere else,
+        and can be turned back on."""
+        goto("suppliers")
+        s = window.suppliers
+        s.name_input.setText("مورد سيتم إيقافه")
+        s.add_supplier()
+        sid = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد سيتم إيقافه'")["id"]
+        try:
+            goto("purchases")
+            p = window.purchases
+            p.load_suppliers()
+            assert p.supplier_input.findData(sid) >= 0, \
+                "an active supplier is missing from the new-purchase picker"
+
+            goto("suppliers")
+            s.selected_supplier_id = sid
+            s.toggle_supplier_active()
+            assert db.fetch_one("SELECT is_active FROM suppliers WHERE id=?", (sid,))["is_active"] == 0
+
+            goto("purchases")
+            p.load_suppliers()
+            assert p.supplier_input.findData(sid) < 0, \
+                "a stopped supplier still appears in the new-purchase picker"
+
+            # Still payable and still shown in the full list, just marked.
+            goto("suppliers")
+            s.load_suppliers()
+            names = {s.payment_supplier.itemText(i) for i in range(s.payment_supplier.count())}
+            assert "مورد سيتم إيقافه" in names, "a stopped supplier can no longer be paid"
+            balances = window.accounting.accounting.get_all_supplier_balances()
+            stopped = next(b for b in balances if b["id"] == sid)
+            assert stopped["is_active"] is False
+
+            # Reactivating brings it back into the new-purchase picker.
+            s.selected_supplier_id = sid
+            s.toggle_supplier_active()
+            assert db.fetch_one("SELECT is_active FROM suppliers WHERE id=?", (sid,))["is_active"] == 1
+            goto("purchases")
+            p.load_suppliers()
+            assert p.supplier_input.findData(sid) >= 0, \
+                "reactivating did not bring the supplier back for new purchases"
+        finally:
+            db.execute_query("DELETE FROM suppliers WHERE id = ?", (sid,))
+            goto("suppliers")
+            window.suppliers.load_suppliers()
+            goto("purchases")
+            window.purchases.load_suppliers()
+    check("stopping a supplier hides it from new purchases but keeps it payable and reversible",
+          stopping_a_supplier_hides_it_from_new_purchases_only)
+
+    def customer_credit_sale_and_collection():
+        """The mirror image of the supplier ledger check: a credit sale
+        creates a receivable (debit 1400, credit sales+VAT), a collection
+        reduces it (debit cash, credit 1400) - and both must net out."""
+        journal_marker = newest_journal_entry_id()
+        goto("customers")
+        c = window.customers
+        c.name_input.setText("عميل الاختبار")
+        c.opening_balance_input.setText("0")
+        c.add_customer()
+        cid = db.fetch_one("SELECT id FROM customers WHERE name='عميل الاختبار'")["id"]
+        c.selected_customer_id = cid
+
+        c.sale_amount.setText("1150")  # VAT-inclusive: 1000 net + 150 VAT
+        c.record_credit_sale()
+        balance = window.accounting.accounting.get_customer_statement(cid)["balance"]
+        assert abs(balance - 1150) < 0.01, balance
+
+        c.collect_amount.setText("400")
+        c.record_collection()
+        balance = window.accounting.accounting.get_customer_statement(cid)["balance"]
+        assert abs(balance - 750) < 0.01, balance
+
+        receivable_net = db.fetch_one(
+            "SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1400' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(receivable_net - 750) < 0.01, \
+            "account 1400 does not match the customer's own statement"
+
+        db.execute_query("DELETE FROM customer_payments WHERE customer_id = ?", (cid,))
+        db.execute_query("DELETE FROM customer_sales WHERE customer_id = ?", (cid,))
+        db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+        delete_journal_entries_created_after(journal_marker)
+    check("a credit sale to a customer creates a receivable that collection reduces",
+          customer_credit_sale_and_collection)
+
+    def overcollecting_a_customer_asks_first():
+        """Same guard as overpaying a supplier, mirrored: collecting more
+        than a customer owes is almost always a typo and must not go
+        through silently."""
+        journal_marker = newest_journal_entry_id()
+        goto("customers")
+        c = window.customers
+        c.name_input.setText("عميل التحصيل الزائد")
+        c.opening_balance_input.setText("100")
+        c.add_customer()
+        cid = db.fetch_one("SELECT id FROM customers WHERE name='عميل التحصيل الزائد'")["id"]
+        c.reload_customer_picker(window.accounting.accounting.get_all_customer_balances())
+        c.active_customer.setCurrentIndex(c.active_customer.findData(cid))
+        app.processEvents()
+
+        asked = []
+        original = QMessageBox.question
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No)
+        try:
+            before = db.fetch_one("SELECT COUNT(*) c FROM customer_payments")["c"]
+            c.collect_amount.setText("999999")
+            c.record_collection()
+            assert asked, "an over-collection was accepted without asking"
+            after = db.fetch_one("SELECT COUNT(*) c FROM customer_payments")["c"]
+            assert after == before, "answering no still recorded the collection"
+        finally:
+            QMessageBox.question = original
+            db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+            delete_journal_entries_created_after(journal_marker)
+    check("collecting more than a customer owes asks before going through",
+          overcollecting_a_customer_asks_first)
+
+    def stopping_a_customer_warns_on_new_credit_sales_only():
+        """The mirror of the supplier stop/reactivate toggle: a stopped
+        customer is warned about (not silently blocked, since settling a
+        final balance can still need one more invoice) before a new credit
+        sale, but collection and the statement keep working normally."""
+        goto("customers")
+        c = window.customers
+        c.name_input.setText("عميل سيتم إيقافه")
+        c.add_customer()
+        cid = db.fetch_one("SELECT id FROM customers WHERE name='عميل سيتم إيقافه'")["id"]
+        try:
+            c.selected_customer_id = cid
+            c.toggle_customer_active()
+            assert db.fetch_one("SELECT is_active FROM customers WHERE id=?", (cid,))["is_active"] == 0
+
+            asked = []
+            original = QMessageBox.question
+            QMessageBox.question = staticmethod(
+                lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No)
+            try:
+                c.sale_amount.setText("115")
+                c.record_credit_sale()
+                assert asked, "a credit sale to a stopped customer was accepted without asking"
+            finally:
+                QMessageBox.question = original
+
+            c.selected_customer_id = cid
+            c.toggle_customer_active()
+            assert db.fetch_one("SELECT is_active FROM customers WHERE id=?", (cid,))["is_active"] == 1
+        finally:
+            db.execute_query("DELETE FROM customer_sales WHERE customer_id = ?", (cid,))
+            db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+    check("stopping a customer warns before a new credit sale but never blocks collection",
+          stopping_a_customer_warns_on_new_credit_sales_only)
+
+    def loan_received_and_repaid():
+        """A loan increases cash and the loans liability (2300) together;
+        a repayment reduces both the liability and cash - cross-checked
+        against account 2300 directly, the same rigor as the customer test."""
+        journal_marker = newest_journal_entry_id()
+        goto("other_balances")
+        ob = window.other_balances
+        ob.lender_input.setText("بنك الاختبار")
+        ob.loan_amount_input.setText("5000")
+        ob.record_new_loan()
+        loan_id = db.fetch_one("SELECT id FROM loans WHERE lender_name='بنك الاختبار'")["id"]
+        assert abs(window.accounting.accounting.get_loan_statement(loan_id)["balance"] - 5000) < 0.01
+
+        ob.selected_loan_id = loan_id
+        ob.loan_payment_amount.setText("1200")
+        ob.record_loan_payment()
+        balance = window.accounting.accounting.get_loan_statement(loan_id)["balance"]
+        assert abs(balance - 3800) < 0.01, balance
+
+        loan_net = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) - COALESCE(SUM(debit),0) v FROM journal_items "
+            "WHERE account_code='2300' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(loan_net - 3800) < 0.01, "account 2300 does not match the loan's own statement"
+
+        db.execute_query("DELETE FROM loan_payments WHERE loan_id = ?", (loan_id,))
+        db.execute_query("DELETE FROM loans WHERE id = ?", (loan_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("a loan received and partly repaid matches account 2300 exactly", loan_received_and_repaid)
+
+    def prepaid_expense_release_matches_target_account():
+        """A prepaid expense parks the full amount in 1500 on entry; each
+        release moves only the released slice into the real expense account,
+        never more than remains, and the remainder stays in 1500."""
+        journal_marker = newest_journal_entry_id()
+        goto("other_balances")
+        ob = window.other_balances
+        ob.prepaid_desc_input.setText("إيجار سنة كاملة (اختبار)")
+        ob.prepaid_amount_input.setText("1200")
+        ob.prepaid_target_input.setCurrentIndex(ob.prepaid_target_input.findData('5200'))
+        ob.record_new_prepaid()
+        prepaid_id = db.fetch_one(
+            "SELECT id FROM prepaid_expenses WHERE description='إيجار سنة كاملة (اختبار)'")["id"]
+
+        remaining = next(r for r in window.accounting.accounting.get_prepaid_expenses_with_balances()
+                         if r['id'] == prepaid_id)['remaining']
+        assert abs(remaining - 1200) < 0.01, remaining
+
+        ob.selected_prepaid_id = prepaid_id
+        ob.release_amount_input.setText("100")
+        ob.release_prepaid()
+        remaining = next(r for r in window.accounting.accounting.get_prepaid_expenses_with_balances()
+                         if r['id'] == prepaid_id)['remaining']
+        assert abs(remaining - 1100) < 0.01, remaining
+
+        prepaid_1500_net = db.fetch_one(
+            "SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1500' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(prepaid_1500_net - 1100) < 0.01, \
+            "account 1500 does not match the prepaid expense's own remaining balance"
+        expense_5200_debit = db.fetch_one(
+            "SELECT COALESCE(SUM(debit),0) v FROM journal_items "
+            "WHERE account_code='5200' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(expense_5200_debit - 100) < 0.01, \
+            "the released amount was not debited to the target expense account"
+
+        # Trying to release more than remains must be refused, not clamp silently.
+        ob.release_amount_input.setText("999999")
+        ob.release_prepaid()
+        remaining_after = next(r for r in window.accounting.accounting.get_prepaid_expenses_with_balances()
+                               if r['id'] == prepaid_id)['remaining']
+        assert abs(remaining_after - 1100) < 0.01, \
+            "releasing more than remains changed the balance anyway"
+
+        db.execute_query("DELETE FROM prepaid_expense_releases WHERE prepaid_expense_id = ?", (prepaid_id,))
+        db.execute_query("DELETE FROM prepaid_expenses WHERE id = ?", (prepaid_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("a prepaid expense release matches account 1500 and the target expense account",
+          prepaid_expense_release_matches_target_account)
+
     def negative_money_reads_correctly():
         """In a right-to-left line the bidi algorithm throws a leading minus to
         the visual right, so -1000 was displayed as '1,000.00-' - which scans as
@@ -275,7 +728,45 @@ def main():
         assert abs(balance_of("1100") - 1500) < 0.01, balance_of("1100")   # inventory
         assert abs(balance_of("5150") - 150) < 0.01, balance_of("5150")    # purchase expense
         assert abs(balance_of("5200") - 2000) < 0.01, balance_of("5200")   # operating expense
+
+        # Leaving البيان blank used to fall back to the raw internal status
+        # code ("Cash"/"Credit") instead of a translated label - invisible
+        # until the new "كشف حساب" ledger tab started showing raw journal
+        # descriptions verbatim, which is exactly what surfaced it.
+        descriptions = db.fetch_all(
+            "SELECT description FROM journal_entries WHERE description LIKE '% - Cash' "
+            "OR description LIKE '% - Credit'")
+        assert not descriptions, \
+            f"an untranslated payment status leaked into a journal description: {descriptions}"
     check("purchase categories hit the right accounts", purchases_route_by_category)
+
+    def general_ledger_tab_shows_every_posting_with_a_running_balance():
+        """كشف حساب (per account, not per supplier/customer): the table must
+        show exactly the entries and running balance get_account_ledger
+        computes from the same raw journal_items - the same rigor used for
+        the loan/prepaid/customer checks above."""
+        from ui.formatting import money
+        goto("accounting")
+        acc_page = window.accounting
+        idx = acc_page.ledger_account_input.findData('1100')
+        assert idx >= 0, "account 1100 is missing from the ledger picker"
+        acc_page.ledger_account_input.setCurrentIndex(idx)
+        app.processEvents()
+
+        expected = window.accounting.accounting.get_account_ledger('1100')
+        assert len(expected['entries']) > 0, "account 1100 should have postings by this point"
+        assert acc_page.ledger_table.rowCount() == len(expected['entries']), \
+            (acc_page.ledger_table.rowCount(), len(expected['entries']))
+
+        last = expected['entries'][-1]
+        last_row = acc_page.ledger_table.rowCount() - 1
+        assert acc_page.ledger_table.item(last_row, 1).text() == (last['description'] or "")
+        shown_debit = acc_page.ledger_table.item(last_row, 2).text()
+        assert shown_debit == (money(last['debit']) if last['debit'] else ""), shown_debit
+
+        assert acc_page.ledger_balance_label.text() == f"الرصيد: {money(expected['balance'])} ريال"
+    check("the general ledger tab shows every posting to an account with the right running balance",
+          general_ledger_tab_shows_every_posting_with_a_running_balance)
 
     def daily_sales_vat():
         goto("sales")
@@ -315,6 +806,109 @@ def main():
         assert after_entries == before_entries, "replacing a day left a stale journal entry"
     check("re-saving a day replaces it instead of doubling it", saving_the_same_day_twice_replaces_it)
 
+    def cashier_number_is_saved_and_shown():
+        """A reference field only - which register the day's total came off
+        of, for matching against a physical Z-report. Does not affect any
+        accounting figure, and must not leak into other checks' totals, so
+        it uses a date well outside the 2000-2100 range the accounting
+        checks scan and cleans itself up afterwards."""
+        goto("sales")
+        sales = window.sales
+        far_date = "1999-01-01"
+        sales.date_input.setDate(sales.date_input.date().fromString(far_date, "yyyy-MM-dd"))
+        sales.cash_input.setText("500")
+        sales.cashier_input.setText("كاشير-3")
+        sales.save_daily_sales()
+
+        stored = db.fetch_one(
+            "SELECT id, journal_entry_id, cashier_number FROM sales WHERE date = ?", (far_date,))
+        assert stored["cashier_number"] == "كاشير-3", stored["cashier_number"]
+
+        match = next(
+            (r for r in range(sales.table.rowCount()) if sales.table.item(r, 0).text() == far_date),
+            None)
+        assert match is not None, "the saved day is not shown in the history table"
+        assert sales.table.item(match, 7).text() == "كاشير-3"
+
+        db.execute_query("DELETE FROM sales WHERE date = ?", (far_date,))
+        if stored["journal_entry_id"]:
+            db.delete_journal_entry(stored["journal_entry_id"])
+        sales.load_history()
+    check("the cashier/register reference number is saved and shown",
+          cashier_number_is_saved_and_shown)
+
+    def sales_returns_reduce_revenue_and_reverse_cleanly():
+        """sales_returns already existed in the schema and every report was
+        already reading from it, but nothing had a screen to write to it - a
+        customer refund had no way to be recorded except reopening the whole
+        day's sales entry and retyping the total, which conflates a refund
+        with correcting a typo and leaves no record of why the number
+        changed. Net revenue (credit minus debit on 4000, not just the
+        credit side) must actually drop by the return, and deleting it must
+        put the ledger back exactly where it was."""
+        def net_revenue():
+            return db.fetch_one(
+                "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
+                "WHERE account_code='4000'")["c"]
+
+        goto("sales")
+        sales = window.sales
+        before = net_revenue()
+
+        sales.return_method_input.setCurrentIndex(sales.return_method_input.findData("Cash"))
+        sales.return_amount_input.setText("115")
+        sales.return_notes_input.setText("طلب غلط")
+        sales.save_sales_return()
+        after_return = net_revenue()
+        assert abs((before - after_return) - 100) < 0.01, (before, after_return)
+
+        row = db.fetch_one(
+            "SELECT amount, vat_amount, journal_entry_id FROM sales_returns ORDER BY id DESC LIMIT 1")
+        assert abs(row["amount"] - 100) < 0.01 and abs(row["vat_amount"] - 15) < 0.01
+        assert row["journal_entry_id"], "the return has no journal entry linked to it"
+
+        sales.returns_table.setCurrentCell(0, 0)
+        sales.delete_selected_return()
+        after_delete = net_revenue()
+        assert abs(after_delete - before) < 0.01, "deleting the return did not restore revenue"
+        assert db.fetch_one("SELECT COUNT(*) c FROM sales_returns")["c"] == 0
+    check("a sales return reduces revenue and deleting it reverses cleanly",
+          sales_returns_reduce_revenue_and_reverse_cleanly)
+
+    def purchase_return_can_be_deleted_and_reverses_its_entry():
+        """Purchase returns had no delete at all - the one correction flow
+        every other screen in the app already has."""
+        goto("purchases")
+        pur = window.purchases
+        # rowCount() alone is not a reliable "no rows yet" signal: an empty
+        # table shows a single spanning placeholder row (fill_table), so the
+        # count that actually matters is the database's, not the widget's.
+        returns_before = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"]
+        i = pur.return_category_input.findData("raw_material")
+        pur.return_category_input.setCurrentIndex(i)
+        pur.return_amount_input.setText("80")
+        pur.return_method_input.setCurrentIndex(pur.return_method_input.findData("Cash"))
+        before = db.fetch_one(
+            "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
+            "WHERE account_code='1100'")["c"]
+        pur.save_purchase_return()
+        returns_after = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"]
+        assert returns_after == returns_before + 1, (returns_before, returns_after)
+
+        row = db.fetch_one(
+            "SELECT id, journal_entry_id FROM purchase_returns ORDER BY id DESC LIMIT 1")
+        assert row["journal_entry_id"], "the return has no journal entry linked to it"
+
+        pur.returns_table.setCurrentCell(0, 0)
+        pur.delete_selected_return()
+        after = db.fetch_one(
+            "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
+            "WHERE account_code='1100'")["c"]
+        assert abs(after - before) < 0.01, "deleting the return did not reverse the inventory account"
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"] == returns_before
+    check("a purchase return can be deleted and reverses its own entry",
+          purchase_return_can_be_deleted_and_reverses_its_entry)
+
     def opening_balances_fix_negative_cash():
         goto("settings")
         st = window.settings
@@ -350,6 +944,129 @@ def main():
         assert abs((before - after) - 999) < 0.01, f"{before} -> {after}"
     check("deleting a purchase also reverses its journal entry", deleting_a_purchase_reverses_its_entry)
 
+    def unbalanced_journal_entries_are_refused():
+        """Nothing previously stopped a caller with a mistake in it from
+        posting an entry where debit and credit did not match - the trial
+        balance would simply stop balancing, with no indication of which
+        entry did it. This is the one invariant double-entry bookkeeping
+        cannot survive without, enforced once at the write itself."""
+        try:
+            db.add_journal_entry("2026-01-01", "قيد اختبار غير متوازن", None, [
+                {"account_code": "1000", "debit": 100, "credit": 0},
+                {"account_code": "4000", "debit": 0, "credit": 40},
+            ])
+            raise AssertionError("an unbalanced entry was accepted")
+        except ValueError:
+            pass
+        # And a balanced one must still go through normally.
+        entry_id = db.add_journal_entry("2026-01-01", "قيد متوازن", None, [
+            {"account_code": "1000", "debit": 100, "credit": 0},
+            {"account_code": "4000", "debit": 0, "credit": 100},
+        ])
+        assert entry_id
+        db.delete_journal_entry(entry_id)
+    check("an unbalanced journal entry is refused", unbalanced_journal_entries_are_refused)
+
+    def foreign_keys_are_actually_enforced():
+        """SQLite ships FK checking off by default and does not remember the
+        setting in the file - every connection has to turn it on itself, or
+        every FOREIGN KEY in schema.sql is decoration. An attendance row
+        could previously be inserted against an employee that does not
+        exist."""
+        conn = db.get_connection()
+        try:
+            enabled = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+            assert enabled == 1, "foreign_keys is not ON for a fresh connection"
+            try:
+                conn.execute(
+                    "INSERT INTO attendance (employee_id, date, status) VALUES (?, ?, ?)",
+                    (999999, "2026-01-01", "Present"))
+                conn.commit()
+                raise AssertionError("an attendance row for a nonexistent employee was accepted")
+            except Exception as exc:
+                assert "FOREIGN KEY" in str(exc), exc
+        finally:
+            conn.close()
+    check("foreign key constraints are enforced, not just declared",
+          foreign_keys_are_actually_enforced)
+
+    def a_crash_mid_write_leaves_nothing_partial():
+        """A purchase used to be two separate commits - the journal entry, then
+        the purchase row - so a crash between them left a journal entry moving
+        money with no invoice anywhere to explain it. Both writes now share one
+        transaction; simulating the failure by raising inside the block proves
+        the journal entry it already wrote does not survive the rollback."""
+        entries_before = db.fetch_one("SELECT COUNT(*) c FROM journal_entries")["c"]
+        purchases_before = db.fetch_one("SELECT COUNT(*) c FROM purchases")["c"]
+        try:
+            with db.transaction() as cursor:
+                db.insert_journal_entry(cursor, "2026-01-01", "سيتم التراجع عنه", None, [
+                    {"account_code": "1100", "debit": 500, "credit": 0},
+                    {"account_code": "1000", "debit": 0, "credit": 500},
+                ])
+                raise RuntimeError("محاكاة انهيار قبل اكتمال الكتابة")
+        except RuntimeError:
+            pass
+        assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries")["c"] == entries_before, \
+            "the journal entry survived a rollback"
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchases")["c"] == purchases_before
+    check("a failure mid-write rolls back completely, not partially",
+          a_crash_mid_write_leaves_nothing_partial)
+
+    def purchase_return_credits_the_right_account():
+        """Every return used to credit Inventory (1100) no matter what was
+        actually being returned - refunding an operating expense quietly
+        shrank the inventory account instead of the expense it was actually
+        against."""
+        goto("purchases")
+        pur = window.purchases
+        i = pur.return_category_input.findData("operating_expense")
+        assert i >= 0
+        pur.return_category_input.setCurrentIndex(i)
+        pur.return_amount_input.setText("200")
+        pur.return_method_input.setCurrentIndex(pur.return_method_input.findData("Cash"))
+        before = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) c FROM journal_items WHERE account_code='5200'")["c"]
+        returns_before = db.fetch_one("SELECT MAX(id) m FROM purchase_returns")["m"] or 0
+        pur.save_purchase_return()
+        after = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) c FROM journal_items WHERE account_code='5200'")["c"]
+        assert after > before, "the operating-expense account was not credited"
+        pur.return_amount_input.clear()
+        # Leave the ledger exactly as later checks expect it - this test only
+        # needed to prove the routing, not to actually change the books.
+        new_row = db.fetch_one(
+            "SELECT id, branch_id FROM purchase_returns WHERE id > ?", (returns_before,))
+        if new_row:
+            entry = db.fetch_one(
+                "SELECT id FROM journal_entries WHERE description LIKE 'مرتجع مشتريات%' "
+                "ORDER BY id DESC LIMIT 1")
+            db.execute_query("DELETE FROM purchase_returns WHERE id = ?", (new_row["id"],))
+            if entry:
+                db.delete_journal_entry(entry["id"])
+        pur.load_purchase_returns()
+        pur.load_purchases()
+    check("a purchase return credits the account its category actually used",
+          purchase_return_credits_the_right_account)
+
+    def credit_note_return_requires_a_supplier():
+        """A credit-note return reduces one specific supplier's balance
+        (account 2000). Posting one with nobody chosen moved the general
+        ledger total with no supplier statement reflecting it, so the two
+        stopped matching each other."""
+        goto("purchases")
+        pur = window.purchases
+        pur.return_supplier_input.setCurrentIndex(-1)
+        pur.return_amount_input.setText("150")
+        pur.return_method_input.setCurrentIndex(pur.return_method_input.findData("CreditNote"))
+        before = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"]
+        pur.save_purchase_return()
+        after = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"]
+        assert after == before, "a credit-note return posted with no supplier chosen"
+        pur.return_amount_input.clear()
+    check("a credit-note return without a supplier is refused",
+          credit_note_return_requires_a_supplier)
+
     # ---------------- accounting identities ----------------
     print("\n[accounting]")
 
@@ -384,12 +1101,97 @@ def main():
         assert abs(report["cost_of_sales"] - 1650) < 0.01, report["cost_of_sales"]
         assert abs(report["operating_expenses"] - 2000) < 0.01, report["operating_expenses"]
         assert abs(report["gross_profit"] - (1000 - 1650)) < 0.01, report["gross_profit"]
-        assert abs(report["net_profit"] - (1000 - 1650 - 2000)) < 0.01, report["net_profit"]
+        # Net profit now correctly subtracts salaries too - it used to be
+        # silently missing from this figure entirely. Read what payroll
+        # actually posted rather than hard-coding it a second time, so this
+        # check does not itself start guessing at a number that depends on
+        # exactly which payroll runs happened to post earlier in the suite.
+        salaries = acc.get_salaries_expense("2000-01-01", "2100-01-01")
+        assert salaries > 0, "no salary postings found - the payroll test above did not run"
+        assert abs(report["salaries_expense"] - salaries) < 0.01, report["salaries_expense"]
+        assert abs(report["net_profit"] - (1000 - 1650 - 2000 - salaries)) < 0.01, report["net_profit"]
         # Output VAT 150 ; input VAT 150 + 75 + 22.5 + 300 = 547.5
         assert abs(report["output_vat"] - 150) < 0.01, report["output_vat"]
         assert abs(report["input_vat"] - 547.5) < 0.01, report["input_vat"]
         assert abs(report["net_vat"] - (150 - 547.5)) < 0.01, report["net_vat"]
     check("period report figures match the ledger", report_matches_ledger)
+
+    def dashboard_and_accounting_agree_on_profit():
+        """The dashboard's profit card and the accounting tab's income
+        statement used to compute profit two different ways for the same
+        restaurant on the same day: the income statement's cost of goods sold
+        came from an account nothing ever posts to (always zero, so it was
+        missing food cost entirely), and the dashboard's own formula never
+        subtracted salaries. Two real numbers, silently disagreeing, both
+        wrong in different directions. They now share one calculation."""
+        acc = window.accounting.accounting
+        start, end = "2000-01-01", "2100-01-01"
+        period = acc.get_period_report(start, end, None)
+        summary = acc.get_financial_summary(start, end)
+        assert abs(period["net_profit"] - summary["net_profit"]) < 0.01, \
+            (period["net_profit"], summary["net_profit"])
+        assert abs(period["net_sales"] - summary["revenue"]) < 0.01
+        assert abs(period["cost_of_sales"] - summary["cogs"]) < 0.01
+        assert summary["cogs"] > 0, \
+            "cost of goods sold is zero - the income statement is still reading a dead account"
+    check("the dashboard and the accounting tab show the same profit",
+          dashboard_and_accounting_agree_on_profit)
+
+    def printed_report_shows_the_arithmetic_it_uses():
+        """The report used to print gross_profit, then المصروفات التشغيلية,
+        then a net_profit that had already subtracted salaries the reader was
+        never shown - the two lines above it did not add up to the one below
+        it. A restaurant owner handing this to his accountant on paper, which
+        is exactly what this button is for, would be handing over numbers
+        that visibly do not reconcile."""
+        goto("reports")
+        window.reports.generate_report()
+        d = window.accounting.accounting.get_period_report(
+            window.reports.resolve_period()[0], window.reports.resolve_period()[1],
+            window.reports.branch_input.currentData())
+        computed = d["gross_profit"] - d["salaries_expense"] - d["operating_expenses"]
+        assert abs(computed - d["net_profit"]) < 0.01, (computed, d["net_profit"])
+        html = window.reports.current_report_html()
+        assert "الرواتب والأجور" in html, "the printed report does not show the salaries line it subtracts"
+    check("the printed report's own numbers add up to the profit it shows",
+          printed_report_shows_the_arithmetic_it_uses)
+
+    def printed_report_covers_every_module():
+        """The report used to cover only sales/purchases/profit/VAT for the
+        chosen period - every other screen (suppliers, customers, loans,
+        prepaid expenses, payroll, the balance sheet) had no printed record
+        at all. Cross-checks each new section's total against the same live
+        data the report itself pulls from, computed fresh right before the
+        check so it can never drift from whatever the shared test database
+        happens to hold by this point in the run."""
+        from ui.formatting import money
+        goto("reports")
+        html = window.reports.current_report_html()
+        for heading in ("الموردون - المستحق عليهم", "العملاء - المستحق لنا",
+                        "القروض القائمة", "المصروفات المقدمة المتبقية",
+                        "طاقم العمل الحالي", "ملخص الوضع المالي العام"):
+            assert heading in html, f"missing report section: {heading}"
+
+        acc = window.accounting.accounting
+        expected_suppliers = sum(s['balance'] for s in acc.get_all_supplier_balances() if abs(s['balance']) > 0.01)
+        expected_customers = sum(c['balance'] for c in acc.get_all_customer_balances() if abs(c['balance']) > 0.01)
+        expected_loans = sum(l['balance'] for l in acc.get_all_loans_with_balances() if abs(l['balance']) > 0.01)
+        expected_prepaid = sum(p['remaining'] for p in acc.get_prepaid_expenses_with_balances() if p['remaining'] > 0.01)
+        expected_employees = sum(e['gross'] for e in window.hr_logic.get_active_employees_summary())
+        bs = acc.get_balance_sheet()
+
+        assert expected_suppliers > 0, "sanity check: the shared test data should include a supplier balance"
+        assert expected_employees > 0, "sanity check: the shared test data should include active employees"
+        assert money(expected_suppliers) in html, "supplier total in the report does not match live balances"
+        assert money(expected_customers) in html, "customer total in the report does not match live balances"
+        assert money(expected_loans) in html, "loan total in the report does not match live balances"
+        assert money(expected_prepaid) in html, "prepaid total in the report does not match live balances"
+        assert money(expected_employees) in html, "employee payroll total in the report does not match live data"
+        assert money(bs['assets']) in html, "balance sheet assets total in the report does not match get_balance_sheet()"
+        assert money(bs['liabilities']) in html, "balance sheet liabilities total in the report does not match get_balance_sheet()"
+        assert ("متوازنة ✓" in html) == bs['balanced'], "the report's balance-sheet status contradicts get_balance_sheet()"
+    check("the printed report covers suppliers, customers, loans, prepaid expenses, payroll, and the balance sheet",
+          printed_report_covers_every_module)
 
     def pdf_export_works():
         goto("reports")
@@ -512,6 +1314,133 @@ def main():
         assert not bad, bad
     check("no page hides content below the window", nothing_is_unreachable)
 
+    def trading_account_result_is_fully_reachable():
+        """The trading account result is ten lines long with nothing to bound
+        its height, and had no scroll area of its own. A screenshot showed it
+        cut off flush against the bottom of the window mid-line, before
+        reaching صافي المبيعات or gross profit - the number the whole
+        calculation exists to produce."""
+        from PyQt6.QtWidgets import QScrollArea
+
+        def inside_scroll_area(widget):
+            node = widget.parentWidget()
+            while node is not None:
+                if isinstance(node, QScrollArea):
+                    return True
+                node = node.parentWidget()
+            return False
+
+        goto("accounting")
+        acc = window.accounting
+        acc.opening_inventory_input.setValue(1000)
+        acc.closing_inventory_input.setValue(200)
+        acc.refresh_trading_account()
+        assert inside_scroll_area(acc.trading_box), \
+            "the trading account result has no scroll area of its own"
+        assert "مجمل الربح" in acc.trading_box.text(), "the result text looks incomplete"
+        assert inside_scroll_area(acc.income_box), \
+            "the income statement result has no scroll area of its own"
+    check("the trading account result can be scrolled to in full",
+          trading_account_result_is_fully_reachable)
+
+    def all_expiring_documents_are_reachable():
+        """The owner reported (with a screenshot) that one of three duplicate
+        employees named صابر had 4 expiry alerts, but only some were visible
+        and scrolling did not seem to bring the rest up. Reproduced live: the
+        table held all 12 rows and its own scrollbar technically worked, but
+        was boxed into ~180-270px with a small internal scrollbar easy to
+        miss - unlike every other page, which scrolls as a whole with a big,
+        high-contrast page scrollbar. The fix makes the alerts table grow to
+        fit every row and puts the dashboard page itself inside that same
+        page-level scroll area, so there is exactly one way to reach more
+        content, not a hidden one nested inside another."""
+        import datetime as dt
+        today = dt.datetime.now().strftime("%Y-%m-%d")
+        emp_ids = []
+        for _ in range(3):
+            emp_ids.append(db.insert_and_return_id(
+                """INSERT INTO employees (name, job_title, base_salary, allowances, is_active,
+                       iqama_no, iqama_expiry, passport_no, passport_expiry,
+                       work_permit_no, work_permit_expiry, work_card_no, work_card_expiry)
+                   VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("صابر (اختبار)", "طباخ", 4000, 0,
+                 "111", today, "222", today, "333", today, "444", today)
+            ))
+        try:
+            goto("dashboard")
+            dash = window.dashboard
+            assert dash.alerts_table.rowCount() >= 12, dash.alerts_table.rowCount()
+            # No internal scrollbar hiding rows: the table must be tall enough
+            # to show every one of them itself.
+            assert dash.alerts_table.verticalScrollBar().maximum() == 0, \
+                "the alerts table still needs its own internal scrollbar"
+
+            scroll = None
+            node = dash.parentWidget()
+            while node is not None:
+                if isinstance(node, QScrollArea):
+                    scroll = node
+                    break
+                node = node.parentWidget()
+            assert scroll is not None, "the dashboard page has no page-level scroll area"
+
+            last_item = dash.alerts_table.item(dash.alerts_table.rowCount() - 1, 0)
+            scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+            app.processEvents()
+            app.processEvents()
+            row_y = dash.alerts_table.mapTo(
+                window, dash.alerts_table.visualItemRect(last_item).topLeft()).y()
+            assert 0 <= row_y <= window.height(), \
+                f"last alert row is not reachable by scrolling (y={row_y})"
+        finally:
+            for emp_id in emp_ids:
+                db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+    check("every expiring-document alert is reachable, not hidden below a small inner scrollbar",
+          all_expiring_documents_are_reachable)
+
+    def employee_table_scrolls_instead_of_truncating():
+        """The owner sent a screenshot of the employee list with every column
+        so squeezed that dates read "2026-0" and document numbers read "546"
+        - Stretch resize mode forces all 12 columns to fit the viewport
+        exactly, which also means there is structurally no way to scroll to
+        see the rest, since Stretch never lets total column width exceed the
+        viewport. Columns must now size to their content and the table must
+        gain real horizontal scroll range once that content is wider than
+        the viewport."""
+        goto("hr")
+        hr = window.hr
+        emp_ids = []
+        try:
+            for _ in range(2):
+                emp_ids.append(db.insert_and_return_id(
+                    """INSERT INTO employees (name, job_title, branch_id, base_salary, allowances,
+                           is_active, iqama_no, iqama_expiry, passport_no, passport_expiry,
+                           work_permit_no, work_permit_expiry, work_card_no, work_card_expiry)
+                       VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ("صابر (اختبار)", "مهم", 5000, 1000,
+                     "44", "2026-08-08", "5465", "2026-08-08",
+                     "5465", "2026-08-08", "55665", "2026-08-08")
+                ))
+            hr.load_employees()
+            app.processEvents()
+            app.processEvents()
+            row = next(r for r in range(hr.table.rowCount())
+                       if hr.table.item(r, 0) and hr.table.item(r, 0).text() == "صابر (اختبار)")
+            last_cell = hr.table.item(row, 11)
+            assert last_cell.text() == "55665 / 2026-08-08", \
+                f"cell text itself is truncated: {last_cell.text()!r}"
+            total_width = sum(hr.table.columnWidth(c) for c in range(hr.table.columnCount()))
+            assert total_width > hr.table.viewport().width(), \
+                "columns still fit the viewport - nothing to verify a scrollbar against"
+            assert hr.table.horizontalScrollBar().maximum() > 0, \
+                "the table has no horizontal scroll range even though columns overflow it"
+        finally:
+            for emp_id in emp_ids:
+                db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+            hr.load_employees()
+    check("the employee list table scrolls to reveal long values instead of truncating them",
+          employee_table_scrolls_instead_of_truncating)
+
     def every_page_opens():
         for page in pages:
             entry = goto(page)
@@ -566,6 +1495,21 @@ def main():
                         scan(header.text(), f"{page}/header")
         assert not found, found
     check("nothing English is shown to the user", no_english_shown_to_the_user)
+
+    def dpi_scaling_is_pinned_explicitly():
+        """A customer reported the same .exe looking a different size on a
+        second machine. Left unset, the rounding policy Qt uses to turn a
+        display's scale factor (100%/125%/150%, all ordinary on real laptops)
+        into whole logical pixels is whatever that Qt build happens to default
+        to - which is not guaranteed to be the same policy on every customer's
+        machine. Pinning it explicitly makes the layout follow the display's
+        actual scale instead of whatever the platform guessed."""
+        from PyQt6.QtGui import QGuiApplication
+        from PyQt6.QtCore import Qt as QtCore
+        policy = QGuiApplication.highDpiScaleFactorRoundingPolicy()
+        assert policy == QtCore.HighDpiScaleFactorRoundingPolicy.PassThrough, policy
+    check("DPI scaling is pinned so window sizing is consistent across machines",
+          dpi_scaling_is_pinned_explicitly)
 
     def absurd_amounts_cannot_wreck_the_books():
         """A held-down key put 99,999,999,999,999 into a day's sales. The entry
@@ -1115,6 +2059,32 @@ def main():
         assert not app.windowIcon().isNull(), "the application has no window icon"
     check("the shortcut icon is a real multi-size icon and survives 16px",
           the_icon_is_real_and_usable)
+
+    def every_top_level_window_sets_its_own_taskbar_icon():
+        """The owner reported the Windows taskbar showing a generic icon while
+        the app was running, even though the title bar and shortcut were both
+        correct. A window that only ever inherits QApplication.windowIcon()
+        can still show a generic icon on the taskbar specifically - that
+        inheritance is not reliable for the native taskbar button icon across
+        every Qt/DWM combination. Proven here by clearing the application
+        icon and confirming each top-level window still carries its own."""
+        from PyQt6.QtGui import QIcon
+        from ui.activation_dialog import ActivationDialog
+        original = app.windowIcon()
+        app.setWindowIcon(QIcon())
+        try:
+            fresh = MainWindow(db)
+            assert not fresh.windowIcon().isNull(), \
+                "the main window has no icon of its own once the app-level default is gone"
+            fresh.close()
+            dialog = ActivationDialog(db, "رسالة اختبار")
+            assert not dialog.windowIcon().isNull(), \
+                "the activation dialog has no icon of its own once the app-level default is gone"
+            dialog.close()
+        finally:
+            app.setWindowIcon(original)
+    check("every top-level window sets its own taskbar icon, not just the application default",
+          every_top_level_window_sets_its_own_taskbar_icon)
 
     print("\n" + "=" * 52)
     if failures:

@@ -186,6 +186,9 @@ class PurchaseModule(QWidget):
         self.return_method_input = QComboBox()
         self.return_method_input.addItem("استرداد نقدي", "Cash")
         self.return_method_input.addItem("خصم من رصيد المورد (إشعار دائن)", "CreditNote")
+        self.return_category_input = QComboBox()
+        for key, label in CATEGORY_LABELS.items():
+            self.return_category_input.addItem(label, key)
         self.return_notes_input = QLineEdit()
 
         return_box = QGroupBox("مرتجع جديد")
@@ -199,6 +202,7 @@ class PurchaseModule(QWidget):
             ("الفرع", self.return_branch_input),
             ("التاريخ", self.return_date_input),
             ("المورد", self.return_supplier_input),
+            ("نوع المصروف الأصلي", self.return_category_input),
             ("المبلغ", self.return_amount_input),
             ("طريقة الاسترداد", self.return_method_input),
             ("ملاحظات", self.return_notes_input),
@@ -206,9 +210,15 @@ class PurchaseModule(QWidget):
         ], columns=3, field_min_width=150))
         layout.addWidget(pin_height(return_box))
 
+        returns_header = QHBoxLayout()
         returns_label = QLabel("المرتجعات المسجلة:")
         returns_label.setStyleSheet("font-weight:700; color:#334155;")
-        layout.addWidget(returns_label)
+        returns_header.addWidget(returns_label)
+        returns_header.addStretch()
+        delete_return_btn = danger_button("حذف المرتجع المحدد")
+        delete_return_btn.clicked.connect(self.delete_selected_return)
+        returns_header.addWidget(delete_return_btn)
+        layout.addLayout(returns_header)
 
         self.returns_table = QTableWidget()
         self.returns_table.setColumnCount(5)
@@ -247,7 +257,10 @@ class PurchaseModule(QWidget):
     def load_suppliers(self):
         self.supplier_input.clear()
         self.supplier_input.addItem("بدون مورد", None)
-        suppliers = self.db.fetch_all("SELECT * FROM suppliers ORDER BY name")
+        # Only active suppliers - a stopped supplier can still be reached to
+        # settle what they're owed (payments/returns), but should not appear
+        # as a choice for a brand new purchase.
+        suppliers = self.db.fetch_all("SELECT * FROM suppliers WHERE is_active = 1 ORDER BY name")
         for s in suppliers:
             self.supplier_input.addItem(s['name'], s['id'])
 
@@ -293,18 +306,23 @@ class PurchaseModule(QWidget):
                 {'account_code': account_credit, 'debit': 0, 'credit': total},
             ]
             label = CATEGORY_LABELS.get(category, category)
-            entry_id = self.db.add_journal_entry(
-                timestamp, f"{label} - {description or status}", branch_id, items
-            )
 
-            self.db.execute_query(
-                """INSERT INTO purchases
-                   (branch_id, supplier_id, amount, total_amount, vat_amount, payment_status,
-                    category, description, date, journal_entry_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (branch_id, supplier_id, amount, total, vat, status, category,
-                 description, timestamp, entry_id),
-            )
+            # One transaction, not a journal write and a separate purchase
+            # write: a crash between the two used to be able to leave a
+            # journal entry moving money with no invoice behind it to explain
+            # it, or a purchase row with no accounting entry at all.
+            with self.db.transaction() as cursor:
+                fallback = label_for(PAYMENT_STATUS_LABELS, status)
+                entry_id = self.db.insert_journal_entry(
+                    cursor, timestamp, f"{label} - {description or fallback}", branch_id, items)
+                cursor.execute(
+                    """INSERT INTO purchases
+                       (branch_id, supplier_id, amount, total_amount, vat_amount, payment_status,
+                        category, description, date, journal_entry_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (branch_id, supplier_id, amount, total, vat, status, category,
+                     description, timestamp, entry_id),
+                )
 
             QMessageBox.information(self, "نجاح", "تم تسجيل الفاتورة بنجاح")
             self.amount_input.clear()
@@ -357,23 +375,51 @@ class PurchaseModule(QWidget):
                                  allow_blank=False, allow_zero=False)
 
             refund_method = self.return_method_input.currentData()
+            # An إشعار دائن reduces a specific supplier's balance (account
+            # 2000 credited). Posting one with no supplier chosen moves the
+            # general ledger total without any supplier statement reflecting
+            # it, so the two stop matching - the same requirement the
+            # purchase form already makes for a credit purchase.
+            if refund_method == 'CreditNote' and not supplier_id:
+                raise ValueError("الخصم من رصيد المورد يتطلب اختيار مورد")
+
+            category = self.return_category_input.currentData()
             notes = self.return_notes_input.text().strip()
             vat, total = self.accounting.calculate_vat(amount)
             timestamp = self.return_date_input.date().toString("yyyy-MM-dd")
 
-            self.db.execute_query(
-                """INSERT INTO purchase_returns (branch_id, supplier_id, date, amount, vat_amount, refund_method, notes)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (branch_id, supplier_id, timestamp, amount, vat, refund_method, notes),
-            )
+            # Mirrors save_purchase's own routing: a return has to credit the
+            # same account its purchase debited, or an operating-expense
+            # refund quietly shrinks the inventory account instead of the
+            # expense it was actually against.
+            if category == 'raw_material':
+                source_account = '1100'
+            elif category == 'purchase_expense':
+                source_account = '5150'
+            else:
+                source_account = '5200'
 
             credit_account = '1000' if refund_method == 'Cash' else '2000'
             items = [
                 {'account_code': credit_account, 'debit': total, 'credit': 0},
-                {'account_code': '1100', 'debit': 0, 'credit': amount},
+                {'account_code': source_account, 'debit': 0, 'credit': amount},
                 {'account_code': '1200', 'debit': 0, 'credit': vat},
             ]
-            self.db.add_journal_entry(timestamp, f"مرتجع مشتريات - {notes or ''}", branch_id, items)
+            label = CATEGORY_LABELS.get(category, category)
+
+            # One transaction: a crash between these two writes used to be
+            # able to leave a journal entry with no return behind it, or a
+            # return with no journal entry - either way, the accounts and the
+            # operational record disagreeing about whether it happened.
+            with self.db.transaction() as cursor:
+                entry_id = self.db.insert_journal_entry(
+                    cursor, timestamp, f"مرتجع مشتريات ({label}) - {notes or ''}", branch_id, items)
+                cursor.execute(
+                    """INSERT INTO purchase_returns
+                       (branch_id, supplier_id, date, amount, vat_amount, refund_method, notes, category, journal_entry_id)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (branch_id, supplier_id, timestamp, amount, vat, refund_method, notes, category, entry_id),
+                )
 
             QMessageBox.information(self, "نجاح", "تم تسجيل مرتجع المشتريات")
             self.return_amount_input.clear()
@@ -382,6 +428,24 @@ class PurchaseModule(QWidget):
             self.load_purchases()
         except Exception as e:
             QMessageBox.critical(self, "خطأ", str(e))
+
+    def delete_selected_return(self):
+        row = self.returns_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "تنبيه", "اختر مرتجعاً من الجدول أولاً")
+            return
+        return_id, entry_id = self.returns_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        answer = QMessageBox.question(
+            self, "حذف مرتجع",
+            "سيتم حذف هذا المرتجع وقيده المحاسبي نهائياً.\n\nمتابعة؟",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.db.execute_query("DELETE FROM purchase_returns WHERE id = ?", (return_id,))
+        if entry_id:
+            self.db.delete_journal_entry(entry_id)
+        QMessageBox.information(self, "تم", "تم حذف المرتجع وقيده المحاسبي")
+        self.load_purchase_returns()
 
     def load_purchase_returns(self):
         query = """
@@ -394,7 +458,9 @@ class PurchaseModule(QWidget):
         if not fill_table(self.returns_table, len(rows), "لا توجد مرتجعات مسجلة"):
             return
         for row, r in enumerate(rows):
-            self.returns_table.setItem(row, 0, QTableWidgetItem(str(r['date'])))
+            date_item = QTableWidgetItem(str(r['date']))
+            date_item.setData(Qt.ItemDataRole.UserRole, (r['id'], r['journal_entry_id']))
+            self.returns_table.setItem(row, 0, date_item)
             self.returns_table.setItem(row, 1, QTableWidgetItem(r['supplier_name'] or ""))
             self.returns_table.setItem(row, 2, money_item(r['amount']))
             self.returns_table.setItem(row, 3, money_item(r['vat_amount']))

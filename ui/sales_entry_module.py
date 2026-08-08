@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (
     QTableWidgetItem,
     QHeaderView,
     QMessageBox,
+    QTabWidget,
 )
 
 from logic.accounting import AccountingLogic
@@ -21,6 +22,12 @@ from ui.formatting import money_item
 from ui.common_widgets import (page_header, danger_button, fill_table, pin_height,
                               collapsible)
 from logic.money import parse_money
+
+REFUND_METHOD_LABELS = [
+    ("Cash", "نقدي"),
+    ("POS", "شبكة (مدى / فيزا)"),
+    ("Transfer", "تحويل بنكي"),
+]
 
 PAYMENT_CHANNELS = [
     ("Cash", "cash_input", "كاش"),
@@ -47,6 +54,18 @@ class SalesEntryModule(QWidget):
             "المبيعات اليومية",
             "اكتب مبيعات اليوم شاملة الضريبة، والباقي يحسبه البرنامج لوحده."))
 
+        tabs = QTabWidget()
+        tabs.setDocumentMode(True)
+        layout.addWidget(tabs, 1)
+
+        tabs.addTab(self.build_sales_tab(), "المبيعات اليومية")
+        tabs.addTab(self.build_returns_tab(), "مرتجعات المبيعات")
+
+    def build_sales_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
+
         form_box = QGroupBox("مبيعات اليوم")
         form_outer = QVBoxLayout(form_box)
         form_outer.setSpacing(10)
@@ -55,6 +74,12 @@ class SalesEntryModule(QWidget):
         for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.branch_input.addItem(branch["name"], branch["id"])
         self.date_input = QDateEdit(QDate.currentDate())
+        # Reference only, for matching this entry against the physical
+        # register's Z-report - it does not change the accounting. The day is
+        # still one total, one journal entry, regardless of how many
+        # registers fed into it.
+        self.cashier_input = QLineEdit()
+        self.cashier_input.setPlaceholderText("اختياري")
 
         top_row = QHBoxLayout()
         top_row.setSpacing(10)
@@ -63,6 +88,9 @@ class SalesEntryModule(QWidget):
         top_row.addSpacing(18)
         top_row.addWidget(self._field_label("التاريخ"))
         top_row.addWidget(self.date_input, 1)
+        top_row.addSpacing(18)
+        top_row.addWidget(self._field_label("رقم الكاشير / الجهاز"))
+        top_row.addWidget(self.cashier_input, 1)
         top_row.addStretch()
         form_outer.addLayout(top_row)
 
@@ -124,8 +152,9 @@ class SalesEntryModule(QWidget):
         layout.addLayout(history_row)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "الإجمالي", "الضريبة"])
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(
+            ["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "الإجمالي", "الضريبة", "رقم الكاشير"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -136,6 +165,173 @@ class SalesEntryModule(QWidget):
 
         self.update_preview()
         self.load_history()
+        return widget
+
+    def build_returns_tab(self):
+        """A customer refund. sales_returns already existed in the schema and
+        every report already reads from it - net_sales and output VAT both
+        subtract it - but nothing ever wrote a row into it, so it sat
+        permanently at zero. The only way to record a refund was to reopen
+        and retype the whole day's total in the sales tab, which conflates a
+        genuine refund with correcting a typo and leaves no record of why the
+        number changed."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setSpacing(10)
+
+        self.return_branch_input = QComboBox()
+        for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.return_branch_input.addItem(branch["name"], branch["id"])
+        self.return_date_input = QDateEdit(QDate.currentDate())
+        self.return_amount_input = self._amount_input()
+        self.return_method_input = QComboBox()
+        for code, label in REFUND_METHOD_LABELS:
+            self.return_method_input.addItem(label, code)
+        self.return_notes_input = QLineEdit()
+        self.return_notes_input.setPlaceholderText("سبب المرتجع (اختياري)")
+
+        form_box = QGroupBox("مرتجع مبيعات جديد")
+        form_outer = QVBoxLayout(form_box)
+        form_outer.setSpacing(10)
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(10)
+        top_row.addWidget(self._field_label("الفرع"))
+        top_row.addWidget(self.return_branch_input, 1)
+        top_row.addSpacing(18)
+        top_row.addWidget(self._field_label("التاريخ"))
+        top_row.addWidget(self.return_date_input, 1)
+        form_outer.addLayout(top_row)
+
+        amount_row = QHBoxLayout()
+        amount_row.setSpacing(10)
+        amount_row.addWidget(self._field_label("المبلغ المسترد (شامل الضريبة)"))
+        amount_row.addWidget(self.return_amount_input, 1)
+        amount_row.addSpacing(18)
+        amount_row.addWidget(self._field_label("طريقة الاسترداد"))
+        amount_row.addWidget(self.return_method_input, 1)
+        form_outer.addLayout(amount_row)
+
+        notes_row = QHBoxLayout()
+        notes_row.setSpacing(10)
+        notes_row.addWidget(self._field_label("ملاحظات"))
+        notes_row.addWidget(self.return_notes_input, 1)
+        form_outer.addLayout(notes_row)
+
+        save_return_btn = QPushButton("تسجيل مرتجع المبيعات")
+        save_return_btn.setMinimumHeight(44)
+        save_return_btn.clicked.connect(self.save_sales_return)
+        form_outer.addWidget(save_return_btn)
+
+        layout.addWidget(pin_height(form_box))
+
+        returns_header = QHBoxLayout()
+        returns_label = QLabel("المرتجعات المسجلة:")
+        returns_label.setStyleSheet("font-size: 15px; font-weight: 700; color: #334155;")
+        returns_header.addWidget(returns_label)
+        returns_header.addStretch()
+        delete_return_btn = danger_button("حذف المرتجع المحدد")
+        delete_return_btn.clicked.connect(self.delete_selected_return)
+        returns_header.addWidget(delete_return_btn)
+        layout.addLayout(returns_header)
+
+        self.returns_table = QTableWidget()
+        self.returns_table.setColumnCount(6)
+        self.returns_table.setHorizontalHeaderLabels(
+            ["التاريخ", "الفرع", "المبلغ", "الضريبة", "طريقة الاسترداد", "ملاحظات"])
+        self.returns_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.returns_table.verticalHeader().setVisible(False)
+        self.returns_table.setAlternatingRowColors(True)
+        self.returns_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.returns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.returns_table.setMinimumHeight(120)
+        layout.addWidget(self.returns_table, 1)
+
+        self.load_sales_returns()
+        return widget
+
+    def save_sales_return(self):
+        try:
+            branch_id = self.return_branch_input.currentData()
+            total = parse_money(self.return_amount_input.text(), "المبلغ المسترد",
+                                allow_blank=False, allow_zero=False)
+        except ValueError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
+            return
+
+        method = self.return_method_input.currentData()
+        notes = self.return_notes_input.text().strip()
+        date_str = self.return_date_input.date().toString("yyyy-MM-dd")
+        # The refunded total is what the customer was actually handed back,
+        # tax included - the same way the original sale itself is entered -
+        # so it is split the same way rather than asking for a pre-tax figure
+        # nobody reads off a receipt.
+        net, vat = self.accounting.reverse_vat(total)
+
+        # Mirrors the sale's own journal entry in reverse: that one credited
+        # revenue and output VAT and debited cash/bank; a return debits
+        # revenue and output VAT back down and credits the cash/bank that
+        # actually paid the customer back.
+        cash_account = "1000" if method == "Cash" else "1001"
+        items = [
+            {"account_code": "4000", "debit": net, "credit": 0},
+            {"account_code": "2100", "debit": vat, "credit": 0},
+            {"account_code": cash_account, "debit": 0, "credit": total},
+        ]
+
+        with self.db.transaction() as cursor:
+            entry_id = self.db.insert_journal_entry(
+                cursor, date_str, f"مرتجع مبيعات - {notes or ''}", branch_id, items)
+            cursor.execute(
+                """INSERT INTO sales_returns
+                   (branch_id, date, amount, vat_amount, refund_method, notes, journal_entry_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (branch_id, date_str, net, vat, method, notes, entry_id),
+            )
+
+        QMessageBox.information(self, "تم", "تم تسجيل مرتجع المبيعات")
+        self.return_amount_input.clear()
+        self.return_notes_input.clear()
+        self.load_sales_returns()
+
+    def delete_selected_return(self):
+        row = self.returns_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "تنبيه", "اختر مرتجعاً من الجدول أولاً")
+            return
+        return_id, entry_id = self.returns_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+        answer = QMessageBox.question(
+            self, "حذف مرتجع",
+            "سيتم حذف هذا المرتجع وقيده المحاسبي نهائياً.\n\nمتابعة؟",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.db.execute_query("DELETE FROM sales_returns WHERE id = ?", (return_id,))
+        if entry_id:
+            self.db.delete_journal_entry(entry_id)
+        QMessageBox.information(self, "تم", "تم حذف المرتجع وقيده المحاسبي")
+        self.load_sales_returns()
+
+    def load_sales_returns(self):
+        rows = self.db.fetch_all("""
+            SELECT sr.id, sr.date, b.name as branch_name, sr.amount, sr.vat_amount,
+                   sr.refund_method, sr.notes, sr.journal_entry_id
+            FROM sales_returns sr
+            JOIN branches b ON sr.branch_id = b.id
+            ORDER BY sr.date DESC, sr.id DESC
+        """)
+        if not fill_table(self.returns_table, len(rows), "لا يوجد مرتجعات مبيعات مسجلة"):
+            return
+        method_labels = dict(REFUND_METHOD_LABELS)
+        for row, r in enumerate(rows):
+            date_item = QTableWidgetItem(r["date"])
+            date_item.setData(Qt.ItemDataRole.UserRole, (r["id"], r["journal_entry_id"]))
+            self.returns_table.setItem(row, 0, date_item)
+            self.returns_table.setItem(row, 1, QTableWidgetItem(r["branch_name"]))
+            self.returns_table.setItem(row, 2, money_item(r["amount"], bold=True))
+            self.returns_table.setItem(row, 3, money_item(r["vat_amount"]))
+            self.returns_table.setItem(row, 4, QTableWidgetItem(method_labels.get(r["refund_method"], r["refund_method"])))
+            self.returns_table.setItem(row, 5, QTableWidgetItem(r["notes"] or ""))
 
     def _short_screen(self):
         screen = self.screen() or (self.window().screen() if self.window() else None)
@@ -208,6 +404,7 @@ class SalesEntryModule(QWidget):
             return
 
         branch_name = self.branch_input.currentText()
+        cashier_number = self.cashier_input.text().strip() or None
 
         # Saving the same day twice used to double that day's revenue and VAT.
         # Now it asks, and replaces the day rather than adding to it.
@@ -248,16 +445,19 @@ class SalesEntryModule(QWidget):
         journal_items.append({"account_code": "4000", "debit": 0, "credit": revenue_credit})
         journal_items.append({"account_code": "2100", "debit": 0, "credit": vat_credit})
 
-        entry_id = self.db.add_journal_entry(
-            date_str, f"مبيعات يومية - {branch_name} - {date_str}", branch_id, journal_items
-        )
-
-        for method, total, vat in saved_methods:
-            self.db.execute_query(
-                """INSERT INTO sales (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (branch_id, date_str, total, vat, method, entry_id),
-            )
+        # One transaction: a crash between posting the journal entry and
+        # writing the sales rows used to be able to leave the day's revenue
+        # in the accounts with no sales record behind it to explain it.
+        with self.db.transaction() as cursor:
+            entry_id = self.db.insert_journal_entry(
+                cursor, date_str, f"مبيعات يومية - {branch_name} - {date_str}", branch_id, journal_items)
+            for method, total, vat in saved_methods:
+                cursor.execute(
+                    """INSERT INTO sales
+                       (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id, cashier_number)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (branch_id, date_str, total, vat, method, entry_id, cashier_number),
+                )
 
         QMessageBox.information(self, "تم", "تم تسجيل مبيعات اليوم وترحيلها للمحاسبة")
         self.cash_input.clear()
@@ -294,7 +494,8 @@ class SalesEntryModule(QWidget):
                 SUM(CASE WHEN s.payment_method = 'POS' THEN s.total_amount ELSE 0 END) as pos_total,
                 SUM(CASE WHEN s.payment_method = 'Transfer' THEN s.total_amount ELSE 0 END) as transfer_total,
                 SUM(s.total_amount) as grand_total,
-                SUM(s.vat_amount) as vat_total
+                SUM(s.vat_amount) as vat_total,
+                MAX(s.cashier_number) as cashier_number
             FROM sales s
             JOIN branches b ON s.branch_id = b.id
             GROUP BY date(s.date), s.branch_id
@@ -313,6 +514,7 @@ class SalesEntryModule(QWidget):
             self.table.setItem(row, 4, money_item(r['transfer_total'], bold=False))
             self.table.setItem(row, 5, money_item(r['grand_total'], bold=True))
             self.table.setItem(row, 6, money_item(r['vat_total'], bold=False))
+            self.table.setItem(row, 7, QTableWidgetItem(r['cashier_number'] or ""))
 
     def refresh_on_show(self):
         selected_branch = self.branch_input.currentData()

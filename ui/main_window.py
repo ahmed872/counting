@@ -20,6 +20,8 @@ class MainWindow(QMainWindow):
         self.db = db_manager
         self.nav_entries = []
         self.setWindowTitle("نظام إدارة المطعم")
+        from logic.paths import set_window_icon
+        set_window_icon(self)
         self.setMinimumSize(1040, 640)
         self.resize(1440, 900)
 
@@ -56,11 +58,13 @@ class MainWindow(QMainWindow):
 
         self.btn_dashboard = self.create_nav_btn("لوحة التحكم")
         self.btn_sales = self.create_nav_btn("المبيعات اليومية")
+        self.btn_customers = self.create_nav_btn("العملاء")
         self.btn_purchases = self.create_nav_btn("المشتريات")
         self.btn_suppliers = self.create_nav_btn("الموردون")
         self.btn_hr = self.create_nav_btn("الموارد البشرية")
         self.btn_reports = self.create_nav_btn("التقارير")
         self.btn_accounting = self.create_nav_btn("المحاسبة")
+        self.btn_other_balances = self.create_nav_btn("القروض والمصروفات المقدمة")
         self.btn_settings = self.create_nav_btn("الإعدادات")
 
         # Grouped by what the owner is doing, with the daily work first: the flat
@@ -68,6 +72,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.btn_dashboard)
         sidebar_layout.addWidget(self.nav_group_label("العمل اليومي"))
         sidebar_layout.addWidget(self.btn_sales)
+        sidebar_layout.addWidget(self.btn_customers)
         sidebar_layout.addWidget(self.btn_purchases)
         sidebar_layout.addWidget(self.btn_suppliers)
         sidebar_layout.addWidget(self.nav_group_label("الموظفون"))
@@ -75,6 +80,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.nav_group_label("التقارير والحسابات"))
         sidebar_layout.addWidget(self.btn_reports)
         sidebar_layout.addWidget(self.btn_accounting)
+        sidebar_layout.addWidget(self.btn_other_balances)
         sidebar_layout.addStretch()
         self.trial_banner = QLabel()
         self.trial_banner.setWordWrap(True)
@@ -227,9 +233,11 @@ class MainWindow(QMainWindow):
         from ui.sales_entry_module import SalesEntryModule
         from ui.purchase_module import PurchaseModule
         from ui.suppliers_module import SuppliersModule
+        from ui.customers_module import CustomersModule
         from ui.reports_module import ReportsModule
         from ui.settings_module import SettingsModule
         from ui.accounting_module import AccountingModule
+        from ui.other_balances_module import OtherBalancesModule
         from logic.hr import HRLogic
 
         self.hr_logic = HRLogic(self.db)
@@ -239,20 +247,24 @@ class MainWindow(QMainWindow):
         self.hr = HRModule(self.db, self.hr_logic)
         self.purchases = PurchaseModule(self.db)
         self.suppliers = SuppliersModule(self.db)
+        self.customers = CustomersModule(self.db)
         self.reports = ReportsModule(self.db)
         self.settings = SettingsModule(self.db)
         self.accounting = AccountingModule(self.db)
+        self.other_balances = OtherBalancesModule(self.db)
 
         # Screens built around a table must NOT be wrapped in a scroll area:
         # inside one, the table only ever gets its minimum height and the page
         # scrolls instead, so a 720p screen showed 5 rows out of 12. Left
         # unwrapped, the table takes every spare pixel and scrolls its own rows.
         # Only genuinely long documents keep the page-level scroll.
-        self.add_page("dashboard", self.dashboard, scrollable=False)
+        self.add_page("dashboard", self.dashboard)
         self.add_page("sales", self.sales, scrollable=False)
         self.add_page("hr", self.hr, scrollable=False)
         self.add_page("purchases", self.purchases, scrollable=False)
         self.add_page("suppliers", self.suppliers, scrollable=False)
+        self.add_page("customers", self.customers, scrollable=False)
         self.add_page("reports", self.reports, scrollable=False)
         self.add_page("accounting", self.accounting, scrollable=False)
+        self.add_page("other_balances", self.other_balances, scrollable=False)
         self.add_page("settings", self.settings)

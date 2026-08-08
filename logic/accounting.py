@@ -8,6 +8,50 @@ class AccountingLogic:
         total = amount + vat
         return vat, total
 
+    def get_account_balance(self, account_code):
+        """Raw balance of one account straight from the ledger - credit minus
+        debit, which is the natural direction for a liability like accrued
+        wages (2200) or loans (2300)."""
+        row = self.db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) - COALESCE(SUM(debit),0) v "
+            "FROM journal_items WHERE account_code = ?", (account_code,))
+        return row['v'] or 0
+
+    def get_all_accounts(self):
+        return self.db.fetch_all("SELECT code, name, type FROM chart_of_accounts ORDER BY code")
+
+    def get_account_ledger(self, account_code):
+        """Every journal item ever posted to one account (كشف حساب), in date
+        order, with a running balance - not just its final total the way the
+        trial balance shows it. The running balance grows with debit for an
+        Asset/Expense account and with credit for a Liability/Equity/Revenue
+        account, so it always reads as a plain increasing/decreasing number
+        regardless of which side of the entry the account normally sits on."""
+        account = self.db.fetch_one(
+            "SELECT code, name, type FROM chart_of_accounts WHERE code = ?", (account_code,))
+        if not account:
+            return None
+
+        rows = self.db.fetch_all(
+            """SELECT je.date, je.description, ji.debit, ji.credit
+               FROM journal_items ji
+               JOIN journal_entries je ON je.id = ji.entry_id
+               WHERE ji.account_code = ?
+               ORDER BY je.date, je.id""",
+            (account_code,),
+        )
+        debit_increases = account['type'] in ('Asset', 'Expense')
+        balance = 0
+        entries = []
+        for row in rows:
+            debit = row['debit'] or 0
+            credit = row['credit'] or 0
+            balance += (debit - credit) if debit_increases else (credit - debit)
+            entries.append({'date': row['date'], 'description': row['description'],
+                            'debit': debit, 'credit': credit, 'balance': balance})
+
+        return {'account': account, 'entries': entries, 'balance': balance}
+
     def reverse_vat(self, total_amount, rate=0.15):
         """Given a VAT-inclusive total (e.g. the actual cash collected end-of-day),
         back out the pre-tax amount and the VAT portion."""
@@ -30,23 +74,30 @@ class AccountingLogic:
         return self.db.fetch_all(query)
 
     def get_financial_summary(self, start_date, end_date):
-        revenue_query = """
-            SELECT COALESCE(SUM(credit) - SUM(debit), 0) as value
-            FROM journal_items ji
-            JOIN journal_entries je ON ji.entry_id = je.id
-            WHERE ji.account_code = '4000' AND date(je.date) BETWEEN date(?) AND date(?)
-        """
-        cogs_query = """
-            SELECT COALESCE(SUM(debit) - SUM(credit), 0) as value
-            FROM journal_items ji
-            JOIN journal_entries je ON ji.entry_id = je.id
-            WHERE ji.account_code = '5000' AND date(je.date) BETWEEN date(?) AND date(?)
-        """
-        expenses_query = """
-            SELECT COALESCE(SUM(debit) - SUM(credit), 0) as value
-            FROM journal_items ji
-            JOIN journal_entries je ON ji.entry_id = je.id
-            WHERE ji.account_code IN ('5100', '5200') AND date(je.date) BETWEEN date(?) AND date(?)
+        """The income statement's figures - now literally the same call the
+        dashboard makes, reshaped to this method's own key names.
+
+        This used to run its own COGS query against account 5000, and nothing
+        anywhere in the app ever posts to account 5000: no screen moves
+        inventory into cost of goods sold when it is sold rather than when it
+        is bought, because this program does not track item-level stock at
+        all - a deliberate choice made from the start, not an oversight, since
+        the whole design is a daily total rather than a per-order system. The
+        query was not wrong given what it was pointed at; what it was pointed
+        at simply never received a posting, so cogs was silently 0 in every
+        income statement this screen ever showed, and "net profit" here was
+        revenue minus salaries and operating expenses only - every riyal spent
+        on food or ingredients was missing from the figure entirely.
+
+        Meanwhile the dashboard's own profit card used get_period_report(),
+        which proxies cost of sales from purchases instead (the only
+        consumption signal this data model actually has) - correctly, but
+        get_period_report() had never included salaries in its own net profit
+        either, so it was wrong in the opposite direction. The two screens
+        showed two different numbers for the same restaurant on the same day,
+        and neither of them was salaries-and-food-cost-complete.
+
+        One formula now, computed once, read from both places.
         """
         output_vat_query = """
             SELECT COALESCE(SUM(credit) - SUM(debit), 0) as value
@@ -60,23 +111,38 @@ class AccountingLogic:
             JOIN journal_entries je ON ji.entry_id = je.id
             WHERE ji.account_code = '1200' AND date(je.date) BETWEEN date(?) AND date(?)
         """
-
-        revenue = (self.db.fetch_one(revenue_query, (start_date, end_date))['value']) or 0
-        cogs = (self.db.fetch_one(cogs_query, (start_date, end_date))['value']) or 0
-        operating_expenses = (self.db.fetch_one(expenses_query, (start_date, end_date))['value']) or 0
         output_vat = (self.db.fetch_one(output_vat_query, (start_date, end_date))['value']) or 0
         input_vat = (self.db.fetch_one(input_vat_query, (start_date, end_date))['value']) or 0
 
+        period = self.get_period_report(start_date, end_date, branch_id=None)
+
         return {
-            'revenue': revenue,
-            'cogs': cogs,
-            'operating_expenses': operating_expenses,
-            'gross_profit': revenue - cogs,
-            'net_profit': revenue - cogs - operating_expenses,
+            'revenue': period['net_sales'],
+            'cogs': period['cost_of_sales'],
+            'operating_expenses': period['operating_expenses'],
+            'salaries_expense': period['salaries_expense'],
+            'gross_profit': period['gross_profit'],
+            'net_profit': period['net_profit'],
             'output_vat': output_vat,
             'input_vat': input_vat,
             'net_vat': output_vat - input_vat,
         }
+
+    def get_salaries_expense(self, start_date, end_date):
+        """Payroll is posted company-wide (branch_id NULL on the journal
+        entry - this program does not split an employee's salary across
+        branches), so this has no branch filter to offer; a per-branch period
+        report's net profit will not include salary cost. Worth knowing if a
+        multi-branch owner ever compares a single branch's profit against the
+        whole company's."""
+        row = self.db.fetch_one(
+            """SELECT COALESCE(SUM(debit) - SUM(credit), 0) as value
+               FROM journal_items ji
+               JOIN journal_entries je ON ji.entry_id = je.id
+               WHERE ji.account_code = '5100' AND date(je.date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )
+        return row['value'] or 0
 
     def get_balance_sheet(self):
         query = """
@@ -232,8 +298,105 @@ class AccountingLogic:
         results = []
         for s in suppliers:
             statement = self.get_supplier_statement(s['id'])
-            results.append({'id': s['id'], 'name': s['name'], 'phone': s['phone'], 'balance': statement['balance']})
+            results.append({'id': s['id'], 'name': s['name'], 'phone': s['phone'],
+                            'balance': statement['balance'], 'is_active': bool(s['is_active'])})
         return results
+
+    def get_customer_statement(self, customer_id):
+        """Running ledger for a single customer: opening balance + credit
+        sales (debit, what they owe us grows) - collections (credit, what
+        they owe us shrinks). The mirror image of get_supplier_statement,
+        with debit/credit read the other way round because a receivable is
+        an asset (debit-increasing), not a liability."""
+        customer = self.db.fetch_one("SELECT * FROM customers WHERE id = ?", (customer_id,))
+        if not customer:
+            return None
+
+        entries = []
+        opening_balance = customer['opening_balance'] or 0
+        if opening_balance:
+            entries.append({'date': '', 'type': 'رصيد افتتاحي', 'debit': opening_balance, 'credit': 0})
+
+        sales = self.db.fetch_all(
+            "SELECT date, amount, vat_amount FROM customer_sales WHERE customer_id = ? ORDER BY date",
+            (customer_id,),
+        )
+        for s in sales:
+            entries.append({'date': s['date'], 'type': 'بيع آجل',
+                            'debit': (s['amount'] or 0) + (s['vat_amount'] or 0), 'credit': 0})
+
+        payments = self.db.fetch_all(
+            "SELECT date, amount, method FROM customer_payments WHERE customer_id = ? ORDER BY date",
+            (customer_id,),
+        )
+        for pay in payments:
+            method_label = 'نقدي' if pay['method'] == 'Cash' else 'تحويل بنكي'
+            entries.append({'date': pay['date'], 'type': f"تحصيل ({method_label})",
+                            'debit': 0, 'credit': pay['amount'] or 0})
+
+        entries.sort(key=lambda e: e['date'] or '')
+
+        balance = 0
+        for e in entries:
+            balance += e['debit'] - e['credit']
+            e['balance'] = balance
+
+        return {'customer': customer, 'entries': entries, 'balance': balance}
+
+    def get_all_customer_balances(self):
+        customers = self.db.fetch_all("SELECT * FROM customers ORDER BY name")
+        results = []
+        for c in customers:
+            statement = self.get_customer_statement(c['id'])
+            results.append({'id': c['id'], 'name': c['name'], 'phone': c['phone'],
+                            'balance': statement['balance'], 'is_active': bool(c['is_active'])})
+        return results
+
+    def get_loan_statement(self, loan_id):
+        """A loan is a liability, same sign convention as a supplier: the
+        amount borrowed is a credit (what we owe grows), a repayment is a
+        debit (what we owe shrinks)."""
+        loan = self.db.fetch_one("SELECT * FROM loans WHERE id = ?", (loan_id,))
+        if not loan:
+            return None
+
+        entries = [{'date': loan['date'], 'type': 'مبلغ القرض',
+                    'debit': 0, 'credit': loan['amount'] or 0}]
+        payments = self.db.fetch_all(
+            "SELECT date, amount, method FROM loan_payments WHERE loan_id = ? ORDER BY date",
+            (loan_id,),
+        )
+        for pay in payments:
+            method_label = 'نقدي' if pay['method'] == 'Cash' else 'تحويل بنكي'
+            entries.append({'date': pay['date'], 'type': f"سداد ({method_label})",
+                            'debit': pay['amount'] or 0, 'credit': 0})
+
+        entries.sort(key=lambda e: e['date'] or '')
+        balance = 0
+        for e in entries:
+            balance += e['credit'] - e['debit']
+            e['balance'] = balance
+
+        return {'loan': loan, 'entries': entries, 'balance': balance}
+
+    def get_all_loans_with_balances(self):
+        loans = self.db.fetch_all("SELECT * FROM loans ORDER BY date")
+        results = []
+        for loan in loans:
+            statement = self.get_loan_statement(loan['id'])
+            results.append({'id': loan['id'], 'lender_name': loan['lender_name'],
+                            'amount': loan['amount'], 'date': loan['date'],
+                            'balance': statement['balance']})
+        return results
+
+    def get_prepaid_expenses_with_balances(self):
+        """Each row's remaining balance is what has not yet been released
+        into an actual expense - amount minus released_amount."""
+        rows = self.db.fetch_all("SELECT * FROM prepaid_expenses ORDER BY date")
+        return [{'id': r['id'], 'description': r['description'], 'amount': r['amount'],
+                'date': r['date'], 'target_account_code': r['target_account_code'],
+                'released_amount': r['released_amount'] or 0,
+                'remaining': (r['amount'] or 0) - (r['released_amount'] or 0)} for r in rows]
 
     # ------------------------------------------------------------------
     # Reporting helpers
@@ -374,9 +537,14 @@ class AccountingLogic:
         cost_of_sales = purchases['raw_material']['net'] + purchases['purchase_expense']['net'] \
             - returns['purchase_returns']
         operating_expenses = purchases['operating_expense']['net']
+        # Payroll is the other real cost of running the place, and it used to
+        # be left out of this figure entirely - "net profit" here was silently
+        # gross profit minus rent and utilities, with staff cost missing.
+        # Company-wide only; see get_salaries_expense for why.
+        salaries_expense = self.get_salaries_expense(start_date, end_date)
 
         gross_profit = net_sales - cost_of_sales
-        net_profit = gross_profit - operating_expenses
+        net_profit = gross_profit - operating_expenses - salaries_expense
 
         return {
             'start_date': start_date,
@@ -387,6 +555,7 @@ class AccountingLogic:
             'net_sales': net_sales,
             'cost_of_sales': cost_of_sales,
             'operating_expenses': operating_expenses,
+            'salaries_expense': salaries_expense,
             'gross_profit': gross_profit,
             'net_profit': net_profit,
             'output_vat': output_vat,

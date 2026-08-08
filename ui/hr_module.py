@@ -6,6 +6,7 @@ from PyQt6.QtCore import QDate, Qt
 from ui.common_widgets import create_stat_card, page_header, fill_table
 from ui.formatting import money_item, money
 from logic.money import parse_money
+from logic.accounting import AccountingLogic
 
 
 class HRModule(QWidget):
@@ -13,6 +14,7 @@ class HRModule(QWidget):
         super().__init__()
         self.db = db_manager
         self.hr_logic = hr_logic
+        self.accounting = AccountingLogic(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -105,6 +107,21 @@ class HRModule(QWidget):
         picker_row.addWidget(picker_label)
         picker_row.addWidget(self.employee_picker, 1)
         form_outer.insertLayout(0, picker_row)
+
+        # Asked at deactivation time rather than assumed to be "today": an
+        # owner often does the paperwork a few days after someone's actual
+        # last day, and payroll for the month they still worked must not
+        # silently drop them just because today's date is later.
+        termination_row = QHBoxLayout()
+        termination_row.setSpacing(8)
+        termination_label = QLabel("آخر يوم عمل (عند إنهاء الخدمة):")
+        termination_label.setStyleSheet("color:#64748b; font-size:12px;")
+        self.termination_date = QDateEdit(QDate.currentDate())
+        self.termination_date.setCalendarPopup(True)
+        termination_row.addWidget(termination_label)
+        termination_row.addWidget(self.termination_date)
+        termination_row.addStretch()
+        form_outer.addLayout(termination_row)
 
         buttons_row = QHBoxLayout()
         buttons_row.setSpacing(8)
@@ -212,6 +229,10 @@ class HRModule(QWidget):
         payroll_layout.addRow(buttons_row)
         payroll_tab_layout.addWidget(payroll_group)
 
+        self.payroll_status_label = QLabel()
+        self.payroll_status_label.setWordWrap(True)
+        payroll_tab_layout.addWidget(self.payroll_status_label)
+
         self.payroll_table = QTableWidget()
         self.payroll_table.setColumnCount(10)
         self.payroll_table.setHorizontalHeaderLabels([
@@ -228,6 +249,28 @@ class HRModule(QWidget):
         payroll_box_layout = QVBoxLayout(payroll_box)
         payroll_box_layout.addWidget(self.payroll_table)
         payroll_tab_layout.addWidget(payroll_box, 1)
+
+        # Settles account 2200 (رواتب مستحقة الدفع) built up by runs posted
+        # with "لا" above - a lump-sum payment against the accrued balance,
+        # not tied to any one month's run.
+        accrued_box = QGroupBox("سداد رواتب مستحقة سابقاً")
+        accrued_layout = QFormLayout(accrued_box)
+        accrued_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self.accrued_balance_label = QLabel()
+        self.accrued_balance_label.setStyleSheet("font-weight:700; color:#e67e22;")
+        self.accrued_pay_amount = QLineEdit()
+        self.accrued_pay_amount.setPlaceholderText("0.00")
+        self.accrued_pay_method = QComboBox()
+        self.accrued_pay_method.addItem("نقدي", "Cash")
+        self.accrued_pay_method.addItem("تحويل بنكي", "Bank")
+        accrued_pay_btn = QPushButton("تسجيل السداد")
+        accrued_pay_btn.clicked.connect(self.pay_accrued_wages)
+        accrued_layout.addRow("الرصيد المستحق حالياً:", self.accrued_balance_label)
+        accrued_layout.addRow("المبلغ:", self.accrued_pay_amount)
+        accrued_layout.addRow("طريقة السداد:", self.accrued_pay_method)
+        accrued_layout.addRow(accrued_pay_btn)
+        payroll_tab_layout.addWidget(accrued_box)
+
         tabs.addTab(payroll_widget, "الرواتب")
 
         tables_widget = QWidget()
@@ -238,7 +281,17 @@ class HRModule(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels(["الاسم", "الوظيفة", "الفرع", "الراتب", "البدلات", "رقم الإقامة", "انتهاء الإقامة", "رقم الجواز", "انتهاء الجواز", "رقم تصريح العمل", "انتهاء تصريح العمل", "رقم كرت العمل/انتهاؤه"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Stretch used to force all 12 columns to squeeze into the visible
+        # width no matter how long their content was - dates like
+        # "2026-08-08" showed as "2026-0", and because Stretch mode forbids
+        # the total column width from ever exceeding the viewport, there was
+        # no horizontal scrollbar to reach the rest either. ResizeToContents
+        # sizes each column to what it actually holds, and the table's own
+        # horizontal scrollbar (shown automatically once that total width
+        # exceeds the viewport) lets the owner scroll right/left to read
+        # every field in full.
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
@@ -293,18 +346,42 @@ class HRModule(QWidget):
     def editing_employee_id(self):
         return self.employee_picker.currentData()
 
+    def _clear_employee_fields(self):
+        for field in (self.name_input, self.job_input, self.salary_input,
+                      self.allowance_input, self.iqama_input, self.passport_input,
+                      self.work_permit_input, self.work_card_input):
+            field.clear()
+        self.save_btn.setText("إضافة موظف")
+        self.deactivate_btn.setEnabled(False)
+        self.termination_date.setDate(QDate.currentDate())
+
     def clear_employee_form(self):
+        """Resets the form back to 'add a new employee'.
+
+        Cannot rely on setCurrentIndex(0) alone: Qt only emits
+        currentIndexChanged when the index actually changes, and this is most
+        often called while the picker is *already* on index 0 - right after
+        adding someone, or when the form was never in edit mode to begin with.
+        In both of those cases the picker's index does not change, no signal
+        fires, and on_employee_picked() never runs - so the just-typed data
+        silently stayed in the boxes. A second "إضافة موظف" click then saved
+        those same values again, and "موظف جديد" appeared to do nothing at
+        all in the one situation it is used most: reverting a stray click into
+        the picker instead of choosing to edit someone.
+
+        Clearing the fields directly, unconditionally, is what actually fixes
+        both symptoms - the index reset is kept only to make the dropdown's
+        own display consistent.
+        """
+        self.employee_picker.blockSignals(True)
         self.employee_picker.setCurrentIndex(0)
+        self.employee_picker.blockSignals(False)
+        self._clear_employee_fields()
 
     def on_employee_picked(self):
         emp_id = self.editing_employee_id
         if emp_id is None:
-            for field in (self.name_input, self.job_input, self.salary_input,
-                          self.allowance_input, self.iqama_input, self.passport_input,
-                          self.work_permit_input, self.work_card_input):
-                field.clear()
-            self.save_btn.setText("إضافة موظف")
-            self.deactivate_btn.setEnabled(False)
+            self._clear_employee_fields()
             return
 
         emp = self.db.fetch_one("SELECT * FROM employees WHERE id = ?", (emp_id,))
@@ -387,14 +464,19 @@ class HRModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "اختر موظفاً من القائمة أولاً")
             return
         name = self.name_input.text().strip()
+        last_day = self.termination_date.date().toString("yyyy-MM-dd")
         answer = QMessageBox.question(
             self, "إنهاء خدمة موظف",
-            f"سيتم إنهاء خدمة «{name}» فلا يظهر في الرواتب ولا التنبيهات.\n\n"
+            f"سيتم إنهاء خدمة «{name}» اعتباراً من {last_day}.\n\n"
+            "لن يظهر بعد ذلك في التنبيهات ولا في رواتب الشهور التالية، لكنه "
+            "يبقى محسوباً في رواتب أي شهر لم يُرحَّل بعد ويكون قد عمل خلاله.\n"
             "بياناته وسجله المحاسبي القديم يبقى محفوظاً ولا يُحذف.\n\nمتابعة؟",
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.db.execute_query("UPDATE employees SET is_active = 0 WHERE id = ?", (emp_id,))
+        self.db.execute_query(
+            "UPDATE employees SET is_active = 0, terminated_date = ? WHERE id = ?",
+            (last_day, emp_id))
         QMessageBox.information(self, "تم", "تم إنهاء خدمة الموظف")
         self.load_employees()
         self.clear_employee_form()
@@ -456,6 +538,11 @@ class HRModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "سنة غير صحيحة")
             return
 
+        if self.hr_logic.is_payroll_posted(month, year):
+            QMessageBox.information(self, "مُرحَّل بالفعل",
+                                    f"رواتب شهر {month:02d}/{year} مُرحَّلة مسبقاً ولا يمكن ترحيلها مرة أخرى.")
+            return
+
         confirm = QMessageBox.question(
             self, "تأكيد الترحيل",
             f"سيتم ترحيل رواتب شهر {month:02d}/{year} إلى دفتر اليومية بشكل نهائي. متابعة؟",
@@ -463,11 +550,60 @@ class HRModule(QWidget):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
+        # Posting used to always assume the whole net amount left the
+        # register the same moment - there was no way to say "earned this
+        # month, still owed" (رواتب مستحقة), which is exactly the gap the
+        # accountant's balance-sheet message pointed at. A "no" here credits
+        # account 2200 instead of cash, and the amount can be settled later
+        # from "سداد رواتب مستحقة" below without touching this month's entry.
+        paid_now = QMessageBox.question(
+            self, "هل تم الدفع؟",
+            "هل تم دفع صافي الرواتب نقداً/تحويلاً الآن؟\n\n"
+            "اختر «نعم» لو الفلوس خرجت فعلاً، أو «لا» لو الرواتب مستحقة "
+            "وهتتدفع لاحقاً - هتتسجل كالتزام (رواتب مستحقة الدفع) بدل ما "
+            "تتخصم من الخزينة على طول.",
+        ) == QMessageBox.StandardButton.Yes
+
         try:
-            self.hr_logic.post_payroll(month, year)
+            self.hr_logic.post_payroll(month, year, paid_now=paid_now)
             QMessageBox.information(self, "نجاح", "تم ترحيل الرواتب إلى المحاسبة بنجاح")
         except Exception as e:
             QMessageBox.critical(self, "خطأ", str(e))
+        self.refresh_payroll()
+
+    def pay_accrued_wages(self):
+        try:
+            amount = parse_money(self.accrued_pay_amount.text(), "المبلغ",
+                                 allow_blank=False, allow_zero=False)
+            if amount <= 0:
+                raise ValueError
+        except ValueError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
+            return
+
+        outstanding = self.accounting.get_account_balance('2200')
+        if amount > outstanding + 0.01:
+            QMessageBox.warning(self, "تنبيه",
+                                f"الرصيد المستحق حالياً {money(outstanding)} ريال فقط، لا يمكن سداد أكثر منه.")
+            return
+
+        method = self.accrued_pay_method.currentData()
+        cash_account = '1000' if method == 'Cash' else '1001'
+        timestamp = QDate.currentDate().toString("yyyy-MM-dd")
+
+        items = [
+            {'account_code': '2200', 'debit': amount, 'credit': 0},
+            {'account_code': cash_account, 'debit': 0, 'credit': amount},
+        ]
+        with self.db.transaction() as cursor:
+            entry_id = self.db.insert_journal_entry(cursor, timestamp, "سداد رواتب مستحقة", None, items)
+            cursor.execute(
+                "INSERT INTO accrued_wage_payments (date, amount, method, journal_entry_id) VALUES (?, ?, ?, ?)",
+                (timestamp, amount, method, entry_id),
+            )
+
+        QMessageBox.information(self, "نجاح", "تم تسجيل سداد الرواتب المستحقة")
+        self.accrued_pay_amount.clear()
         self.refresh_payroll()
 
     def refresh_payroll(self):
@@ -478,7 +614,30 @@ class HRModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "سنة غير صحيحة")
             return
 
-        payroll = self.hr_logic.get_monthly_payroll(month, year)
+        # A posted month is a closed book: what actually went to the journal
+        # is fixed, so the screen must show that frozen snapshot rather than
+        # recalculating live - editing attendance or a deduction afterwards
+        # must not make this table quietly disagree with the accounting
+        # entry that has already gone out.
+        posted = self.hr_logic.is_payroll_posted(month, year)
+        if posted:
+            payroll = self.hr_logic.get_posted_payroll(month, year)
+            self.payroll_status_label.setText(
+                f"رواتب شهر {month:02d}/{year} مُرحَّلة بالفعل - المعروض هو ما تم ترحيله فعلياً، "
+                "وليس حساباً حياً. أي تعديل لاحق على الحضور أو السلف لا يغيّر هذا الشهر.")
+            self.payroll_status_label.setStyleSheet(
+                "color:#1f3b57; background:#eef6ff; border:1px solid #cfe0f5;"
+                "border-radius:8px; padding:8px 12px; font-weight:700;")
+        else:
+            payroll = self.hr_logic.get_monthly_payroll(month, year)
+            self.payroll_status_label.setText(
+                f"معاينة حية لرواتب شهر {month:02d}/{year} - لم تُرحَّل بعد.")
+            self.payroll_status_label.setStyleSheet(
+                "color:#9a5a06; background:#fdf3e2; border:1px solid #f0d4a3;"
+                "border-radius:8px; padding:8px 12px; font-weight:700;")
+
+        self.accrued_balance_label.setText(f"{money(self.accounting.get_account_balance('2200'))} ريال")
+
         total_absent = 0
         if not fill_table(self.payroll_table, len(payroll), "لا يوجد موظفون مسجلون"):
             self.absent_card.value_label.setText("0")
@@ -524,8 +683,11 @@ class HRModule(QWidget):
         self.employee_picker.setCurrentIndex(restored if restored >= 0 else 0)
         self.employee_picker.blockSignals(False)
         if restored < 0:
-            self.save_btn.setText("إضافة موظف")
-            self.deactivate_btn.setEnabled(False)
+            # Whoever was selected is gone (deactivated, or this is the first
+            # load) - the same unconditional clear used elsewhere, since
+            # relying on the blocked signal here would leave stale text typed
+            # for someone who no longer exists in the picker.
+            self._clear_employee_fields()
 
         if not fill_table(self.table, len(employees), "لا يوجد موظفون مسجلون بعد"):
             self.total_employees_card.value_label.setText("0")
@@ -554,3 +716,4 @@ class HRModule(QWidget):
 
     def refresh_on_show(self):
         self.load_employees()
+        self.refresh_payroll()
