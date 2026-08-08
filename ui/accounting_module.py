@@ -86,7 +86,7 @@ class AccountingModule(QWidget):
         tabs.addTab(self.build_income_tab(), "قائمة الدخل")
         tabs.addTab(self.build_trading_tab(), "حساب المتاجرة")
         tabs.addTab(self.build_balance_sheet_tab(), "المركز المالي")
-        tabs.addTab(self.build_ledger_tab(), "كل حساب بالتفصيل")
+        tabs.addTab(self.build_ledger_tab(), "كشف حساب")
 
         # On a short window the four summary cards left the trial balance table
         # 78 pixels - one row. The numbers on the cards are all repeated inside
@@ -215,12 +215,12 @@ class AccountingModule(QWidget):
         return widget
 
     def build_ledger_tab(self):
-        """The true general ledger, one account at a time: every journal item
-        ever posted to it with a running balance - not just its final total
-        the way ميزان المراجعة shows it. Named plainly instead of "الأستاذ
-        العام" since that is exactly the term the owner said he did not
-        follow; كشف حساب المورد/العميل next to it is the same idea one level
-        down, for a single supplier/customer instead of a whole account."""
+        """Every movement on any one account (cash, inventory, a specific
+        expense...), not just its final total the way ميزان المراجعة shows
+        it - the same "كشف حساب" idea already used for a supplier or
+        customer, just pointed at a whole account instead of one person.
+        The owner does not know accounting terms and should never have to;
+        this stays "كشف حساب" everywhere, on screen and in conversation."""
         widget = QWidget()
         v = QVBoxLayout(widget)
 

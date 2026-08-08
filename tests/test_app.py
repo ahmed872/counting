@@ -731,8 +731,8 @@ def main():
 
         # Leaving البيان blank used to fall back to the raw internal status
         # code ("Cash"/"Credit") instead of a translated label - invisible
-        # until the new "كل حساب بالتفصيل" ledger tab started showing raw
-        # journal descriptions verbatim, which is exactly what surfaced it.
+        # until the new "كشف حساب" ledger tab started showing raw journal
+        # descriptions verbatim, which is exactly what surfaced it.
         descriptions = db.fetch_all(
             "SELECT description FROM journal_entries WHERE description LIKE '% - Cash' "
             "OR description LIKE '% - Credit'")
@@ -741,10 +741,10 @@ def main():
     check("purchase categories hit the right accounts", purchases_route_by_category)
 
     def general_ledger_tab_shows_every_posting_with_a_running_balance():
-        """كل حساب بالتفصيل: the true drill-down general ledger, one account
-        at a time. The table must show exactly the entries and running
-        balance get_account_ledger computes from the same raw journal_items -
-        the same rigor used for the loan/prepaid/customer checks above."""
+        """كشف حساب (per account, not per supplier/customer): the table must
+        show exactly the entries and running balance get_account_ledger
+        computes from the same raw journal_items - the same rigor used for
+        the loan/prepaid/customer checks above."""
         from ui.formatting import money
         goto("accounting")
         acc_page = window.accounting

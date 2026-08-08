@@ -21,13 +21,12 @@ class AccountingLogic:
         return self.db.fetch_all("SELECT code, name, type FROM chart_of_accounts ORDER BY code")
 
     def get_account_ledger(self, account_code):
-        """Every journal item ever posted to one account, in date order, with
-        a running balance - the actual "أستاذ عام" for that account, not just
-        its final total the way the trial balance shows it. The running
-        balance grows with debit for an Asset/Expense account and with
-        credit for a Liability/Equity/Revenue account, so it always reads as
-        a plain increasing/decreasing number regardless of which side of the
-        entry the account normally sits on."""
+        """Every journal item ever posted to one account (كشف حساب), in date
+        order, with a running balance - not just its final total the way the
+        trial balance shows it. The running balance grows with debit for an
+        Asset/Expense account and with credit for a Liability/Equity/Revenue
+        account, so it always reads as a plain increasing/decreasing number
+        regardless of which side of the entry the account normally sits on."""
         account = self.db.fetch_one(
             "SELECT code, name, type FROM chart_of_accounts WHERE code = ?", (account_code,))
         if not account:
