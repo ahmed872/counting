@@ -92,7 +92,8 @@ def main():
         app.processEvents()
         return entry
 
-    pages = ["dashboard", "sales", "hr", "purchases", "suppliers", "customers", "reports", "accounting"]
+    pages = ["dashboard", "sales", "hr", "purchases", "suppliers", "customers", "reports",
+             "accounting", "other_balances"]
 
     # ---------------- data entry flows ----------------
     print("\n[flows]")
@@ -553,6 +554,85 @@ def main():
             db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
     check("stopping a customer warns before a new credit sale but never blocks collection",
           stopping_a_customer_warns_on_new_credit_sales_only)
+
+    def loan_received_and_repaid():
+        """A loan increases cash and the loans liability (2300) together;
+        a repayment reduces both the liability and cash - cross-checked
+        against account 2300 directly, the same rigor as the customer test."""
+        journal_marker = newest_journal_entry_id()
+        goto("other_balances")
+        ob = window.other_balances
+        ob.lender_input.setText("بنك الاختبار")
+        ob.loan_amount_input.setText("5000")
+        ob.record_new_loan()
+        loan_id = db.fetch_one("SELECT id FROM loans WHERE lender_name='بنك الاختبار'")["id"]
+        assert abs(window.accounting.accounting.get_loan_statement(loan_id)["balance"] - 5000) < 0.01
+
+        ob.selected_loan_id = loan_id
+        ob.loan_payment_amount.setText("1200")
+        ob.record_loan_payment()
+        balance = window.accounting.accounting.get_loan_statement(loan_id)["balance"]
+        assert abs(balance - 3800) < 0.01, balance
+
+        loan_net = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) - COALESCE(SUM(debit),0) v FROM journal_items "
+            "WHERE account_code='2300' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(loan_net - 3800) < 0.01, "account 2300 does not match the loan's own statement"
+
+        db.execute_query("DELETE FROM loan_payments WHERE loan_id = ?", (loan_id,))
+        db.execute_query("DELETE FROM loans WHERE id = ?", (loan_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("a loan received and partly repaid matches account 2300 exactly", loan_received_and_repaid)
+
+    def prepaid_expense_release_matches_target_account():
+        """A prepaid expense parks the full amount in 1500 on entry; each
+        release moves only the released slice into the real expense account,
+        never more than remains, and the remainder stays in 1500."""
+        journal_marker = newest_journal_entry_id()
+        goto("other_balances")
+        ob = window.other_balances
+        ob.prepaid_desc_input.setText("إيجار سنة كاملة (اختبار)")
+        ob.prepaid_amount_input.setText("1200")
+        ob.prepaid_target_input.setCurrentIndex(ob.prepaid_target_input.findData('5200'))
+        ob.record_new_prepaid()
+        prepaid_id = db.fetch_one(
+            "SELECT id FROM prepaid_expenses WHERE description='إيجار سنة كاملة (اختبار)'")["id"]
+
+        remaining = next(r for r in window.accounting.accounting.get_prepaid_expenses_with_balances()
+                         if r['id'] == prepaid_id)['remaining']
+        assert abs(remaining - 1200) < 0.01, remaining
+
+        ob.selected_prepaid_id = prepaid_id
+        ob.release_amount_input.setText("100")
+        ob.release_prepaid()
+        remaining = next(r for r in window.accounting.accounting.get_prepaid_expenses_with_balances()
+                         if r['id'] == prepaid_id)['remaining']
+        assert abs(remaining - 1100) < 0.01, remaining
+
+        prepaid_1500_net = db.fetch_one(
+            "SELECT COALESCE(SUM(debit),0) - COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1500' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(prepaid_1500_net - 1100) < 0.01, \
+            "account 1500 does not match the prepaid expense's own remaining balance"
+        expense_5200_debit = db.fetch_one(
+            "SELECT COALESCE(SUM(debit),0) v FROM journal_items "
+            "WHERE account_code='5200' AND entry_id > ?", (journal_marker,))["v"]
+        assert abs(expense_5200_debit - 100) < 0.01, \
+            "the released amount was not debited to the target expense account"
+
+        # Trying to release more than remains must be refused, not clamp silently.
+        ob.release_amount_input.setText("999999")
+        ob.release_prepaid()
+        remaining_after = next(r for r in window.accounting.accounting.get_prepaid_expenses_with_balances()
+                               if r['id'] == prepaid_id)['remaining']
+        assert abs(remaining_after - 1100) < 0.01, \
+            "releasing more than remains changed the balance anyway"
+
+        db.execute_query("DELETE FROM prepaid_expense_releases WHERE prepaid_expense_id = ?", (prepaid_id,))
+        db.execute_query("DELETE FROM prepaid_expenses WHERE id = ?", (prepaid_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("a prepaid expense release matches account 1500 and the target expense account",
+          prepaid_expense_release_matches_target_account)
 
     def negative_money_reads_correctly():
         """In a right-to-left line the bidi algorithm throws a leading minus to

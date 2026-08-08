@@ -156,6 +156,48 @@ CREATE TABLE IF NOT EXISTS customer_payments (
     FOREIGN KEY (customer_id) REFERENCES customers(id)
 );
 
+-- Loans (قروض) - money borrowed from a bank or an individual, owed back.
+CREATE TABLE IF NOT EXISTS loans (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lender_name TEXT NOT NULL,
+    amount REAL DEFAULT 0,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    notes TEXT,
+    journal_entry_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS loan_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    loan_id INTEGER,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
+    method TEXT CHECK(method IN ('Cash', 'Bank')),
+    notes TEXT,
+    journal_entry_id INTEGER,
+    FOREIGN KEY (loan_id) REFERENCES loans(id)
+);
+
+-- Prepaid expenses (مصروفات مقدمة) - paid now, recognised as an expense
+-- gradually over the months they actually belong to.
+CREATE TABLE IF NOT EXISTS prepaid_expenses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    description TEXT NOT NULL,
+    amount REAL DEFAULT 0,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    target_account_code TEXT DEFAULT '5200',
+    released_amount REAL DEFAULT 0,
+    journal_entry_id INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS prepaid_expense_releases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prepaid_expense_id INTEGER,
+    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+    amount REAL DEFAULT 0,
+    journal_entry_id INTEGER,
+    FOREIGN KEY (prepaid_expense_id) REFERENCES prepaid_expenses(id)
+);
+
 -- Purchase Returns
 CREATE TABLE IF NOT EXISTS purchase_returns (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

@@ -308,6 +308,52 @@ class AccountingLogic:
                             'balance': statement['balance'], 'is_active': bool(c['is_active'])})
         return results
 
+    def get_loan_statement(self, loan_id):
+        """A loan is a liability, same sign convention as a supplier: the
+        amount borrowed is a credit (what we owe grows), a repayment is a
+        debit (what we owe shrinks)."""
+        loan = self.db.fetch_one("SELECT * FROM loans WHERE id = ?", (loan_id,))
+        if not loan:
+            return None
+
+        entries = [{'date': loan['date'], 'type': 'مبلغ القرض',
+                    'debit': 0, 'credit': loan['amount'] or 0}]
+        payments = self.db.fetch_all(
+            "SELECT date, amount, method FROM loan_payments WHERE loan_id = ? ORDER BY date",
+            (loan_id,),
+        )
+        for pay in payments:
+            method_label = 'نقدي' if pay['method'] == 'Cash' else 'تحويل بنكي'
+            entries.append({'date': pay['date'], 'type': f"سداد ({method_label})",
+                            'debit': pay['amount'] or 0, 'credit': 0})
+
+        entries.sort(key=lambda e: e['date'] or '')
+        balance = 0
+        for e in entries:
+            balance += e['credit'] - e['debit']
+            e['balance'] = balance
+
+        return {'loan': loan, 'entries': entries, 'balance': balance}
+
+    def get_all_loans_with_balances(self):
+        loans = self.db.fetch_all("SELECT * FROM loans ORDER BY date")
+        results = []
+        for loan in loans:
+            statement = self.get_loan_statement(loan['id'])
+            results.append({'id': loan['id'], 'lender_name': loan['lender_name'],
+                            'amount': loan['amount'], 'date': loan['date'],
+                            'balance': statement['balance']})
+        return results
+
+    def get_prepaid_expenses_with_balances(self):
+        """Each row's remaining balance is what has not yet been released
+        into an actual expense - amount minus released_amount."""
+        rows = self.db.fetch_all("SELECT * FROM prepaid_expenses ORDER BY date")
+        return [{'id': r['id'], 'description': r['description'], 'amount': r['amount'],
+                'date': r['date'], 'target_account_code': r['target_account_code'],
+                'released_amount': r['released_amount'] or 0,
+                'remaining': (r['amount'] or 0) - (r['released_amount'] or 0)} for r in rows]
+
     # ------------------------------------------------------------------
     # Reporting helpers
     # ------------------------------------------------------------------

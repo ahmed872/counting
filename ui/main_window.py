@@ -64,6 +64,7 @@ class MainWindow(QMainWindow):
         self.btn_hr = self.create_nav_btn("الموارد البشرية")
         self.btn_reports = self.create_nav_btn("التقارير")
         self.btn_accounting = self.create_nav_btn("المحاسبة")
+        self.btn_other_balances = self.create_nav_btn("القروض والمصروفات المقدمة")
         self.btn_settings = self.create_nav_btn("الإعدادات")
 
         # Grouped by what the owner is doing, with the daily work first: the flat
@@ -79,6 +80,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addWidget(self.nav_group_label("التقارير والحسابات"))
         sidebar_layout.addWidget(self.btn_reports)
         sidebar_layout.addWidget(self.btn_accounting)
+        sidebar_layout.addWidget(self.btn_other_balances)
         sidebar_layout.addStretch()
         self.trial_banner = QLabel()
         self.trial_banner.setWordWrap(True)
@@ -235,6 +237,7 @@ class MainWindow(QMainWindow):
         from ui.reports_module import ReportsModule
         from ui.settings_module import SettingsModule
         from ui.accounting_module import AccountingModule
+        from ui.other_balances_module import OtherBalancesModule
         from logic.hr import HRLogic
 
         self.hr_logic = HRLogic(self.db)
@@ -248,6 +251,7 @@ class MainWindow(QMainWindow):
         self.reports = ReportsModule(self.db)
         self.settings = SettingsModule(self.db)
         self.accounting = AccountingModule(self.db)
+        self.other_balances = OtherBalancesModule(self.db)
 
         # Screens built around a table must NOT be wrapped in a scroll area:
         # inside one, the table only ever gets its minimum height and the page
@@ -262,4 +266,5 @@ class MainWindow(QMainWindow):
         self.add_page("customers", self.customers, scrollable=False)
         self.add_page("reports", self.reports, scrollable=False)
         self.add_page("accounting", self.accounting, scrollable=False)
+        self.add_page("other_balances", self.other_balances, scrollable=False)
         self.add_page("settings", self.settings)
