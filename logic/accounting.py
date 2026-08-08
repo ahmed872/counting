@@ -254,7 +254,8 @@ class AccountingLogic:
         results = []
         for s in suppliers:
             statement = self.get_supplier_statement(s['id'])
-            results.append({'id': s['id'], 'name': s['name'], 'phone': s['phone'], 'balance': statement['balance']})
+            results.append({'id': s['id'], 'name': s['name'], 'phone': s['phone'],
+                            'balance': statement['balance'], 'is_active': bool(s['is_active'])})
         return results
 
     # ------------------------------------------------------------------

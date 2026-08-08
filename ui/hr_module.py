@@ -238,7 +238,17 @@ class HRModule(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(12)
         self.table.setHorizontalHeaderLabels(["الاسم", "الوظيفة", "الفرع", "الراتب", "البدلات", "رقم الإقامة", "انتهاء الإقامة", "رقم الجواز", "انتهاء الجواز", "رقم تصريح العمل", "انتهاء تصريح العمل", "رقم كرت العمل/انتهاؤه"])
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # Stretch used to force all 12 columns to squeeze into the visible
+        # width no matter how long their content was - dates like
+        # "2026-08-08" showed as "2026-0", and because Stretch mode forbids
+        # the total column width from ever exceeding the viewport, there was
+        # no horizontal scrollbar to reach the rest either. ResizeToContents
+        # sizes each column to what it actually holds, and the table's own
+        # horizontal scrollbar (shown automatically once that total width
+        # exceeds the viewport) lets the owner scroll right/left to read
+        # every field in full.
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)

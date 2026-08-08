@@ -248,7 +248,7 @@ class MainWindow(QMainWindow):
         # scrolls instead, so a 720p screen showed 5 rows out of 12. Left
         # unwrapped, the table takes every spare pixel and scrolls its own rows.
         # Only genuinely long documents keep the page-level scroll.
-        self.add_page("dashboard", self.dashboard, scrollable=False)
+        self.add_page("dashboard", self.dashboard)
         self.add_page("sales", self.sales, scrollable=False)
         self.add_page("hr", self.hr, scrollable=False)
         self.add_page("purchases", self.purchases, scrollable=False)

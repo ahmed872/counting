@@ -112,6 +112,12 @@ class DBManager:
             # Links a day's sales rows to the journal entry they produced, so a
             # mis-typed day can be corrected without orphaning its ledger entry.
             cursor.execute("ALTER TABLE sales ADD COLUMN journal_entry_id INTEGER")
+        if 'cashier_number' not in sales_columns:
+            # A reference only - which register/cashier the day's total was
+            # closed out on, for matching against the physical Z-report. Not
+            # part of the accounting: the day is still one journal entry
+            # regardless of how many registers fed into it.
+            cursor.execute("ALTER TABLE sales ADD COLUMN cashier_number TEXT")
 
         supplier_columns = table_columns('suppliers')
         if 'is_active' not in supplier_columns:

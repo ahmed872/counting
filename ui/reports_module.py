@@ -182,23 +182,43 @@ class ReportsModule(QWidget):
             return (f"<tr><td style='padding:6px 10px;{style}'>{label}</td>"
                     f"<td style='padding:6px 10px;text-align:left;{style}'>{money(value)}</td></tr>")
 
-        daily_rows = ""
+        # Sales and purchases each get their own day-by-day table rather than
+        # one row mixing both together with a derived daily profit on top -
+        # a sales invoice and a purchase invoice are two different documents,
+        # and reading them off one merged row made it hard to hand either
+        # side to whoever only needs that one.
+        sales_daily_rows = ""
         for entry in d['daily']:
-            daily_rows += (
+            if not (entry['cash'] or entry['pos'] or entry['transfer']):
+                continue
+            sales_daily_rows += (
                 "<tr>"
                 f"<td style='padding:5px 8px'>{entry['day']}</td>"
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['cash'])}</td>"
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['pos'])}</td>"
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['transfer'])}</td>"
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['sales_total'])}</td>"
-                f"<td style='padding:5px 8px;text-align:left'>{money(entry['purchases'])}</td>"
-                f"<td style='padding:5px 8px;text-align:left'>{money(entry['net_vat'])}</td>"
-                f"<td style='padding:5px 8px;text-align:left'>{money(entry['profit'])}</td>"
+                f"<td style='padding:5px 8px;text-align:left'>{money(entry['output_vat'])}</td>"
                 "</tr>"
             )
-        if not daily_rows:
-            daily_rows = ("<tr><td colspan='8' style='padding:12px;text-align:center;color:#64748b'>"
-                          "لا توجد حركات في هذه الفترة</td></tr>")
+        if not sales_daily_rows:
+            sales_daily_rows = ("<tr><td colspan='6' style='padding:12px;text-align:center;color:#64748b'>"
+                                "لا توجد مبيعات في هذه الفترة</td></tr>")
+
+        purchases_daily_rows = ""
+        for entry in d['daily']:
+            if not entry['purchases']:
+                continue
+            purchases_daily_rows += (
+                "<tr>"
+                f"<td style='padding:5px 8px'>{entry['day']}</td>"
+                f"<td style='padding:5px 8px;text-align:left'>{money(entry['purchases'])}</td>"
+                f"<td style='padding:5px 8px;text-align:left'>{money(entry['input_vat'])}</td>"
+                "</tr>"
+            )
+        if not purchases_daily_rows:
+            purchases_daily_rows = ("<tr><td colspan='3' style='padding:12px;text-align:center;color:#64748b'>"
+                                    "لا توجد مشتريات في هذه الفترة</td></tr>")
 
         profit_color = "#16a34a" if d['net_profit'] >= 0 else "#dc2626"
 
@@ -248,7 +268,7 @@ class ReportsModule(QWidget):
             {row("صافي الضريبة المستحقة للهيئة", d['net_vat'], bold=True, color="#e67e22")}
           </table>
 
-          <h3 style="color:#1f3b57;">5) التفصيل اليومي</h3>
+          <h3 style="color:#1f3b57;">5) تفصيل المبيعات اليومي</h3>
           <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:12px;">
             <tr style="background:#1f3b57;color:white;">
               <th style="padding:6px 8px;">التاريخ</th>
@@ -256,11 +276,19 @@ class ReportsModule(QWidget):
               <th style="padding:6px 8px;">شبكة</th>
               <th style="padding:6px 8px;">تحويل</th>
               <th style="padding:6px 8px;">إجمالي المبيعات</th>
-              <th style="padding:6px 8px;">المشتريات</th>
-              <th style="padding:6px 8px;">صافي الضريبة</th>
-              <th style="padding:6px 8px;">الربح</th>
+              <th style="padding:6px 8px;">ضريبة المبيعات</th>
             </tr>
-            {daily_rows}
+            {sales_daily_rows}
+          </table>
+
+          <h3 style="color:#1f3b57;">6) تفصيل المشتريات اليومي</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:12px;">
+            <tr style="background:#1f3b57;color:white;">
+              <th style="padding:6px 8px;">التاريخ</th>
+              <th style="padding:6px 8px;">المشتريات</th>
+              <th style="padding:6px 8px;">ضريبة المشتريات</th>
+            </tr>
+            {purchases_daily_rows}
           </table>
         </div>
         """

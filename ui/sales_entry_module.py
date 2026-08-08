@@ -74,6 +74,12 @@ class SalesEntryModule(QWidget):
         for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.branch_input.addItem(branch["name"], branch["id"])
         self.date_input = QDateEdit(QDate.currentDate())
+        # Reference only, for matching this entry against the physical
+        # register's Z-report - it does not change the accounting. The day is
+        # still one total, one journal entry, regardless of how many
+        # registers fed into it.
+        self.cashier_input = QLineEdit()
+        self.cashier_input.setPlaceholderText("اختياري")
 
         top_row = QHBoxLayout()
         top_row.setSpacing(10)
@@ -82,6 +88,9 @@ class SalesEntryModule(QWidget):
         top_row.addSpacing(18)
         top_row.addWidget(self._field_label("التاريخ"))
         top_row.addWidget(self.date_input, 1)
+        top_row.addSpacing(18)
+        top_row.addWidget(self._field_label("رقم الكاشير / الجهاز"))
+        top_row.addWidget(self.cashier_input, 1)
         top_row.addStretch()
         form_outer.addLayout(top_row)
 
@@ -143,8 +152,9 @@ class SalesEntryModule(QWidget):
         layout.addLayout(history_row)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "الإجمالي", "الضريبة"])
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(
+            ["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "الإجمالي", "الضريبة", "رقم الكاشير"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -394,6 +404,7 @@ class SalesEntryModule(QWidget):
             return
 
         branch_name = self.branch_input.currentText()
+        cashier_number = self.cashier_input.text().strip() or None
 
         # Saving the same day twice used to double that day's revenue and VAT.
         # Now it asks, and replaces the day rather than adding to it.
@@ -442,9 +453,10 @@ class SalesEntryModule(QWidget):
                 cursor, date_str, f"مبيعات يومية - {branch_name} - {date_str}", branch_id, journal_items)
             for method, total, vat in saved_methods:
                 cursor.execute(
-                    """INSERT INTO sales (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (branch_id, date_str, total, vat, method, entry_id),
+                    """INSERT INTO sales
+                       (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id, cashier_number)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (branch_id, date_str, total, vat, method, entry_id, cashier_number),
                 )
 
         QMessageBox.information(self, "تم", "تم تسجيل مبيعات اليوم وترحيلها للمحاسبة")
@@ -482,7 +494,8 @@ class SalesEntryModule(QWidget):
                 SUM(CASE WHEN s.payment_method = 'POS' THEN s.total_amount ELSE 0 END) as pos_total,
                 SUM(CASE WHEN s.payment_method = 'Transfer' THEN s.total_amount ELSE 0 END) as transfer_total,
                 SUM(s.total_amount) as grand_total,
-                SUM(s.vat_amount) as vat_total
+                SUM(s.vat_amount) as vat_total,
+                MAX(s.cashier_number) as cashier_number
             FROM sales s
             JOIN branches b ON s.branch_id = b.id
             GROUP BY date(s.date), s.branch_id
@@ -501,6 +514,7 @@ class SalesEntryModule(QWidget):
             self.table.setItem(row, 4, money_item(r['transfer_total'], bold=False))
             self.table.setItem(row, 5, money_item(r['grand_total'], bold=True))
             self.table.setItem(row, 6, money_item(r['vat_total'], bold=False))
+            self.table.setItem(row, 7, QTableWidgetItem(r['cashier_number'] or ""))
 
     def refresh_on_show(self):
         selected_branch = self.branch_input.currentData()

@@ -87,6 +87,7 @@ CREATE TABLE IF NOT EXISTS sales (
     total_amount REAL,
     vat_amount REAL,
     payment_method TEXT CHECK(payment_method IN ('Cash', 'POS', 'Transfer')),
+    cashier_number TEXT,
     FOREIGN KEY (branch_id) REFERENCES branches(id)
 );
 

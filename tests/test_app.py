@@ -342,6 +342,61 @@ def main():
     check("paying more than is owed asks before going through",
           overpaying_a_supplier_asks_first)
 
+    def stopping_a_supplier_hides_it_from_new_purchases_only():
+        """The owner asked how to delete a supplier - there was no way to, and
+        a hard delete would either be blocked by (or silently orphan) every
+        past purchase, payment, and journal entry tied to it. 'Stop dealing
+        with' is the safe equivalent: the supplier drops out of the new
+        purchase picker, but stays fully visible and payable everywhere else,
+        and can be turned back on."""
+        goto("suppliers")
+        s = window.suppliers
+        s.name_input.setText("مورد سيتم إيقافه")
+        s.add_supplier()
+        sid = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد سيتم إيقافه'")["id"]
+        try:
+            goto("purchases")
+            p = window.purchases
+            p.load_suppliers()
+            assert p.supplier_input.findData(sid) >= 0, \
+                "an active supplier is missing from the new-purchase picker"
+
+            goto("suppliers")
+            s.selected_supplier_id = sid
+            s.toggle_supplier_active()
+            assert db.fetch_one("SELECT is_active FROM suppliers WHERE id=?", (sid,))["is_active"] == 0
+
+            goto("purchases")
+            p.load_suppliers()
+            assert p.supplier_input.findData(sid) < 0, \
+                "a stopped supplier still appears in the new-purchase picker"
+
+            # Still payable and still shown in the full list, just marked.
+            goto("suppliers")
+            s.load_suppliers()
+            names = {s.payment_supplier.itemText(i) for i in range(s.payment_supplier.count())}
+            assert "مورد سيتم إيقافه" in names, "a stopped supplier can no longer be paid"
+            balances = window.accounting.accounting.get_all_supplier_balances()
+            stopped = next(b for b in balances if b["id"] == sid)
+            assert stopped["is_active"] is False
+
+            # Reactivating brings it back into the new-purchase picker.
+            s.selected_supplier_id = sid
+            s.toggle_supplier_active()
+            assert db.fetch_one("SELECT is_active FROM suppliers WHERE id=?", (sid,))["is_active"] == 1
+            goto("purchases")
+            p.load_suppliers()
+            assert p.supplier_input.findData(sid) >= 0, \
+                "reactivating did not bring the supplier back for new purchases"
+        finally:
+            db.execute_query("DELETE FROM suppliers WHERE id = ?", (sid,))
+            goto("suppliers")
+            window.suppliers.load_suppliers()
+            goto("purchases")
+            window.purchases.load_suppliers()
+    check("stopping a supplier hides it from new purchases but keeps it payable and reversible",
+          stopping_a_supplier_hides_it_from_new_purchases_only)
+
     def negative_money_reads_correctly():
         """In a right-to-left line the bidi algorithm throws a leading minus to
         the visual right, so -1000 was displayed as '1,000.00-' - which scans as
@@ -432,6 +487,37 @@ def main():
         assert abs(after_total - 1150) < 0.01, f"{before_total} -> {after_total}"
         assert after_entries == before_entries, "replacing a day left a stale journal entry"
     check("re-saving a day replaces it instead of doubling it", saving_the_same_day_twice_replaces_it)
+
+    def cashier_number_is_saved_and_shown():
+        """A reference field only - which register the day's total came off
+        of, for matching against a physical Z-report. Does not affect any
+        accounting figure, and must not leak into other checks' totals, so
+        it uses a date well outside the 2000-2100 range the accounting
+        checks scan and cleans itself up afterwards."""
+        goto("sales")
+        sales = window.sales
+        far_date = "1999-01-01"
+        sales.date_input.setDate(sales.date_input.date().fromString(far_date, "yyyy-MM-dd"))
+        sales.cash_input.setText("500")
+        sales.cashier_input.setText("كاشير-3")
+        sales.save_daily_sales()
+
+        stored = db.fetch_one(
+            "SELECT id, journal_entry_id, cashier_number FROM sales WHERE date = ?", (far_date,))
+        assert stored["cashier_number"] == "كاشير-3", stored["cashier_number"]
+
+        match = next(
+            (r for r in range(sales.table.rowCount()) if sales.table.item(r, 0).text() == far_date),
+            None)
+        assert match is not None, "the saved day is not shown in the history table"
+        assert sales.table.item(match, 7).text() == "كاشير-3"
+
+        db.execute_query("DELETE FROM sales WHERE date = ?", (far_date,))
+        if stored["journal_entry_id"]:
+            db.delete_journal_entry(stored["journal_entry_id"])
+        sales.load_history()
+    check("the cashier/register reference number is saved and shown",
+          cashier_number_is_saved_and_shown)
 
     def sales_returns_reduce_revenue_and_reverse_cleanly():
         """sales_returns already existed in the schema and every report was
@@ -901,6 +987,104 @@ def main():
             "the income statement result has no scroll area of its own"
     check("the trading account result can be scrolled to in full",
           trading_account_result_is_fully_reachable)
+
+    def all_expiring_documents_are_reachable():
+        """The owner reported (with a screenshot) that one of three duplicate
+        employees named صابر had 4 expiry alerts, but only some were visible
+        and scrolling did not seem to bring the rest up. Reproduced live: the
+        table held all 12 rows and its own scrollbar technically worked, but
+        was boxed into ~180-270px with a small internal scrollbar easy to
+        miss - unlike every other page, which scrolls as a whole with a big,
+        high-contrast page scrollbar. The fix makes the alerts table grow to
+        fit every row and puts the dashboard page itself inside that same
+        page-level scroll area, so there is exactly one way to reach more
+        content, not a hidden one nested inside another."""
+        import datetime as dt
+        today = dt.datetime.now().strftime("%Y-%m-%d")
+        emp_ids = []
+        for _ in range(3):
+            emp_ids.append(db.insert_and_return_id(
+                """INSERT INTO employees (name, job_title, base_salary, allowances, is_active,
+                       iqama_no, iqama_expiry, passport_no, passport_expiry,
+                       work_permit_no, work_permit_expiry, work_card_no, work_card_expiry)
+                   VALUES (?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                ("صابر (اختبار)", "طباخ", 4000, 0,
+                 "111", today, "222", today, "333", today, "444", today)
+            ))
+        try:
+            goto("dashboard")
+            dash = window.dashboard
+            assert dash.alerts_table.rowCount() >= 12, dash.alerts_table.rowCount()
+            # No internal scrollbar hiding rows: the table must be tall enough
+            # to show every one of them itself.
+            assert dash.alerts_table.verticalScrollBar().maximum() == 0, \
+                "the alerts table still needs its own internal scrollbar"
+
+            scroll = None
+            node = dash.parentWidget()
+            while node is not None:
+                if isinstance(node, QScrollArea):
+                    scroll = node
+                    break
+                node = node.parentWidget()
+            assert scroll is not None, "the dashboard page has no page-level scroll area"
+
+            last_item = dash.alerts_table.item(dash.alerts_table.rowCount() - 1, 0)
+            scroll.verticalScrollBar().setValue(scroll.verticalScrollBar().maximum())
+            app.processEvents()
+            app.processEvents()
+            row_y = dash.alerts_table.mapTo(
+                window, dash.alerts_table.visualItemRect(last_item).topLeft()).y()
+            assert 0 <= row_y <= window.height(), \
+                f"last alert row is not reachable by scrolling (y={row_y})"
+        finally:
+            for emp_id in emp_ids:
+                db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+    check("every expiring-document alert is reachable, not hidden below a small inner scrollbar",
+          all_expiring_documents_are_reachable)
+
+    def employee_table_scrolls_instead_of_truncating():
+        """The owner sent a screenshot of the employee list with every column
+        so squeezed that dates read "2026-0" and document numbers read "546"
+        - Stretch resize mode forces all 12 columns to fit the viewport
+        exactly, which also means there is structurally no way to scroll to
+        see the rest, since Stretch never lets total column width exceed the
+        viewport. Columns must now size to their content and the table must
+        gain real horizontal scroll range once that content is wider than
+        the viewport."""
+        goto("hr")
+        hr = window.hr
+        emp_ids = []
+        try:
+            for _ in range(2):
+                emp_ids.append(db.insert_and_return_id(
+                    """INSERT INTO employees (name, job_title, branch_id, base_salary, allowances,
+                           is_active, iqama_no, iqama_expiry, passport_no, passport_expiry,
+                           work_permit_no, work_permit_expiry, work_card_no, work_card_expiry)
+                       VALUES (?, ?, 1, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    ("صابر (اختبار)", "مهم", 5000, 1000,
+                     "44", "2026-08-08", "5465", "2026-08-08",
+                     "5465", "2026-08-08", "55665", "2026-08-08")
+                ))
+            hr.load_employees()
+            app.processEvents()
+            app.processEvents()
+            row = next(r for r in range(hr.table.rowCount())
+                       if hr.table.item(r, 0) and hr.table.item(r, 0).text() == "صابر (اختبار)")
+            last_cell = hr.table.item(row, 11)
+            assert last_cell.text() == "55665 / 2026-08-08", \
+                f"cell text itself is truncated: {last_cell.text()!r}"
+            total_width = sum(hr.table.columnWidth(c) for c in range(hr.table.columnCount()))
+            assert total_width > hr.table.viewport().width(), \
+                "columns still fit the viewport - nothing to verify a scrollbar against"
+            assert hr.table.horizontalScrollBar().maximum() > 0, \
+                "the table has no horizontal scroll range even though columns overflow it"
+        finally:
+            for emp_id in emp_ids:
+                db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+            hr.load_employees()
+    check("the employee list table scrolls to reveal long values instead of truncating them",
+          employee_table_scrolls_instead_of_truncating)
 
     def every_page_opens():
         for page in pages:

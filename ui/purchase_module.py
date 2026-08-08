@@ -257,7 +257,10 @@ class PurchaseModule(QWidget):
     def load_suppliers(self):
         self.supplier_input.clear()
         self.supplier_input.addItem("بدون مورد", None)
-        suppliers = self.db.fetch_all("SELECT * FROM suppliers ORDER BY name")
+        # Only active suppliers - a stopped supplier can still be reached to
+        # settle what they're owed (payments/returns), but should not appear
+        # as a choice for a brand new purchase.
+        suppliers = self.db.fetch_all("SELECT * FROM suppliers WHERE is_active = 1 ORDER BY name")
         for s in suppliers:
             self.supplier_input.addItem(s['name'], s['id'])
 

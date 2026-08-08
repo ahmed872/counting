@@ -72,9 +72,21 @@ class SuppliersModule(QWidget):
         ], columns=3, field_min_width=150))
         list_layout.addWidget(pin_height(form_box))
 
+        list_header_row = QHBoxLayout()
         list_label = QLabel("قائمة الموردين والأرصدة الحالية")
         list_label.setStyleSheet("font-weight: 700; color: #334155;")
-        list_layout.addWidget(list_label)
+        list_header_row.addWidget(list_label)
+        list_header_row.addStretch()
+        # There is no hard delete for a supplier - one is always linked to
+        # past purchases, payments, and journal entries, and deleting it
+        # would either be blocked by that history or silently orphan it.
+        # "Stop dealing with" is the safe equivalent: it drops off the list
+        # offered for new purchases while every past number stays intact and
+        # any balance still owed can still be paid off and reversed.
+        self.toggle_active_btn = QPushButton("إيقاف/إعادة تفعيل التعامل مع المورد المحدد")
+        self.toggle_active_btn.clicked.connect(self.toggle_supplier_active)
+        list_header_row.addWidget(self.toggle_active_btn)
+        list_layout.addLayout(list_header_row)
 
         self.suppliers_table = QTableWidget()
         self.suppliers_table.setColumnCount(4)
@@ -203,13 +215,19 @@ class SuppliersModule(QWidget):
             return
         for row, s in enumerate(balances):
             total += s['balance']
-            self.suppliers_table.setItem(row, 0, QTableWidgetItem(s['name']))
+            name_item = QTableWidgetItem(s['name'])
+            self.suppliers_table.setItem(row, 0, name_item)
             self.suppliers_table.setItem(row, 1, QTableWidgetItem(s['phone'] or ""))
             self.suppliers_table.setItem(row, 2, money_item(s['balance'], bold=True))
             status = "له رصيد مستحق" if s['balance'] > 0.01 else ("مسدد بالكامل" if s['balance'] > -0.01 else "رصيد لصالحنا")
+            if not s['is_active']:
+                status = "متوقف — " + status
             item = QTableWidgetItem(status)
             self.suppliers_table.setItem(row, 3, item)
-            self.suppliers_table.item(row, 0).setData(Qt.ItemDataRole.UserRole, s['id'])
+            name_item.setData(Qt.ItemDataRole.UserRole, s['id'])
+            if not s['is_active']:
+                for col in range(4):
+                    self.suppliers_table.item(row, col).setForeground(Qt.GlobalColor.gray)
         # "إجمالي الأرصدة الدائنة: -1,000" is a contradiction in terms and reads
         # as a mistake. Say which direction the money actually goes.
         if total > 0.01:
@@ -348,6 +366,34 @@ class SuppliersModule(QWidget):
         QMessageBox.information(self, "نجاح", "تم تسجيل السداد وتحديث رصيد المورد")
         self.payment_amount.clear()
         self.payment_notes.clear()
+        self.load_suppliers()
+        self.refresh_statement()
+
+    def toggle_supplier_active(self):
+        if not self.selected_supplier_id:
+            QMessageBox.warning(self, "تنبيه", "اختر مورداً من القائمة أولاً")
+            return
+        supplier = self.db.fetch_one(
+            "SELECT name, is_active FROM suppliers WHERE id = ?", (self.selected_supplier_id,))
+        if not supplier:
+            return
+        turning_off = bool(supplier['is_active'])
+        if turning_off:
+            balance = self.accounting.get_supplier_statement(self.selected_supplier_id)["balance"]
+            note = (f"\n\nملاحظة: لا يزال عليه رصيد مستحق {money(balance)} ريال — "
+                    "يمكنك تسجيل السداد له وهو متوقف." if balance > 0.01 else "")
+            question = (
+                f"هل تريد إيقاف التعامل مع المورد «{supplier['name']}»؟\n"
+                "لن يظهر بعد ذلك كخيار عند تسجيل مشتريات جديدة، لكن بياناته وكل حركاته "
+                "السابقة تبقى محفوظة كما هي، ويمكن إعادة تفعيله في أي وقت." + note)
+        else:
+            question = f"هل تريد إعادة تفعيل التعامل مع المورد «{supplier['name']}»؟"
+        answer = QMessageBox.question(self, "تأكيد", question)
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.db.execute_query(
+            "UPDATE suppliers SET is_active = ? WHERE id = ?",
+            (0 if turning_off else 1, self.selected_supplier_id))
         self.load_suppliers()
         self.refresh_statement()
 
