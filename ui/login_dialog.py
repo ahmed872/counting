@@ -9,6 +9,7 @@ that is not quite finished yet.
 """
 
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QDialog,
     QStackedWidget,
@@ -36,7 +37,7 @@ class LoginDialog(QDialog):
         from logic.paths import set_window_icon
         set_window_icon(self)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(500)
         # An explicit white background - a QDialog otherwise paints the
         # palette's plain grey Window colour, which read as unfinished
         # sitting on top of the desktop rather than a proper card.
@@ -44,24 +45,58 @@ class LoginDialog(QDialog):
         self.build()
 
     def build(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(36, 32, 36, 28)
-        layout.setSpacing(18)
+        # A dark header band (logo, title, subtitle) over a plain white
+        # form card, instead of everything sitting flat on one white
+        # background - reported live as looking too basic. Only the header
+        # gets its own background colour: it holds nothing but labels
+        # (styled explicitly below, not relying on the app-wide QSS), so it
+        # cannot be the container that stops that QSS from cascading down
+        # to a button - see the dialog-stylesheet test this file ships
+        # with, and the QScrollArea case in add_page (main_window.py) that
+        # test guards against.
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        header = QWidget()
+        header.setStyleSheet("background-color: #1f3b57;")
+        header_layout = QVBoxLayout(header)
+        header_layout.setContentsMargins(36, 34, 36, 28)
+        header_layout.setSpacing(8)
+
+        from logic.paths import icon_path
+        logo = QLabel()
+        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        pixmap = QPixmap(icon_path())
+        if not pixmap.isNull():
+            logo.setPixmap(pixmap.scaled(
+                56, 56, Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation))
+            header_layout.addWidget(logo)
 
         title = QLabel("نظام إدارة المطعم")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 22px; font-weight: 800; color: #1f3b57;")
-        layout.addWidget(title)
+        title.setStyleSheet("font-size: 21px; font-weight: 800; color: #ffffff;")
+        header_layout.addWidget(title)
 
         subtitle = QLabel("سجّل دخولك للمتابعة")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet("color:#64748b; font-size:13px;")
-        layout.addWidget(subtitle)
+        subtitle.setStyleSheet("color:#b9c8db; font-size:13px;")
+        header_layout.addWidget(subtitle)
+
+        outer.addWidget(header)
+
+        body = QWidget()
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(36, 30, 36, 30)
+        body_layout.setSpacing(18)
 
         self.stack = QStackedWidget()
-        layout.addWidget(self.stack)
+        body_layout.addWidget(self.stack)
         self.stack.addWidget(self._build_login_page())
         self.stack.addWidget(self._build_change_password_page())
+
+        outer.addWidget(body)
 
     def _field_label(self, text):
         label = QLabel(text)
@@ -75,11 +110,13 @@ class LoginDialog(QDialog):
 
         layout.addWidget(self._field_label("اسم المستخدم"))
         self.username_field = QLineEdit()
+        self.username_field.setPlaceholderText("اكتب اسم المستخدم")
         self.username_field.returnPressed.connect(self.try_login)
         layout.addWidget(self.username_field)
 
         layout.addWidget(self._field_label("كلمة المرور"))
         self.password_field = QLineEdit()
+        self.password_field.setPlaceholderText("اكتب كلمة المرور")
         self.password_field.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_field.returnPressed.connect(self.try_login)
         layout.addWidget(self.password_field)

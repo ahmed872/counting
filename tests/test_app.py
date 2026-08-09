@@ -3213,6 +3213,31 @@ def main():
     check("the login dialog has a clean white background and a properly styled button",
           login_dialog_has_a_clean_white_background_and_a_working_button)
 
+    def login_dialog_has_a_branded_header_not_a_flat_page():
+        """The whole dialog sitting on one flat white background with no
+        visual anchor read as "بدائية" (basic/unfinished) - reported live.
+        Checked for a dark header band behind the title, distinct from the
+        white form card below it, and that it still holds the app's own
+        logo rather than an empty space where one should be."""
+        from ui.login_dialog import LoginDialog
+        dialog = LoginDialog(db)
+        dialog.show()
+        for _ in range(2):
+            app.processEvents()
+        try:
+            title = next(l for l in dialog.findChildren(QLabel) if l.text() == "نظام إدارة المطعم")
+            header = title.parentWidget()
+            image = render(header)
+            colour = image.pixelColor(4, 4)
+            assert not is_near_white(colour.name()), \
+                f"the login header has no distinct background - corner pixel is {colour.name()}"
+            assert any(not l.pixmap().isNull() for l in header.findChildren(QLabel) if l.pixmap()), \
+                "the login header has no logo"
+        finally:
+            dialog.close()
+    check("the login dialog has a branded header with a logo, not a flat page",
+          login_dialog_has_a_branded_header_not_a_flat_page)
+
     print("\n" + "=" * 52)
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")
