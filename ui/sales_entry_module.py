@@ -27,12 +27,14 @@ REFUND_METHOD_LABELS = [
     ("Cash", "نقدي"),
     ("POS", "شبكة (مدى / فيزا)"),
     ("Transfer", "تحويل بنكي"),
+    ("Delivery", "تطبيقات التوصيل"),
 ]
 
 PAYMENT_CHANNELS = [
     ("Cash", "cash_input", "كاش"),
     ("POS", "network_input", "شبكة (مدى / فيزا)"),
     ("Transfer", "transfer_input", "تحويل بنكي"),
+    ("Delivery", "delivery_input", "تطبيقات التوصيل"),
 ]
 
 
@@ -74,6 +76,10 @@ class SalesEntryModule(QWidget):
         for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.branch_input.addItem(branch["name"], branch["id"])
         self.date_input = QDateEdit(QDate.currentDate())
+        # A sale cannot happen on a day that has not arrived yet - without
+        # this, a mis-set system clock or a stray click on the calendar
+        # silently posted revenue and VAT into a future month's figures.
+        self.date_input.setMaximumDate(QDate.currentDate())
         # Reference only, for matching this entry against the physical
         # register's Z-report - it does not change the accounting. The day is
         # still one total, one journal entry, regardless of how many
@@ -94,12 +100,19 @@ class SalesEntryModule(QWidget):
         top_row.addStretch()
         form_outer.addLayout(top_row)
 
-        # The three payment amounts sit side by side, like the end-of-day cash
-        # sheet they are copied from - one glance shows all three at once and it
+        # The payment amounts sit side by side, like the end-of-day cash sheet
+        # they are copied from - one glance shows all of them at once and it
         # frees a lot of vertical space for the history table underneath.
         self.cash_input = self._amount_input()
         self.network_input = self._amount_input()
         self.transfer_input = self._amount_input()
+        # Delivery apps (هنقرستيشن / جاهز وغيرها) collect the money from the
+        # customer themselves and settle it to the bank later, minus their
+        # own commission - money never passes through the register as cash,
+        # so it is entered and booked the same way a bank transfer is, just
+        # tracked under its own label so the owner can see how much of his
+        # revenue comes through delivery apps versus a direct transfer.
+        self.delivery_input = self._amount_input()
 
         amounts_row = QHBoxLayout()
         amounts_row.setSpacing(14)
@@ -107,6 +120,7 @@ class SalesEntryModule(QWidget):
             ("كاش", self.cash_input),
             ("شبكة (مدى / فيزا)", self.network_input),
             ("تحويل بنكي", self.transfer_input),
+            ("تطبيقات التوصيل", self.delivery_input),
         ):
             column = QVBoxLayout()
             column.setSpacing(4)
@@ -128,7 +142,7 @@ class SalesEntryModule(QWidget):
             "padding:10px; font-weight:800; color:#1f3b57;"
         )
         form_outer.addWidget(self.preview_label)
-        for field in (self.cash_input, self.network_input, self.transfer_input):
+        for field in (self.cash_input, self.network_input, self.transfer_input, self.delivery_input):
             field.textChanged.connect(self.update_preview)
 
         save_btn = QPushButton("حفظ مبيعات اليوم")
@@ -152,9 +166,10 @@ class SalesEntryModule(QWidget):
         layout.addLayout(history_row)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(8)
+        self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels(
-            ["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "الإجمالي", "الضريبة", "رقم الكاشير"])
+            ["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "تطبيقات التوصيل",
+             "الإجمالي", "الضريبة", "رقم الكاشير"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -184,6 +199,7 @@ class SalesEntryModule(QWidget):
         for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.return_branch_input.addItem(branch["name"], branch["id"])
         self.return_date_input = QDateEdit(QDate.currentDate())
+        self.return_date_input.setMaximumDate(QDate.currentDate())
         self.return_amount_input = self._amount_input()
         self.return_method_input = QComboBox()
         for code, label in REFUND_METHOD_LABELS:
@@ -356,7 +372,7 @@ class SalesEntryModule(QWidget):
 
     def update_preview(self):
         total = 0.0
-        for field in (self.cash_input, self.network_input, self.transfer_input):
+        for field in (self.cash_input, self.network_input, self.transfer_input, self.delivery_input):
             try:
                 total += parse_money(field.text())
             except ValueError:
@@ -398,6 +414,7 @@ class SalesEntryModule(QWidget):
                 "Cash": self._parse_amount(self.cash_input),
                 "POS": self._parse_amount(self.network_input),
                 "Transfer": self._parse_amount(self.transfer_input),
+                "Delivery": self._parse_amount(self.delivery_input),
             }
         except ValueError as e:
             QMessageBox.warning(self, "تنبيه", str(e) if str(e) else "المبالغ المدخلة غير صحيحة")
@@ -467,6 +484,7 @@ class SalesEntryModule(QWidget):
         self.cash_input.clear()
         self.network_input.clear()
         self.transfer_input.clear()
+        self.delivery_input.clear()
         self.update_preview()
         self.load_history()
 
@@ -497,6 +515,7 @@ class SalesEntryModule(QWidget):
                 SUM(CASE WHEN s.payment_method = 'Cash' THEN s.total_amount ELSE 0 END) as cash_total,
                 SUM(CASE WHEN s.payment_method = 'POS' THEN s.total_amount ELSE 0 END) as pos_total,
                 SUM(CASE WHEN s.payment_method = 'Transfer' THEN s.total_amount ELSE 0 END) as transfer_total,
+                SUM(CASE WHEN s.payment_method = 'Delivery' THEN s.total_amount ELSE 0 END) as delivery_total,
                 SUM(s.total_amount) as grand_total,
                 SUM(s.vat_amount) as vat_total,
                 MAX(s.cashier_number) as cashier_number
@@ -517,9 +536,10 @@ class SalesEntryModule(QWidget):
             self.table.setItem(row, 2, money_item(r['cash_total'], bold=False))
             self.table.setItem(row, 3, money_item(r['pos_total'], bold=False))
             self.table.setItem(row, 4, money_item(r['transfer_total'], bold=False))
-            self.table.setItem(row, 5, money_item(r['grand_total'], bold=True))
-            self.table.setItem(row, 6, money_item(r['vat_total'], bold=False))
-            self.table.setItem(row, 7, QTableWidgetItem(r['cashier_number'] or ""))
+            self.table.setItem(row, 5, money_item(r['delivery_total'], bold=False))
+            self.table.setItem(row, 6, money_item(r['grand_total'], bold=True))
+            self.table.setItem(row, 7, money_item(r['vat_total'], bold=False))
+            self.table.setItem(row, 8, QTableWidgetItem(r['cashier_number'] or ""))
         fit_table_height(self.table)
 
     def refresh_on_show(self):

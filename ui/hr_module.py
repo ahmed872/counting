@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QTableWidgetItem, QPushButton, QFormLayout, QLineEdit,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
-                             QGroupBox, QTabWidget, QScrollArea)
+                             QGroupBox, QTabWidget)
 from PyQt6.QtCore import QDate, Qt
 from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height
 from ui.formatting import money_item, money
@@ -30,10 +30,12 @@ class HRModule(QWidget):
         tabs.setDocumentMode(True)
         root_layout.addWidget(tabs)
 
-        setup_scroll = QScrollArea()
-        setup_scroll.setWidgetResizable(True)
-        setup_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        setup_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # A plain widget, like the other three tabs - not its own QScrollArea.
+        # The whole HR page already scrolls as a single unit (see add_page in
+        # main_window.py); wrapping this one tab in a second, inner scroll
+        # area on top of that gave "الموظفون" two separate scrollbars for
+        # the same content, one nested inside the other - confirmed live,
+        # and confusing about which one actually moved what.
         setup_scroll_widget = QWidget()
         setup_layout = QVBoxLayout(setup_scroll_widget)
         setup_layout.setContentsMargins(6, 6, 6, 6)
@@ -118,6 +120,9 @@ class HRModule(QWidget):
         termination_label.setStyleSheet("color:#64748b; font-size:12px;")
         self.termination_date = QDateEdit(QDate.currentDate())
         self.termination_date.setCalendarPopup(True)
+        # An employee's last working day cannot be scheduled in the future -
+        # this only records that someone already left.
+        self.termination_date.setMaximumDate(QDate.currentDate())
         termination_row.addWidget(termination_label)
         termination_row.addWidget(self.termination_date)
         termination_row.addStretch()
@@ -156,6 +161,8 @@ class HRModule(QWidget):
         self.attendance_employee = QComboBox()
         self.attendance_date = QDateEdit(QDate.currentDate())
         self.attendance_date.setCalendarPopup(True)
+        # Attendance cannot be recorded for a day that has not happened yet.
+        self.attendance_date.setMaximumDate(QDate.currentDate())
         self.attendance_status = QComboBox()
         self.attendance_status.addItem("حاضر", "Present")
         self.attendance_status.addItem("غائب", "Absent")
@@ -180,6 +187,9 @@ class HRModule(QWidget):
         self.deduction_type.addItem("مكافأة", "Bonus")
         self.deduction_date = QDateEdit(QDate.currentDate())
         self.deduction_date.setCalendarPopup(True)
+        # A deduction/advance/bonus records something already granted, not a
+        # future promise.
+        self.deduction_date.setMaximumDate(QDate.currentDate())
         self.deduction_amount = QLineEdit()
         self.deduction_notes = QLineEdit()
         self._apply_field_widths([self.deduction_employee, self.deduction_type, self.deduction_date, self.deduction_amount, self.deduction_notes])
@@ -191,8 +201,7 @@ class HRModule(QWidget):
         deduction_layout.addRow("المبلغ:", self.deduction_amount)
         deduction_layout.addRow("ملاحظات:", self.deduction_notes)
         deduction_layout.addRow(deduction_btn)
-        setup_scroll.setWidget(setup_scroll_widget)
-        tabs.addTab(setup_scroll, "الموظفون")
+        tabs.addTab(setup_scroll_widget, "الموظفون")
 
         # --- Attendance / deductions get their own tab: cramming them under the
         # employee form pushed the payroll controls off the bottom of the window.

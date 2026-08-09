@@ -119,6 +119,59 @@ class DBManager:
             # regardless of how many registers fed into it.
             cursor.execute("ALTER TABLE sales ADD COLUMN cashier_number TEXT")
 
+        # Delivery-app settlements (هنقرستيشن / جاهز وغيرها) get their own
+        # payment_method value now, alongside cash/network/transfer - but a
+        # CHECK constraint's allowed list cannot be altered in place, SQLite
+        # only lets you rebuild the table. Recreated with every column it
+        # already has, all existing rows carried over untouched.
+        if self.table_exists(cursor, 'sales') and not self._table_check_allows(cursor, 'sales', 'Delivery'):
+            cursor.execute("ALTER TABLE sales RENAME TO sales_pre_delivery")
+            cursor.execute("""
+                CREATE TABLE sales (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    branch_id INTEGER,
+                    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    total_amount REAL,
+                    vat_amount REAL,
+                    payment_method TEXT CHECK(payment_method IN ('Cash', 'POS', 'Transfer', 'Delivery')),
+                    cashier_number TEXT,
+                    journal_entry_id INTEGER,
+                    FOREIGN KEY (branch_id) REFERENCES branches(id)
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO sales (id, branch_id, date, total_amount, vat_amount,
+                                    payment_method, cashier_number, journal_entry_id)
+                SELECT id, branch_id, date, total_amount, vat_amount,
+                       payment_method, cashier_number, journal_entry_id
+                FROM sales_pre_delivery
+            """)
+            cursor.execute("DROP TABLE sales_pre_delivery")
+
+        if self.table_exists(cursor, 'sales_returns') and not self._table_check_allows(cursor, 'sales_returns', 'Delivery'):
+            cursor.execute("ALTER TABLE sales_returns RENAME TO sales_returns_pre_delivery")
+            cursor.execute("""
+                CREATE TABLE sales_returns (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    branch_id INTEGER,
+                    date DATETIME DEFAULT CURRENT_TIMESTAMP,
+                    amount REAL DEFAULT 0,
+                    vat_amount REAL DEFAULT 0,
+                    refund_method TEXT CHECK(refund_method IN ('Cash', 'POS', 'Transfer', 'Delivery')),
+                    notes TEXT,
+                    journal_entry_id INTEGER,
+                    FOREIGN KEY (branch_id) REFERENCES branches(id)
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO sales_returns (id, branch_id, date, amount, vat_amount,
+                                            refund_method, notes, journal_entry_id)
+                SELECT id, branch_id, date, amount, vat_amount,
+                       refund_method, notes, journal_entry_id
+                FROM sales_returns_pre_delivery
+            """)
+            cursor.execute("DROP TABLE sales_returns_pre_delivery")
+
         supplier_columns = table_columns('suppliers')
         if 'is_active' not in supplier_columns:
             cursor.execute("ALTER TABLE suppliers ADD COLUMN is_active INTEGER DEFAULT 1")
@@ -235,6 +288,17 @@ class DBManager:
 
     def table_exists(self, cursor, table_name):
         return table_name in self.get_existing_tables(cursor)
+
+    def _table_check_allows(self, cursor, table_name, value):
+        """Whether a table's own CREATE TABLE text already lists `value` in one
+        of its CHECK(... IN (...)) constraints - the only way to tell without
+        parsing SQL properly, since PRAGMA table_info does not expose CHECK
+        clauses at all."""
+        cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table_name,)
+        )
+        row = cursor.fetchone()
+        return bool(row and row[0] and value in row[0])
 
     def execute_query(self, query, params=()):
         # Every method below closes the connection in a finally block, not

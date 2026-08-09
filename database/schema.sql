@@ -12,6 +12,23 @@ CREATE TABLE IF NOT EXISTS app_settings (
     value TEXT
 );
 
+-- Who can open the program and what they can do once inside - see
+-- logic/auth.py. Three roles: admin (everything, including managing other
+-- users), manager (day-to-day operations, no settings or user management),
+-- viewer (read-only everywhere). Passwords are never stored in the clear -
+-- only a salted PBKDF2 hash.
+CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    password_salt TEXT NOT NULL,
+    role TEXT CHECK(role IN ('admin', 'manager', 'viewer')) NOT NULL,
+    display_name TEXT,
+    must_change_password INTEGER DEFAULT 0,
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Employees Table
 CREATE TABLE IF NOT EXISTS employees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -86,7 +103,7 @@ CREATE TABLE IF NOT EXISTS sales (
     date DATETIME DEFAULT CURRENT_TIMESTAMP,
     total_amount REAL,
     vat_amount REAL,
-    payment_method TEXT CHECK(payment_method IN ('Cash', 'POS', 'Transfer')),
+    payment_method TEXT CHECK(payment_method IN ('Cash', 'POS', 'Transfer', 'Delivery')),
     cashier_number TEXT,
     FOREIGN KEY (branch_id) REFERENCES branches(id)
 );
@@ -221,7 +238,7 @@ CREATE TABLE IF NOT EXISTS sales_returns (
     date DATETIME DEFAULT CURRENT_TIMESTAMP,
     amount REAL DEFAULT 0,
     vat_amount REAL DEFAULT 0,
-    refund_method TEXT CHECK(refund_method IN ('Cash', 'POS', 'Transfer')),
+    refund_method TEXT CHECK(refund_method IN ('Cash', 'POS', 'Transfer', 'Delivery')),
     notes TEXT,
     journal_entry_id INTEGER,
     FOREIGN KEY (branch_id) REFERENCES branches(id)

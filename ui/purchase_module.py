@@ -70,6 +70,9 @@ class PurchaseModule(QWidget):
         self.load_suppliers()
 
         self.date_input = QDateEdit(QDate.currentDate())
+        # A purchase cannot happen on a day that has not arrived yet - see
+        # the same fix on the daily sales screen.
+        self.date_input.setMaximumDate(QDate.currentDate())
         self.description_input = QLineEdit()
         self.description_input.setPlaceholderText("مثال: إيجار، كهرباء ...")
 
@@ -182,6 +185,7 @@ class PurchaseModule(QWidget):
             self.return_supplier_input.addItem(s['name'], s['id'])
 
         self.return_date_input = QDateEdit(QDate.currentDate())
+        self.return_date_input.setMaximumDate(QDate.currentDate())
         self.return_amount_input = QLineEdit()
         self.return_method_input = QComboBox()
         self.return_method_input.addItem("استرداد نقدي", "Cash")

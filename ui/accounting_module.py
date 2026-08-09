@@ -13,7 +13,6 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QGridLayout,
     QTabWidget,
-    QScrollArea,
 )
 from PyQt6.QtCore import QDate, Qt
 from logic.accounting import AccountingLogic
@@ -133,15 +132,11 @@ class AccountingModule(QWidget):
             "background:#f8fafc; border:1px solid #dbe3ec; border-radius:12px; padding:14px;"
         )
         self.income_box.setWordWrap(True)
-
-        # Same shape of bug as the trading account tab: unbounded text with
-        # nothing to scroll it, so a short window could clip the bottom lines
-        # clean off - net profit among them.
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setWidget(self.income_box)
-        v.addWidget(scroll, 1)
+        # No scroll area of its own - the whole accounting page already
+        # scrolls as a single unit (see add_page in main_window.py). Giving
+        # this box its own nested one on top of that produced two separate
+        # scrollbars for the same content, one inside the other.
+        v.addWidget(self.income_box)
         return widget
 
     def build_trading_tab(self):
@@ -180,18 +175,8 @@ class AccountingModule(QWidget):
             "background:#f8fafc; border:1px solid #dbe3ec; border-radius:12px; padding:14px;"
         )
         self.trading_box.setWordWrap(True)
-
-        # The result is ten lines - opening inventory through gross profit -
-        # and nothing here bounds how tall it renders. Without its own scroll
-        # area the bottom lines, including the gross profit figure the whole
-        # calculation exists to produce, were cut off flush against the
-        # window edge with no way to reach them; this was reported with a
-        # screenshot ending mid-line at "تكلفة البضاعة المباعة".
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        scroll.setWidget(self.trading_box)
-        v.addWidget(scroll, 1)
+        # No scroll area of its own - see the note in build_income_tab above.
+        v.addWidget(self.trading_box)
         return widget
 
     def build_balance_sheet_tab(self):

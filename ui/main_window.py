@@ -10,14 +10,25 @@ from PyQt6.QtWidgets import (
     QDateEdit,
     QScrollArea,
     QSizePolicy,
+    QLineEdit,
+    QComboBox,
+    QSpinBox,
+    QDoubleSpinBox,
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPalette, QColor
 
 class MainWindow(QMainWindow):
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
+        # Callers that never heard of login (every existing test, and any
+        # future one-off script) get full admin behaviour by default rather
+        # than being forced to construct a user just to open the window.
+        self.current_user = current_user or {
+            "id": None, "username": "admin", "role": "admin",
+            "display_name": "أدمن", "must_change_password": False,
+        }
         self.nav_entries = []
         self.setWindowTitle("نظام إدارة المطعم")
         from logic.paths import set_window_icon
@@ -109,6 +120,20 @@ class MainWindow(QMainWindow):
         self.trial_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.trial_banner.setVisible(False)
         sidebar_layout.addWidget(self.trial_banner)
+        # Reachable regardless of role - unlike everything else about an
+        # account, which lives inside Settings and is admin-only (see
+        # apply_role_restrictions). A manager or viewer still needs a way to
+        # change their own password later, not just the one forced change a
+        # temporary password triggers at login.
+        self.btn_change_password = QPushButton("تغيير كلمة المرور")
+        self.btn_change_password.setFixedHeight(38)
+        self.btn_change_password.setStyleSheet(
+            "QPushButton { background-color: transparent; color: rgba(255,255,255,0.75);"
+            "  border: 1px solid rgba(255,255,255,0.2); border-radius: 10px; font-size: 12px; }"
+            "QPushButton:hover { background-color: rgba(255,255,255,0.10); color: #ffffff; }"
+        )
+        self.btn_change_password.clicked.connect(self.open_change_password_dialog)
+        sidebar_layout.addWidget(self.btn_change_password)
         sidebar_layout.addWidget(self.btn_settings)
 
         layout.addWidget(self.sidebar)
@@ -133,8 +158,16 @@ class MainWindow(QMainWindow):
         # Initialize Modules
         self.init_modules()
         self.normalize_date_fields()
+        self.apply_role_restrictions()
 
         self.set_active_page(0)
+
+    def open_change_password_dialog(self):
+        from ui.change_password_dialog import ChangePasswordDialog
+        user_id = self.current_user.get("id")
+        if user_id is None:
+            return
+        ChangePasswordDialog(self.db, user_id, parent=self).exec()
 
     def normalize_date_fields(self):
         """Qt's default short-date display is locale-dependent and renders as an
@@ -224,16 +257,56 @@ class MainWindow(QMainWindow):
             container.setWidgetResizable(True)
             container.setFrameShape(QScrollArea.Shape.NoFrame)
             container.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            # A QScrollArea's viewport paints the palette's plain grey Window
-            # colour by default, not its parent's. Nothing in a page normally
-            # covers every last pixel up to the scrollbar's own edge, so that
-            # grey showed through as a hard-edged rectangular patch sitting
-            # inside the white, rounded content card - most visible right at
-            # the top corner where the scrollbar starts, next to the page
-            # title. Making both the scroll area and its viewport transparent
-            # lets the white card underneath show through everywhere instead.
-            container.setStyleSheet("QScrollArea { background: transparent; }")
-            container.viewport().setStyleSheet("background: transparent;")
+            # Both the QScrollArea's own viewport AND the page widget it wraps
+            # paint the palette's plain grey Window colour wherever nothing
+            # else covers a pixel - a label's own background is transparent,
+            # so it is the page widget behind it that actually shows through
+            # its padding and the gaps between widgets. Every page lives
+            # inside the white, rounded content card, so any such gap showed
+            # as a hard-edged grey patch against it - most visible right at
+            # the top corner next to the page title, where the scrollbar
+            # starts. Fixed through the palette, not setStyleSheet(): giving
+            # *any* widget its own stylesheet - even a one-line "background:
+            # transparent" - makes Qt stop cascading the app-wide QSS to
+            # everything below it in that subtree, which silently strips
+            # every button inside the page back to an unstyled, textless
+            # outline (found rendering the delivery-apps sales field this
+            # way). The palette has no such side effect.
+            white = QPalette(container.viewport().palette())
+            white.setColor(QPalette.ColorRole.Window, QColor("#ffffff"))
+            container.viewport().setPalette(white)
+            container.setPalette(white)
+            widget.setPalette(white)
+            widget.setAutoFillBackground(True)
+            # setWidgetResizable(True) is supposed to keep the widget's width
+            # pinned to the viewport's, but Qt only re-checks that on an
+            # actual resize *event* - the viewport can narrow (a scrollbar
+            # appearing) or the widget's own sizeHint can change (switching
+            # a QTabWidget's tab, a table gaining rows) with nothing telling
+            # the widget to match. It keeps its old, wider size and gets
+            # anchored under RTL with a large *negative* x offset instead of
+            # flush against the near edge - reported live: entire form
+            # fields and whole buttons pushed off the left of the window,
+            # unreachable, since horizontal scrolling is deliberately off
+            # (see above). Pinned from two angles so neither trigger is
+            # missed: the viewport's own resize (covers a window resize or a
+            # scrollbar toggling), and explicitly whenever a page is actually
+            # shown (covers everything else - a tab switch, a table
+            # growing - since Qt does not guarantee the resize fires
+            # synchronously inside whatever triggered it).
+            policy = widget.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+            widget.setSizePolicy(policy)
+            viewport = container.viewport()
+            original_viewport_resize = viewport.resizeEvent
+
+            def _pin_widget_width(event, viewport=viewport, widget=widget,
+                                   original=original_viewport_resize):
+                original(event)
+                if widget.width() != viewport.width():
+                    widget.resize(viewport.width(), widget.height())
+
+            viewport.resizeEvent = _pin_widget_width
             container.setWidget(widget)
         else:
             container = widget
@@ -258,6 +331,20 @@ class MainWindow(QMainWindow):
         refresh = getattr(entry["page"], "refresh_on_show", None)
         if callable(refresh):
             refresh()
+        # refresh() can grow a page's own content (a table gaining rows, a
+        # QTabWidget switching to a wider tab) enough to change how wide the
+        # page wants to be, without the window itself ever resizing. The
+        # viewport's own resize handler (see add_page) catches most of that,
+        # but Qt does not guarantee it fires synchronously inside refresh()
+        # itself - re-checked here too, right as the page is actually about
+        # to be shown, the point where a stale, mismatched width would
+        # otherwise get anchored off screen under RTL.
+        container = self.content_stack.widget(index)
+        if isinstance(container, QScrollArea):
+            page_widget = container.widget()
+            viewport_width = container.viewport().width()
+            if page_widget is not None and page_widget.width() != viewport_width:
+                page_widget.resize(viewport_width, page_widget.height())
 
     def init_modules(self):
         from ui.dashboard import DashboardModule
@@ -281,7 +368,7 @@ class MainWindow(QMainWindow):
         self.suppliers = SuppliersModule(self.db)
         self.customers = CustomersModule(self.db)
         self.reports = ReportsModule(self.db)
-        self.settings = SettingsModule(self.db)
+        self.settings = SettingsModule(self.db, current_user=self.current_user)
         self.accounting = AccountingModule(self.db)
         self.other_balances = OtherBalancesModule(self.db)
 
@@ -309,3 +396,43 @@ class MainWindow(QMainWindow):
         self.add_page("accounting", self.accounting)
         self.add_page("other_balances", self.other_balances)
         self.add_page("settings", self.settings)
+
+    def apply_role_restrictions(self):
+        """Settings - company info, backup, the licence, and the user list
+        itself - is an admin-only area: a manager or viewer never sees the
+        nav button at all, let alone what is behind it. A viewer additionally
+        cannot change anything anywhere else either - every button, text
+        field, dropdown and date picker on every other page is disabled,
+        leaving tables and labels exactly as readable as before. Dashboard
+        and reports are exempt: neither has anything that mutates data in
+        the first place - a dropdown that only changes what a filter shows,
+        or a report/print button, are not something a viewer needs blocked
+        from using."""
+        role = self.current_user.get("role")
+        if role != "admin":
+            self.btn_settings.setVisible(False)
+        if role == "viewer":
+            for entry in self.nav_entries:
+                if entry["label"] in ("dashboard", "reports"):
+                    continue
+                self._lock_page_for_viewing(entry["page"])
+
+    def _lock_page_for_viewing(self, page):
+        # A handful of verbs that only ever look at data, never change it -
+        # printing or exporting a report, refreshing a list, searching it.
+        safe_keywords = ("طباعة", "تصدير", "تحديث", "نسخ", "بحث")
+        for button in page.findChildren(QPushButton):
+            if any(word in button.text() for word in safe_keywords):
+                continue
+            button.setEnabled(False)
+        for field in page.findChildren(QLineEdit):
+            if not field.isReadOnly():
+                field.setEnabled(False)
+        for combo in page.findChildren(QComboBox):
+            combo.setEnabled(False)
+        for date_edit in page.findChildren(QDateEdit):
+            date_edit.setEnabled(False)
+        for spin in page.findChildren(QSpinBox):
+            spin.setEnabled(False)
+        for spin in page.findChildren(QDoubleSpinBox):
+            spin.setEnabled(False)
