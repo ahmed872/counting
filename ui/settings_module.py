@@ -514,7 +514,23 @@ class SettingsModule(QWidget):
         if not path:
             return
         try:
-            shutil.copyfile(self.db.db_path, path)
+            # SQLite's own backup API, not a raw file copy: a plain
+            # shutil.copyfile can catch the live file mid-write (SQLite's
+            # write lock only ever holds for the instant of one statement,
+            # but that instant is real) and hand back a half-written,
+            # unopenable file. backup() is built for exactly this - a
+            # consistent snapshot of the database as it stands, safe to
+            # take while the app is being used normally.
+            import sqlite3
+            source = sqlite3.connect(self.db.db_path)
+            try:
+                dest = sqlite3.connect(path)
+                try:
+                    source.backup(dest)
+                finally:
+                    dest.close()
+            finally:
+                source.close()
             QMessageBox.information(self, "تم", f"تم حفظ النسخة الاحتياطية في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))

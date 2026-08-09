@@ -1121,6 +1121,92 @@ def main():
     check("a failure mid-write rolls back completely, not partially",
           a_crash_mid_write_leaves_nothing_partial)
 
+    def every_connection_sets_a_busy_timeout():
+        """Every db_manager method opens and closes its own connection
+        around one short statement, so two writes can only ever overlap by
+        a hair - but SQLite's default busy timeout is 0, so even that
+        brief a collision throws "database is locked" immediately instead
+        of waiting the other one out. Asked live, before final delivery, to
+        confirm rapid concurrent entry cannot surface that error - checked
+        that every connection actually carries a real timeout, not just
+        the default."""
+        conn = db.get_connection()
+        try:
+            timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        finally:
+            conn.close()
+        assert timeout_ms > 0, \
+            f"connections still use SQLite's default busy timeout ({timeout_ms}ms) - " \
+            f"any overlap fails immediately instead of retrying"
+    check("every database connection sets a real busy timeout, not SQLite's default of zero",
+          every_connection_sets_a_busy_timeout)
+
+    def backup_produces_a_real_independent_snapshot():
+        """The manual "حفظ نسخة احتياطية" button used to shutil.copyfile the
+        live .db file directly - safe almost always, since every write here
+        commits and closes within milliseconds, but a raw copy has no way
+        to guarantee it never lands in that instant. Asked live, before
+        final delivery, whether a backup can corrupt if taken while a
+        transaction is active - fixed to go through SQLite's own backup API
+        (Connection.backup()) instead, which is built to hand back a
+        consistent snapshot regardless of what the source connection is
+        doing. Checked end to end through the real button: click it, and
+        confirm the file it wrote is a genuinely independent, valid SQLite
+        database carrying the data that existed at the time - not a
+        reference to the same file, and not a corrupt stub."""
+        import sqlite3
+        from ui.settings_module import SettingsModule
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db)
+        backup_path = os.path.join(tempfile.gettempdir(), "_erp_backup_test.db")
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+
+        original_get_save = QFileDialog.getSaveFileName
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.backup()
+            assert os.path.exists(backup_path), "the backup button did not write any file"
+            assert os.path.abspath(backup_path) != os.path.abspath(db.db_path), \
+                "the backup path is the live database itself, not a copy"
+            conn = sqlite3.connect(backup_path)
+            try:
+                tables = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                assert "users" in tables and "sales" in tables, \
+                    f"the backup file is missing expected tables: {tables}"
+            finally:
+                conn.close()
+        finally:
+            QFileDialog.getSaveFileName = original_get_save
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+    check("the backup button writes a real, independent, valid SQLite snapshot",
+          backup_produces_a_real_independent_snapshot)
+
+    def backup_never_regresses_to_a_raw_file_copy():
+        """The functional check above (a real, valid, independent snapshot)
+        cannot by itself tell a proper SQLite backup from a plain
+        shutil.copyfile - both produce a perfectly good file as long as
+        nothing else happens to be writing at that exact instant, which is
+        true almost all of the time either way. The actual gap between them
+        only shows up in the rare case a write is genuinely in flight, which
+        is not something worth trying to race in a test. Guarded here
+        directly instead: the source must call sqlite3's own backup(), and
+        must not call shutil.copyfile against the live database path at
+        all - not even a reversion this is checking for, since that pattern
+        is exactly what silently reintroduces the corruption window."""
+        import re
+        import inspect
+        from ui.settings_module import SettingsModule
+        source_text = inspect.getsource(SettingsModule.backup)
+        assert re.search(r"shutil\.copyfile\(\s*self\.db\.db_path", source_text) is None, \
+            "backup() calls shutil.copyfile on the live database again - the corruption window is back"
+        assert ".backup(" in source_text, \
+            "backup() does not appear to use sqlite3's Connection.backup() API at all"
+    check("the backup button's source never regresses to a raw file copy of the live database",
+          backup_never_regresses_to_a_raw_file_copy)
+
     def purchase_return_credits_the_right_account():
         """Every return used to credit Inventory (1100) no matter what was
         actually being returned - refunding an operating expense quietly

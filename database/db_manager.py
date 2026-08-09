@@ -17,6 +17,16 @@ class DBManager:
         # that was never created. Both are quiet corruption that nothing in
         # the app would ever notice, because nothing was ever checking.
         conn.execute("PRAGMA foreign_keys = ON")
+        # Every method below already opens and closes its own connection
+        # around one short statement (or one transaction), so two writes can
+        # only ever overlap by a hair. Python's sqlite3 module already
+        # defaults new connections to a 5-second busy timeout on its own
+        # (sqlite3.connect()'s own `timeout` parameter, separate from and
+        # easy to confuse with SQLite's C-level default of 0) - explicit
+        # here so that stays true regardless of what Python's own default
+        # happens to be on a given version, rather than depending on it
+        # silently.
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     def init_db(self):
