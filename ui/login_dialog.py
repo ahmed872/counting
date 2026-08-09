@@ -36,18 +36,27 @@ class LoginDialog(QDialog):
         from logic.paths import set_window_icon
         set_window_icon(self)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setMinimumWidth(420)
+        self.setMinimumWidth(480)
+        # An explicit white background - a QDialog otherwise paints the
+        # palette's plain grey Window colour, which read as unfinished
+        # sitting on top of the desktop rather than a proper card.
+        self.setStyleSheet("QDialog { background-color: #ffffff; }")
         self.build()
 
     def build(self):
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 20, 22, 18)
-        layout.setSpacing(14)
+        layout.setContentsMargins(36, 32, 36, 28)
+        layout.setSpacing(18)
 
         title = QLabel("نظام إدارة المطعم")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 21px; font-weight: 800; color: #1f3b57;")
+        title.setStyleSheet("font-size: 22px; font-weight: 800; color: #1f3b57;")
         layout.addWidget(title)
+
+        subtitle = QLabel("سجّل دخولك للمتابعة")
+        subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        subtitle.setStyleSheet("color:#64748b; font-size:13px;")
+        layout.addWidget(subtitle)
 
         self.stack = QStackedWidget()
         layout.addWidget(self.stack)
@@ -62,7 +71,7 @@ class LoginDialog(QDialog):
     def _build_login_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setSpacing(10)
+        layout.setSpacing(14)
 
         layout.addWidget(self._field_label("اسم المستخدم"))
         self.username_field = QLineEdit()
@@ -90,7 +99,7 @@ class LoginDialog(QDialog):
     def _build_change_password_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setSpacing(10)
+        layout.setSpacing(14)
 
         notice = QLabel(
             "هذه كلمة مرور مؤقتة - اختر كلمة مرور جديدة خاصة بك لإكمال الدخول."
