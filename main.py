@@ -129,7 +129,15 @@ def main():
 
     days_left = enforce_trial(db)
 
-    window = MainWindow(db)
+    from logic.auth import AuthLogic
+    from ui.login_dialog import LoginDialog
+
+    AuthLogic(db).ensure_default_admins()
+    login = LoginDialog(db)
+    if login.exec() != login.DialogCode.Accepted or login.authenticated_user is None:
+        sys.exit(0)
+
+    window = MainWindow(db, current_user=login.authenticated_user)
     window.set_trial_banner(days_left)
     window.show()
 

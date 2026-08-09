@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QComboBox,
     QTableWidget,
     QTableWidgetItem,
     QHeaderView,
@@ -20,16 +21,20 @@ from PyQt6.QtWidgets import (
     QFileDialog,
 )
 from logic.money import parse_money
+from logic.auth import AuthLogic, ROLE_ADMIN, ROLE_LABELS, ASSIGNABLE_ROLES
 
 OPENING_ENTRY_KEY = "opening_balance_entry_id"
 
 
 class SettingsModule(QWidget):
-    """Company details, opening balances, branches, and backup/restore."""
+    """Company details, opening balances, branches, backup/restore, and -
+    admin only - the user list."""
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
+        self.current_user = current_user or {"role": ROLE_ADMIN}
+        self.auth = AuthLogic(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -51,9 +56,146 @@ class SettingsModule(QWidget):
         layout.addWidget(self.build_backup_box())
         layout.addWidget(self.build_manual_box())
         layout.addWidget(self.build_licence_box())
+        # Settings is already an admin-only page (see apply_role_restrictions
+        # in main_window.py) - this box is not reachable by a manager or
+        # viewer at all, but the check stays here too rather than trusting
+        # that alone, since a page's own module has no way to know whether a
+        # future screen starts embedding it somewhere that check does not
+        # cover.
+        if self.current_user.get("role") == ROLE_ADMIN:
+            layout.addWidget(self.build_users_box())
         layout.addStretch()
 
         self.load_all()
+
+    # ---------------- users ----------------
+
+    def build_users_box(self):
+        box = QGroupBox("المستخدمون")
+        outer = QVBoxLayout(box)
+
+        note = QLabel(
+            "أضف مستخدمًا «مسئول» (صلاحية كاملة على الشاشات عدا الإعدادات) أو «مراقب» "
+            "(عرض فقط، بدون أي إضافة أو تعديل)."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#64748b;")
+        outer.addWidget(note)
+
+        form = QFormLayout()
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setSpacing(16)
+        self.new_username = QLineEdit()
+        self.new_display_name = QLineEdit()
+        self.new_password = QLineEdit()
+        self.new_password.setEchoMode(QLineEdit.EchoMode.Password)
+        self.new_role = QComboBox()
+        for role in ASSIGNABLE_ROLES:
+            self.new_role.addItem(ROLE_LABELS[role], role)
+        form.addRow("اسم المستخدم:", self.new_username)
+        form.addRow("الاسم الظاهر:", self.new_display_name)
+        form.addRow("كلمة المرور المبدئية:", self.new_password)
+        form.addRow("الصلاحية:", self.new_role)
+        outer.addLayout(form)
+
+        add_btn = QPushButton("إضافة مستخدم")
+        add_btn.clicked.connect(self.add_user)
+        outer.addWidget(add_btn)
+
+        self.users_table = QTableWidget()
+        self.users_table.setColumnCount(4)
+        self.users_table.setHorizontalHeaderLabels(
+            ["اسم المستخدم", "الاسم الظاهر", "الصلاحية", "الحالة"])
+        self.users_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.users_table.verticalHeader().setVisible(False)
+        self.users_table.setAlternatingRowColors(True)
+        self.users_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.users_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.users_table.setMinimumHeight(120)
+        outer.addWidget(self.users_table)
+
+        actions_row = QHBoxLayout()
+        actions_row.setSpacing(8)
+        reset_btn = QPushButton("إعادة تعيين كلمة مرور المستخدم المحدد")
+        reset_btn.clicked.connect(self.reset_selected_password)
+        toggle_btn = QPushButton("تفعيل/تعطيل المستخدم المحدد")
+        toggle_btn.setStyleSheet(
+            "QPushButton { background-color:#64748b; border:1px solid #475569; }"
+            "QPushButton:hover { background-color:#475569; border:1px solid #334155; }"
+        )
+        toggle_btn.clicked.connect(self.toggle_selected_active)
+        actions_row.addWidget(reset_btn, 2)
+        actions_row.addWidget(toggle_btn, 1)
+        outer.addLayout(actions_row)
+
+        return box
+
+    def add_user(self):
+        username = self.new_username.text().strip()
+        display_name = self.new_display_name.text().strip()
+        password = self.new_password.text()
+        role = self.new_role.currentData()
+        try:
+            # A default account only ever needs to work once - the same
+            # forced-change-on-first-login flow the two seed admins get.
+            self.auth.create_user(username, password, role, display_name,
+                                   must_change_password=True)
+        except ValueError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
+            return
+        QMessageBox.information(
+            self, "تم",
+            f"تمت إضافة المستخدم «{username}». سيُطلب منه تغيير كلمة المرور عند أول دخول.",
+        )
+        self.new_username.clear()
+        self.new_display_name.clear()
+        self.new_password.clear()
+        self.load_users()
+
+    def _selected_user_id(self):
+        row = self.users_table.currentRow()
+        if row < 0:
+            QMessageBox.warning(self, "تنبيه", "اختر مستخدماً من الجدول أولاً")
+            return None
+        return self.users_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
+
+    def reset_selected_password(self):
+        user_id = self._selected_user_id()
+        if user_id is None:
+            return
+        from PyQt6.QtWidgets import QInputDialog
+        new_password, ok = QInputDialog.getText(
+            self, "إعادة تعيين كلمة المرور", "كلمة المرور الجديدة المبدئية:",
+            QLineEdit.EchoMode.Password)
+        if not ok or not new_password:
+            return
+        self.auth.set_password(user_id, new_password, must_change_password=True)
+        QMessageBox.information(self, "تم", "تم إعادة تعيين كلمة المرور.")
+
+    def toggle_selected_active(self):
+        row = self.users_table.currentRow()
+        user_id = self._selected_user_id()
+        if user_id is None:
+            return
+        currently_active = self.users_table.item(row, 3).data(Qt.ItemDataRole.UserRole)
+        self.auth.set_active(user_id, not currently_active)
+        self.load_users()
+
+    def load_users(self):
+        users = self.auth.list_users()
+        self.users_table.setRowCount(len(users))
+        for row, user in enumerate(users):
+            username_item = QTableWidgetItem(user["username"])
+            username_item.setData(Qt.ItemDataRole.UserRole, user["id"])
+            self.users_table.setItem(row, 0, username_item)
+            self.users_table.setItem(row, 1, QTableWidgetItem(user["display_name"] or ""))
+            self.users_table.setItem(row, 2, QTableWidgetItem(ROLE_LABELS.get(user["role"], user["role"])))
+            status_text = "نشط" if user["is_active"] else "معطّل"
+            if user["must_change_password"]:
+                status_text += " (كلمة مرور مؤقتة)"
+            status_item = QTableWidgetItem(status_text)
+            status_item.setData(Qt.ItemDataRole.UserRole, bool(user["is_active"]))
+            self.users_table.setItem(row, 3, status_item)
 
     # ---------------- company ----------------
 
@@ -416,6 +558,8 @@ class SettingsModule(QWidget):
         self.company_tax.setText(self.db.get_setting("company_tax_number", "") or "")
         self.load_opening()
         self.load_branches()
+        if self.current_user.get("role") == ROLE_ADMIN:
+            self.load_users()
 
     def refresh_on_show(self):
         self.load_all()

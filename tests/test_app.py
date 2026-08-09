@@ -1673,6 +1673,305 @@ def main():
                 pass
     check("Arabic digits and separators are understood", arabic_digits_are_accepted)
 
+    # ---------------- login and roles ----------------
+    print("\n[auth]")
+
+    def password_hashing_round_trips_and_never_stores_the_clear_text():
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("hash_test_user", "correct-horse", "viewer", "اختبار")
+        row = db.fetch_one("SELECT password_hash FROM users WHERE id = ?", (uid,))
+        assert "correct-horse" not in row["password_hash"], \
+            "the clear-text password ended up in the stored hash"
+        assert auth.authenticate("hash_test_user", "correct-horse") is not None
+        assert auth.authenticate("hash_test_user", "wrong-password") is None, \
+            "a wrong password was accepted"
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("a password is hashed, never stored in the clear, and a wrong one is rejected",
+          password_hashing_round_trips_and_never_stores_the_clear_text)
+
+    def unknown_username_and_wrong_password_look_identical():
+        """A login attempt must not be usable to probe which usernames exist -
+        both failures return exactly None, with no distinguishing detail."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        assert auth.authenticate("this_user_does_not_exist_at_all", "anything") is None
+        uid = auth.create_user("probe_test_user", "real-password", "viewer")
+        assert auth.authenticate("probe_test_user", "wrong") is None
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("an unknown username and a wrong password fail the same way",
+          unknown_username_and_wrong_password_look_identical)
+
+    def deactivated_user_cannot_log_in():
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("deactivated_test_user", "somepassword", "viewer")
+        assert auth.authenticate("deactivated_test_user", "somepassword") is not None
+        auth.set_active(uid, False)
+        assert auth.authenticate("deactivated_test_user", "somepassword") is None, \
+            "a deactivated user could still log in"
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("a deactivated user cannot log in even with the right password",
+          deactivated_user_cannot_log_in)
+
+    def default_admin_seats_are_seeded_once_on_an_empty_users_table():
+        """Both need a working way in before anyone has created a single
+        account by hand - one for whoever supports the program, one for the
+        restaurant's own owner - each with a temporary password they are
+        forced to change the first time they log in. Must never re-seed (and
+        so never reset anything) once a real account already exists."""
+        from logic.auth import AuthLogic
+        temp_path = DB_PATH + ".auth_seed_test"
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        fresh_db = DBManager(temp_path)
+        try:
+            auth = AuthLogic(fresh_db)
+            auth.ensure_default_admins()
+            users = auth.list_users()
+            assert len(users) == 2, f"expected exactly 2 seeded accounts, found {len(users)}"
+            assert all(u["role"] == "admin" for u in users)
+            assert all(u["must_change_password"] for u in users), \
+                "a seeded admin account did not require a password change"
+            usernames = {u["username"] for u in users}
+            assert usernames == {"ahmed_admin", "admin"}, usernames
+
+            # Seeding again (simulating a second startup) must not touch
+            # anything, or a manually-added account count could get reset.
+            auth.ensure_default_admins()
+            assert len(auth.list_users()) == 2, "seeding ran a second time"
+        finally:
+            fresh_db = None
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    check("the two admin seats are seeded once on a fresh database, never again",
+          default_admin_seats_are_seeded_once_on_an_empty_users_table)
+
+    def an_existing_pre_login_database_gets_the_seed_admins_too():
+        """Every customer database that already existed before this feature
+        shipped has no users table at all - opening it must not lock them
+        out. schema.sql's CREATE TABLE IF NOT EXISTS runs unconditionally on
+        every startup (see DBManager.init_db), so the table itself appears
+        automatically; this checks the seeding on top of that actually
+        happens for a database that starts out with zero users, the same as
+        any pre-existing install would."""
+        from logic.auth import AuthLogic
+        temp_path = DB_PATH + ".auth_upgrade_test"
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        import sqlite3
+        # A database with real tables but genuinely no users table yet -
+        # exactly what every customer's install looks like before this
+        # feature shipped to them.
+        conn = sqlite3.connect(temp_path)
+        conn.execute("CREATE TABLE branches (id INTEGER PRIMARY KEY, name TEXT, location TEXT)")
+        conn.execute("INSERT INTO branches (id, name, location) VALUES (1, 'الفرع الرئيسي', '')")
+        conn.commit()
+        conn.close()
+        try:
+            upgraded_db = DBManager(temp_path)
+            auth = AuthLogic(upgraded_db)
+            auth.ensure_default_admins()
+            assert len(auth.list_users()) == 2, \
+                "an existing pre-login database was not seeded with admin accounts"
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    check("an existing database from before this feature shipped still gets both admin seats",
+          an_existing_pre_login_database_gets_the_seed_admins_too)
+
+    def admin_can_create_a_manager_or_viewer_who_can_then_log_in():
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("new_manager_test", "startpass1", "manager", "مسئول تجريبي",
+                               must_change_password=True)
+        user = auth.authenticate("new_manager_test", "startpass1")
+        assert user is not None
+        assert user["role"] == "manager"
+        assert user["must_change_password"] is True
+        try:
+            auth.create_user("new_manager_test", "anything", "viewer")
+            raise AssertionError("a duplicate username was accepted")
+        except ValueError:
+            pass
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("an admin can create a manager/viewer account, and usernames cannot repeat",
+          admin_can_create_a_manager_or_viewer_who_can_then_log_in)
+
+    def forced_password_change_replaces_the_temporary_one():
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("forced_change_test", "temp-pass-1", "viewer",
+                               must_change_password=True)
+        auth.set_password(uid, "my-real-password", must_change_password=False)
+        assert auth.authenticate("forced_change_test", "temp-pass-1") is None, \
+            "the old temporary password still works"
+        user = auth.authenticate("forced_change_test", "my-real-password")
+        assert user is not None and user["must_change_password"] is False
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("setting a new password replaces the temporary one and clears the forced-change flag",
+          forced_password_change_replaces_the_temporary_one)
+
+    def changing_your_own_password_needs_the_current_one():
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("self_change_test", "old-password", "viewer")
+        try:
+            auth.change_own_password(uid, "wrong-current-password", "new-password")
+            raise AssertionError("changed the password without the correct current one")
+        except ValueError:
+            pass
+        auth.change_own_password(uid, "old-password", "new-password")
+        assert auth.authenticate("self_change_test", "new-password") is not None
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("changing your own password requires knowing the current one",
+          changing_your_own_password_needs_the_current_one)
+
+    def viewer_role_can_look_but_cannot_touch_anything():
+        """A مراقب can open every page and read every table, but every button,
+        text field, dropdown and date picker that could change something is
+        disabled - except on the dashboard and the reports page, neither of
+        which has anything that mutates data in the first place."""
+        from logic.auth import AuthLogic
+        from PyQt6.QtWidgets import QPushButton, QLineEdit, QComboBox
+        auth = AuthLogic(db)
+        uid = auth.create_user("viewer_role_test", "viewerpass1", "viewer")
+        viewer_user = auth.authenticate("viewer_role_test", "viewerpass1")
+        viewer_window = MainWindow(db, current_user=viewer_user)
+        viewer_window.show()
+        app.processEvents()
+        app.processEvents()
+        try:
+            assert not viewer_window.btn_settings.isVisible(), \
+                "a viewer can still see the Settings nav button"
+
+            save_btn = next(b for b in viewer_window.sales.findChildren(QPushButton)
+                            if b.text() == "حفظ مبيعات اليوم")
+            assert not save_btn.isEnabled(), "a viewer's save button on Sales is still enabled"
+            assert not viewer_window.sales.cash_input.isEnabled(), \
+                "a viewer's amount field on Sales is still enabled"
+
+            add_employee_btn = viewer_window.hr.save_btn
+            assert not add_employee_btn.isEnabled(), \
+                "a viewer's add-employee button on HR is still enabled"
+
+            # Dashboard and reports are exempt - nothing there mutates data.
+            assert viewer_window.dashboard.threshold_input.isEnabled(), \
+                "the dashboard's view filter should stay usable for a viewer"
+        finally:
+            viewer_window.close()
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("a viewer sees every page but cannot touch any button or field, except safe filters",
+          viewer_role_can_look_but_cannot_touch_anything)
+
+    def manager_role_has_full_operational_access_but_no_settings():
+        from logic.auth import AuthLogic
+        from PyQt6.QtWidgets import QPushButton
+        auth = AuthLogic(db)
+        uid = auth.create_user("manager_role_test", "managerpass1", "manager")
+        manager_user = auth.authenticate("manager_role_test", "managerpass1")
+        manager_window = MainWindow(db, current_user=manager_user)
+        manager_window.show()
+        app.processEvents()
+        app.processEvents()
+        try:
+            assert not manager_window.btn_settings.isVisible(), \
+                "a manager can still see the Settings nav button"
+            save_btn = next(b for b in manager_window.sales.findChildren(QPushButton)
+                            if b.text() == "حفظ مبيعات اليوم")
+            assert save_btn.isEnabled(), "a manager's save button on Sales is disabled"
+            assert manager_window.sales.cash_input.isEnabled(), \
+                "a manager's amount field on Sales is disabled"
+        finally:
+            manager_window.close()
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("a manager keeps full operational access but never sees Settings",
+          manager_role_has_full_operational_access_but_no_settings)
+
+    def admin_sees_settings_and_the_user_list_inside_it():
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("admin_role_test", "adminpass1", "admin")
+        admin_user = auth.authenticate("admin_role_test", "adminpass1")
+        admin_window = MainWindow(db, current_user=admin_user)
+        admin_window.show()
+        app.processEvents()
+        app.processEvents()
+        try:
+            assert admin_window.btn_settings.isVisible(), "an admin cannot see Settings at all"
+            assert hasattr(admin_window.settings, "users_table"), \
+                "an admin's Settings page has no user-management box"
+        finally:
+            admin_window.close()
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("an admin sees Settings, including the user-management box inside it",
+          admin_sees_settings_and_the_user_list_inside_it)
+
+    def settings_module_hides_the_users_box_for_non_admins():
+        """Settings being admin-only is already enforced one level up (the nav
+        button itself is hidden - see the viewer/manager checks above), but
+        the module does not trust that alone: if it is ever embedded
+        somewhere that check does not cover, a non-admin still must not get
+        a user-management box with no such check of its own."""
+        from ui.settings_module import SettingsModule
+        viewer_settings = SettingsModule(db, current_user={"role": "viewer"})
+        assert not hasattr(viewer_settings, "users_table"), \
+            "a viewer's own Settings module still built the user-management box"
+    check("SettingsModule itself never builds the user box for a non-admin",
+          settings_module_hides_the_users_box_for_non_admins)
+
+    def login_dialog_end_to_end_including_the_forced_password_change():
+        """Drives the actual LoginDialog widget, not just the AuthLogic
+        behind it - a wrong password shows an error and stays open; the
+        right (temporary) password switches to the change-password step
+        instead of logging in directly; a mismatched confirmation is
+        rejected; and completing the step actually logs in as that user."""
+        from ui.login_dialog import LoginDialog
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("login_dialog_test", "temp-pass-1", "viewer",
+                               must_change_password=True)
+        try:
+            dialog = LoginDialog(db)
+            dialog.show()
+            app.processEvents()
+            app.processEvents()
+            dialog.username_field.setText("login_dialog_test")
+            dialog.password_field.setText("wrong-password")
+            dialog.try_login()
+            assert dialog.authenticated_user is None, "a wrong password logged in anyway"
+            assert dialog.login_status.isVisible()
+            assert dialog.stack.currentIndex() == 0, \
+                "a wrong password advanced past the login step"
+
+            dialog.password_field.setText("temp-pass-1")
+            dialog.try_login()
+            assert dialog.authenticated_user is None, \
+                "a temporary password logged in without forcing a change"
+            assert dialog.stack.currentIndex() == 1, \
+                "a temporary password did not move to the change-password step"
+
+            dialog.new_password_field.setText("brand-new-pass")
+            dialog.confirm_password_field.setText("does-not-match")
+            dialog.try_change_password()
+            assert dialog.authenticated_user is None, \
+                "mismatched password confirmation was accepted anyway"
+
+            dialog.confirm_password_field.setText("brand-new-pass")
+            dialog.try_change_password()
+            assert dialog.authenticated_user is not None
+            assert dialog.authenticated_user["username"] == "login_dialog_test"
+            assert dialog.authenticated_user["must_change_password"] is False
+
+            assert auth.authenticate("login_dialog_test", "temp-pass-1") is None, \
+                "the old temporary password still works after the dialog changed it"
+            assert auth.authenticate("login_dialog_test", "brand-new-pass") is not None
+        finally:
+            dialog.close()
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("the login dialog rejects a wrong password and forces a real one past a temporary login",
+          login_dialog_end_to_end_including_the_forced_password_change)
+
     # ---------------- what actually ships ----------------
     print("\n[release]")
 
