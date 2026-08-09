@@ -334,6 +334,61 @@ def main():
     check("a posted month's payroll is a frozen snapshot, not a live recalculation",
           posted_payroll_is_a_frozen_snapshot)
 
+    def payroll_table_shows_every_employee_not_just_the_first_few():
+        """The owner's own screenshot: three employees in ملخص الرواتب,
+        only two visible - the table was boxed into a fixed height with its
+        own small internal scrollbar. It must now grow to fit every row
+        (fit_table_height), with the page around it scrolling instead."""
+        emp_ids = []
+        for i in range(3):
+            emp_ids.append(db.insert_and_return_id(
+                "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+                "VALUES (?,?,?,?,?)", (f"موظف جدول الرواتب {i}", "عامل", 1, 3000, 0)))
+        try:
+            goto("hr")
+            hr = window.hr
+            from PyQt6.QtWidgets import QTabWidget
+            tabs = hr.findChild(QTabWidget)
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == "الرواتب":
+                    tabs.setCurrentIndex(i)
+            # An unposted month: the current month was already posted by an
+            # earlier check, and a posted month shows its frozen snapshot,
+            # not these employees created just now.
+            hr.payroll_month.setCurrentIndex(hr.payroll_month.findData(9))
+            hr.payroll_year.setText("2026")
+            hr.refresh_payroll()
+            for _ in range(3):
+                app.processEvents()
+
+            assert hr.payroll_table.verticalScrollBar().maximum() == 0, \
+                "the payroll table still needs its own internal scrollbar"
+            assert hr.payroll_table.rowCount() >= 3, hr.payroll_table.rowCount()
+
+            names_shown = {hr.payroll_table.item(r, 0).text() for r in range(hr.payroll_table.rowCount())}
+            for i in range(3):
+                assert f"موظف جدول الرواتب {i}" in names_shown, \
+                    f"موظف جدول الرواتب {i} is in the table's data but not shown"
+
+            # And the row is actually visible on screen, not just present in
+            # the model - the whole point of the page-level scroll.
+            scroll = None
+            node = hr.payroll_table.parentWidget()
+            while node is not None:
+                if isinstance(node, QScrollArea):
+                    scroll = node
+                    break
+                node = node.parentWidget()
+            assert scroll is not None, "the hr page has no page-level scroll area"
+        finally:
+            for emp_id in emp_ids:
+                db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+            hr.payroll_month.setCurrentIndex(QDate.currentDate().month() - 1)
+            hr.payroll_year.setText(str(QDate.currentDate().year()))
+            window.hr.refresh_payroll()
+    check("the payroll summary table shows every employee, not hidden behind its own scrollbar",
+          payroll_table_shows_every_employee_not_just_the_first_few)
+
     def payroll_posted_as_owed_credits_accrued_wages_not_cash():
         """Posting used to always assume the net pay left the register on the
         spot. paid_now=False must credit 2200 (رواتب مستحقة الدفع) instead
@@ -1306,7 +1361,16 @@ def main():
                     if bottom > window.height() + 4 and not reachable(btn):
                         bad.append((f"{page}@{width}x{height}", "زر " + btn.text()[:22]))
                 for table in widget.findChildren(QTableWidget):
-                    if table.isVisible() and table.height() < 100 and not reachable(table):
+                    if not table.isVisible() or table.height() >= 100:
+                        continue
+                    # A short table is only a problem if it is actually cut
+                    # off the bottom of the window - tables now size to their
+                    # own content (see fit_table_height), so a genuinely
+                    # empty one is legitimately ~90px and, on a page short
+                    # enough to need no scrolling at all, is already fully
+                    # on screen. The same gate the button check above uses.
+                    bottom = table.mapTo(window, table.rect().bottomLeft()).y()
+                    if bottom > window.height() + 4 and not reachable(table):
                         bad.append((f"{page}@{width}x{height}", f"جدول {table.height()}px"))
         window.resize(1280, 720)
         for _ in range(4):
@@ -2085,6 +2149,114 @@ def main():
             app.setWindowIcon(original)
     check("every top-level window sets its own taskbar icon, not just the application default",
           every_top_level_window_sets_its_own_taskbar_icon)
+
+    def sidebar_nav_never_overlaps_the_trial_banner():
+        """The nav list grew to 9 buttons plus 3 group labels with no scroll
+        of its own, so on a normal-height window the trial countdown ended
+        up overlapping the last nav button instead of either being fully
+        visible - Qt does not show an overflowing QVBoxLayout, it silently
+        compresses it. Reproduced at the app's own documented minimum size."""
+        window.resize(1280, 640)
+        window.set_trial_banner(15)
+        for _ in range(4):
+            app.processEvents()
+        try:
+            banner = window.trial_banner.geometry()
+            settings_btn = window.btn_settings.geometry()
+            overlap = not (banner.bottom() <= settings_btn.top() or settings_btn.bottom() <= banner.top())
+            assert not overlap, (banner, settings_btn)
+            assert window.trial_banner.isVisible() and window.trial_banner.text(), \
+                "the trial banner has no text/is hidden at the minimum window size"
+
+            scroll = None
+            node = window.btn_other_balances.parentWidget()
+            while node is not None:
+                if isinstance(node, QScrollArea):
+                    scroll = node
+                    break
+                node = node.parentWidget()
+            assert scroll is not None, "the nav list has no scroll area of its own"
+        finally:
+            window.resize(1440, 900)
+            window.set_trial_banner(None)
+            for _ in range(4):
+                app.processEvents()
+    check("the sidebar nav list never overlaps the trial banner, even on a short window",
+          sidebar_nav_never_overlaps_the_trial_banner)
+
+    def compact_form_labels_never_get_clipped_illegibly():
+        """compact_form()'s caption used a flat 92px minimum with no
+        wrapping, sized for short labels like "اسم المورد" - a longer one
+        like "رصيد افتتاحي (مستحق له علينا)" rendered as a few letters with
+        the rest simply gone, not even an ellipsis. Every label must either
+        fit on one line or wrap, never lose text outright."""
+        goto("customers")
+        long_labels = [lbl for lbl in window.customers.findChildren(QLabel)
+                       if "افتتاحي" in lbl.text()]
+        assert long_labels, "the opening-balance label is missing entirely"
+        for lbl in long_labels:
+            assert lbl.wordWrap(), f"label does not wrap and can be clipped: {lbl.text()!r}"
+
+        goto("purchases")
+        return_labels = [lbl for lbl in window.purchases.findChildren(QLabel)
+                         if "الأصل" in lbl.text()]
+        assert return_labels, "the purchase-return category label is missing entirely"
+        for lbl in return_labels:
+            assert lbl.wordWrap(), f"label does not wrap and can be clipped: {lbl.text()!r}"
+    check("compact_form labels wrap instead of being clipped illegibly",
+          compact_form_labels_never_get_clipped_illegibly)
+
+    def payroll_month_and_year_do_not_crowd_each_other():
+        """Four QFormLayouts in the payroll tab (attendance, deductions,
+        payroll, accrued wages) never called setSpacing(), unlike every other
+        form in the same file - left at whatever the platform's default
+        happens to be (6px, measured). On the owner's machine "الشهر" and
+        "السنة" read as sitting right on top of each other. Checks the
+        actual gap between the two fields, not just whether setSpacing() was
+        called somewhere - QFormLayout.spacing() returns a real number
+        either way, so a test on the getter alone could never fail.
+        setSpacing(16) measured a 17px gap here versus 7px unset, so the
+        assertion sits between the two and catches a regression to either."""
+        from PyQt6.QtWidgets import QTabWidget
+        goto("hr")
+        hr = window.hr
+        tabs = hr.findChild(QTabWidget)
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == "الرواتب":
+                tabs.setCurrentIndex(i)
+        for _ in range(3):
+            app.processEvents()
+        gap = hr.payroll_year.geometry().top() - hr.payroll_month.geometry().bottom()
+        assert gap >= 12, f"month/year fields are only {gap}px apart - looks crowded"
+    check("the payroll month and year fields have a comfortable gap, not crowded together",
+          payroll_month_and_year_do_not_crowd_each_other)
+
+    def page_scroll_area_background_matches_the_white_content_card():
+        """Every page is wrapped in a QScrollArea (see add_page). Its viewport
+        paints the palette's plain grey Window colour by default, not its
+        parent's - nothing in a page normally covers every last pixel up to
+        the scrollbar's own edge, so that grey showed through as a hard-edged
+        rectangular patch sitting inside the white, rounded content card,
+        most visible at the very top corner next to the page title, right
+        where the owner's screenshot showed it. Checked by actually painting
+        the dashboard's page container and sampling a pixel at its top-left
+        corner, just inside the QScrollArea but outside any child widget -
+        exactly the spot that used to show the leaked grey."""
+        goto("dashboard")
+        container = window.content_stack.currentWidget()
+        assert isinstance(container, QScrollArea), \
+            "the dashboard is no longer wrapped in a page-level QScrollArea"
+        container.resize(400, 300)
+        for _ in range(3):
+            app.processEvents()
+        image = render(container)
+        # Just inside the frame, above/left of where dashboard's own content
+        # starts - painted only by the scroll area/viewport, never by a widget.
+        colour = image.pixelColor(2, 2)
+        white = colour.red() >= 250 and colour.green() >= 250 and colour.blue() >= 250
+        assert white, f"scroll area corner is {colour.name()}, not white - the grey patch is back"
+    check("the page scroll area's background matches the white content card, no grey patch",
+          page_scroll_area_background_matches_the_white_content_card)
 
     print("\n" + "=" * 52)
     if failures:

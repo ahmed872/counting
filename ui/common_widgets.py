@@ -52,9 +52,20 @@ def compact_form(pairs, columns=2, field_min_width=200):
         cell.setSpacing(8)
         if caption:
             label = QLabel(caption)
-            label.setMinimumWidth(92)
+            # A flat 92px minimum, with no wrapping, silently clipped any
+            # caption longer than a short word or two - "رصيد افتتاحي (مستحق
+            # له علينا)" rendered as a few letters with the rest invisible,
+            # not even an ellipsis to hint more was there. Sized to what the
+            # text actually needs (capped so one very long caption cannot
+            # push the field off to the side), and left free to wrap onto a
+            # second line for whatever still does not fit.
+            from PyQt6.QtGui import QFontMetrics
+            natural_width = QFontMetrics(label.font()).horizontalAdvance(caption)
+            label.setMinimumWidth(min(max(natural_width + 4, 92), 170))
+            label.setWordWrap(True)
             label.setStyleSheet("color:#334155; font-weight:600;")
             cell.addWidget(label)
+            cell.setAlignment(label, Qt.AlignmentFlag.AlignTop)
         field.setMinimumWidth(field_min_width)
         cell.addWidget(field, 1)
         holder = QWidget()
@@ -100,6 +111,29 @@ def fill_table(table: QTableWidget, row_count, empty_message):
         return False
     table.setRowCount(row_count)
     return True
+
+
+def fit_table_height(table: QTableWidget, minimum=90):
+    """Grow a table to fit every one of its own rows instead of being boxed
+    into a fixed height with its own internal scrollbar.
+
+    A table on a page with no scroll of its own used to get squeezed to a
+    couple of rows on a short window - the fix at the time was to keep that
+    page unwrapped so the table could claim all the spare space. That traded
+    one problem for another: a table with more rows than fit is still boxed
+    into whatever height the layout happens to give it, with a small,
+    easy-to-miss internal scrollbar hiding the rest (this is exactly what
+    happened to the payroll summary table - three employees, only two
+    visible). Call this after populating a table on a page that scrolls as a
+    whole (see add_page in main_window.py): the table always shows every row
+    it has, and the page's own scrollbar - big, familiar, the same one used
+    everywhere else - handles anything that does not fit on screen.
+    """
+    header_height = table.horizontalHeader().height()
+    rows_height = table.verticalHeader().length()
+    frame = table.frameWidth() * 2
+    total = header_height + rows_height + frame + 2
+    table.setFixedHeight(max(total, minimum))
 
 
 def create_stat_card(title, value, accent_color="#4f78a8"):

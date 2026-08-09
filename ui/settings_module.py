@@ -61,6 +61,7 @@ class SettingsModule(QWidget):
         box = QGroupBox("بيانات المنشأة (تظهر في التقارير)")
         form = QFormLayout(box)
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setSpacing(16)
         self.company_name = QLineEdit()
         self.company_tax = QLineEdit()
         save = QPushButton("حفظ بيانات المنشأة")
@@ -91,6 +92,7 @@ class SettingsModule(QWidget):
 
         form = QFormLayout()
         form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        form.setSpacing(16)
         self.opening_cash = QLineEdit()
         self.opening_bank = QLineEdit()
         self.opening_inventory = QLineEdit()

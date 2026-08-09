@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item
 from ui.common_widgets import (page_header, danger_button, fill_table, pin_height,
-                              collapsible)
+                              collapsible, fit_table_height)
 from logic.money import parse_money
 
 REFUND_METHOD_LABELS = [
@@ -160,7 +160,8 @@ class SalesEntryModule(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setMinimumHeight(120)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setMinimumHeight(90)
         layout.addWidget(self.table, 1)
 
         self.update_preview()
@@ -244,7 +245,8 @@ class SalesEntryModule(QWidget):
         self.returns_table.setAlternatingRowColors(True)
         self.returns_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.returns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.returns_table.setMinimumHeight(120)
+        self.returns_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.returns_table.setMinimumHeight(90)
         layout.addWidget(self.returns_table, 1)
 
         self.load_sales_returns()
@@ -321,6 +323,7 @@ class SalesEntryModule(QWidget):
             ORDER BY sr.date DESC, sr.id DESC
         """)
         if not fill_table(self.returns_table, len(rows), "لا يوجد مرتجعات مبيعات مسجلة"):
+            fit_table_height(self.returns_table)
             return
         method_labels = dict(REFUND_METHOD_LABELS)
         for row, r in enumerate(rows):
@@ -332,6 +335,7 @@ class SalesEntryModule(QWidget):
             self.returns_table.setItem(row, 3, money_item(r["vat_amount"]))
             self.returns_table.setItem(row, 4, QTableWidgetItem(method_labels.get(r["refund_method"], r["refund_method"])))
             self.returns_table.setItem(row, 5, QTableWidgetItem(r["notes"] or ""))
+        fit_table_height(self.returns_table)
 
     def _short_screen(self):
         screen = self.screen() or (self.window().screen() if self.window() else None)
@@ -503,6 +507,7 @@ class SalesEntryModule(QWidget):
         """
         rows = self.db.fetch_all(query)
         if not fill_table(self.table, len(rows), "لم تُسجَّل مبيعات بعد — اكتب مبالغ اليوم بالأعلى واضغط حفظ"):
+            fit_table_height(self.table)
             return
         for row, r in enumerate(rows):
             day_item = QTableWidgetItem(r["day"])
@@ -515,6 +520,7 @@ class SalesEntryModule(QWidget):
             self.table.setItem(row, 5, money_item(r['grand_total'], bold=True))
             self.table.setItem(row, 6, money_item(r['vat_total'], bold=False))
             self.table.setItem(row, 7, QTableWidgetItem(r['cashier_number'] or ""))
+        fit_table_height(self.table)
 
     def refresh_on_show(self):
         selected_branch = self.branch_input.currentData()

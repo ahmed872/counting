@@ -116,18 +116,25 @@ APP_STYLESHEET = """
         border: 0px;
     }
     /* Scrollbars are deliberately wide and high-contrast: the people using this
-       app need an obvious signal that there is more content below the fold. */
+       app need an obvious signal that there is more content below the fold.
+
+       The groove itself is transparent rather than a filled, rounded
+       rectangle - Qt's native Windows style does not reliably round the
+       *track* background the way it rounds the smaller handle sub-control,
+       so a filled groove rendered as a hard-edged block that looked cut off
+       sitting against the page's rounded corners. Nothing painted there
+       means nothing to look cut off; the rounded handle alone is still
+       exactly as wide and high-contrast as before. */
     QScrollBar:vertical {
-        background: #eef2f7;
+        background: transparent;
         width: 16px;
         margin: 0;
-        border-radius: 8px;
     }
     QScrollBar::handle:vertical {
         background: #90a4bd;
         min-height: 40px;
         border-radius: 8px;
-        border: 2px solid #eef2f7;
+        border: 2px solid transparent;
     }
     QScrollBar::handle:vertical:hover {
         background: #6b83a3;
@@ -139,16 +146,15 @@ APP_STYLESHEET = """
         background: transparent;
     }
     QScrollBar:horizontal {
-        background: #eef2f7;
+        background: transparent;
         height: 16px;
         margin: 0;
-        border-radius: 8px;
     }
     QScrollBar::handle:horizontal {
         background: #90a4bd;
         min-width: 40px;
         border-radius: 8px;
-        border: 2px solid #eef2f7;
+        border: 2px solid transparent;
     }
     QScrollBar::handle:horizontal:hover {
         background: #6b83a3;
