@@ -77,8 +77,9 @@ def main():
     db = DBManager(DB_PATH)
     app = QApplication(sys.argv)
     apply_theme(app)
-    from main import apply_app_icon
+    from main import apply_app_icon, install_arabic_dialog_buttons
     apply_app_icon(app)
+    install_arabic_dialog_buttons(app)
     window = MainWindow(db)
     window.resize(1280, 720)   # deliberately small: catches cut-off content
     window.show()
@@ -3024,6 +3025,101 @@ def main():
         assert "موافق" in texts, f"expected the Arabic موافق button, found: {texts}"
     check("the document-expiry alert's button reads موافق, not the English default OK",
           document_expiry_alert_uses_arabic_ok_button)
+
+    def every_standard_dialog_button_is_arabic_app_wide():
+        """Every QMessageBox.information/.warning/.question call across the
+        app (there are dozens) relies on Qt's own standard buttons - "OK",
+        "Yes", "No", "Cancel" - which come from Qt's QPlatformTheme
+        translation context, not from any string this codebase writes.
+        Reported live after the document-expiry alert's English "OK" turned
+        out to be one instance of an app-wide gap, not a one-off: fixed
+        centrally with a small translator (install_arabic_dialog_buttons in
+        main.py) instead of hand-editing every call site. Checked directly
+        against a real QMessageBox with every standard button turned on -
+        the same object every information()/warning()/question() call
+        builds internally - not through the test suite's own
+        silence_dialogs() monkeypatch, which never asks Qt for real text."""
+        box = QMessageBox()
+        box.setStandardButtons(
+            QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Yes
+            | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel)
+        expected = {
+            QMessageBox.StandardButton.Ok: "موافق",
+            QMessageBox.StandardButton.Yes: "نعم",
+            QMessageBox.StandardButton.No: "لا",
+            QMessageBox.StandardButton.Cancel: "إلغاء",
+        }
+        for standard_button, arabic_text in expected.items():
+            actual = box.button(standard_button).text().replace("&", "")
+            assert actual == arabic_text, (
+                f"standard button {standard_button} reads {actual!r}, expected {arabic_text!r}")
+    check("every standard Qt dialog button (OK/Yes/No/Cancel) is Arabic app-wide",
+          every_standard_dialog_button_is_arabic_app_wide)
+
+    def primary_action_buttons_do_not_span_the_full_page_width():
+        """A lone save/submit button stretching across the entire card - a
+        QVBoxLayout gives every child the layout's full width by default,
+        regardless of how short the button's own text is - read as
+        disproportionate and was flagged by product review. Given a
+        maximum width, the same QVBoxLayout/QFormLayout item defaults to
+        right-aligning it instead of centring it (checked directly, see the
+        commit this test shipped with) - which happens to match this RTL
+        app's existing convention of controls starting from the right, so
+        no layout restructuring was needed, just a cap on each button's
+        own width. Checked on the worst offenders reported live: daily
+        sales, HR attendance/deductions, and settings."""
+        checks = [
+            ("sales", 0, "حفظ مبيعات اليوم"),
+            ("hr", 1, "تسجيل الحضور/الغياب"),
+            ("settings", None, "إضافة مستخدم"),
+        ]
+        from PyQt6.QtWidgets import QTabWidget
+        for nav_label, tab_index, button_text in checks:
+            goto(nav_label)
+            page = next(e["page"] for e in window.nav_entries if e["label"] == nav_label)
+            if tab_index is not None:
+                tabs = page.findChild(QTabWidget)
+                tabs.setCurrentIndex(tab_index)
+            for _ in range(2):
+                app.processEvents()
+            # A form starting collapsed on a short test window (see
+            # _short_screen in sales_entry_module.py/purchase_module.py)
+            # would otherwise hide the very button being checked.
+            show_toggle = next(
+                (b for b in page.findChildren(QPushButton) if b.text() == "إظهار نموذج التسجيل"), None)
+            if show_toggle is not None:
+                show_toggle.click()
+                for _ in range(2):
+                    app.processEvents()
+            btn = next((b for b in page.findChildren(QPushButton) if b.text() == button_text), None)
+            assert btn is not None, f"{nav_label}: could not find the '{button_text}' button anymore"
+            assert btn.isVisible(), f"{nav_label}: '{button_text}' is not visible on its tab"
+            ratio = btn.width() / page.width()
+            assert ratio < 0.5, (
+                f"{nav_label}: '{button_text}' still spans {ratio:.0%} of the page width - "
+                f"expected a capped, right-aligned button, not a full-width one")
+    check("primary action buttons (سجل مبيعات، تسجيل حضور، إضافة مستخدم) are capped, not full-width",
+          primary_action_buttons_do_not_span_the_full_page_width)
+
+    def secondary_buttons_have_a_solid_fill_not_a_transparent_outline():
+        """danger_button() (حذف...) and the show/hide form toggle used a
+        transparent background with only a border - reported live as
+        looking like plain text rather than a clickable control. render()
+        (see above) fills the pixmap white before painting, so a
+        transparent button's own background renders back as pure white;
+        checked the same way the login button check above tells a real
+        fill from a transparent one - by rendering the real "حذف اليوم
+        المحدد" button and confirming its centre pixel is not near-white."""
+        goto("sales")
+        page = window.sales
+        delete_btn = next(b for b in page.findChildren(QPushButton) if b.text() == "حذف اليوم المحدد")
+        image = render(delete_btn)
+        colour = image.pixelColor(delete_btn.width() // 2, delete_btn.height() // 2)
+        assert not is_near_white(colour.name()), (
+            f"'حذف اليوم المحدد' looks transparent - centre pixel is {colour.name()}, "
+            f"nearly white, meaning nothing but the render backdrop shows through")
+    check("secondary buttons (حذف، إخفاء النموذج) have a solid fill, not a transparent outline",
+          secondary_buttons_have_a_solid_fill_not_a_transparent_outline)
 
     def login_dialog_has_a_clean_white_background_and_a_working_button():
         """A plain QDialog paints the palette's grey Window colour by

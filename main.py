@@ -4,7 +4,7 @@ import os
 # Add current directory to path for imports
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTranslator
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtWidgets import QApplication, QMessageBox
 from database.db_manager import DBManager
@@ -13,6 +13,51 @@ from ui.theme import apply_theme
 from logic.hr import HRLogic
 from logic.trial import TrialManager
 from logic.paths import database_path, icon_path
+
+
+# Every "OK"/"Yes"/"No"/"Cancel" a QMessageBox shows without its own custom
+# button text comes from Qt's own QPlatformTheme translation context, not
+# from any string this app writes - so it stays in English unless something
+# translates it. Bundling Qt's own translation catalogs was deliberately
+# skipped (see packaging/restaurant_erp.spec - every string the app shows is
+# its own), so this covers just the handful of standard-button labels Qt
+# actually asks for, without pulling in a whole translation file.
+STANDARD_BUTTON_LABELS = {
+    "OK": "موافق",
+    "Save": "حفظ",
+    "Save All": "حفظ الكل",
+    "Open": "فتح",
+    "&Yes": "نعم",
+    "Yes to &All": "نعم للكل",
+    "&No": "لا",
+    "N&o to All": "لا للكل",
+    "Abort": "إيقاف",
+    "Retry": "إعادة المحاولة",
+    "Ignore": "تجاهل",
+    "Close": "إغلاق",
+    "Cancel": "إلغاء",
+    "Discard": "تجاهل",
+    "Help": "مساعدة",
+    "Apply": "تطبيق",
+    "Reset": "إعادة تعيين",
+    "Restore Defaults": "استعادة الافتراضي",
+}
+
+
+class ArabicStandardButtonTranslator(QTranslator):
+    def translate(self, context, source_text, disambiguation=None, n=-1):
+        if context == "QPlatformTheme":
+            return STANDARD_BUTTON_LABELS.get(source_text, "")
+        return ""
+
+
+def install_arabic_dialog_buttons(app):
+    translator = ArabicStandardButtonTranslator()
+    app.installTranslator(translator)
+    # installTranslator() does not keep the Python object alive on its own -
+    # without this, the translator is garbage-collected right after this
+    # call returns and every button silently reverts to English.
+    app._arabic_button_translator = translator
 
 
 def apply_app_icon(app):
@@ -133,6 +178,7 @@ def main():
     app = QApplication(sys.argv)
     apply_theme(app)
     apply_app_icon(app)
+    install_arabic_dialog_buttons(app)
 
     days_left = enforce_trial(db)
 

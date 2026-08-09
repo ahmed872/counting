@@ -147,6 +147,7 @@ class SalesEntryModule(QWidget):
 
         save_btn = QPushButton("حفظ مبيعات اليوم")
         save_btn.setMinimumHeight(46)
+        save_btn.setMaximumWidth(260)
         save_btn.clicked.connect(self.save_daily_sales)
         form_outer.addWidget(save_btn)
 
@@ -238,6 +239,7 @@ class SalesEntryModule(QWidget):
 
         save_return_btn = QPushButton("تسجيل مرتجع المبيعات")
         save_return_btn.setMinimumHeight(44)
+        save_return_btn.setMaximumWidth(260)
         save_return_btn.clicked.connect(self.save_sales_return)
         form_outer.addWidget(save_return_btn)
 
