@@ -15,6 +15,16 @@ def page_header(title, subtitle=None):
 
     heading = QLabel(title)
     heading.setStyleSheet("font-size: 23px; font-weight: 800; color: #1f3b57;")
+    # A defensive floor under the label's own natural width: Windows font
+    # substitution can measure Arabic text wider than the same string does
+    # on this dev machine's fallback font, and a page title is the one
+    # label an owner reads before anything else on the page - it must never
+    # be the thing that gets clipped.
+    from PyQt6.QtGui import QFont, QFontMetrics
+    heading_font = QFont()
+    heading_font.setPixelSize(23)
+    heading_font.setWeight(QFont.Weight.ExtraBold)
+    heading.setMinimumWidth(QFontMetrics(heading_font).horizontalAdvance(title) + 12)
     layout.addWidget(heading)
 
     if subtitle:
@@ -78,14 +88,15 @@ def compact_form(pairs, columns=2, field_min_width=200):
 
 
 def danger_button(text):
-    """Destructive actions are outlined rather than filled: a solid red block
-    sitting next to the save button reads as the primary action at a glance."""
+    """A light red fill - solid, not outlined, so it still reads as a
+    clickable button at a glance - kept lighter than the blue primary
+    buttons so it does not compete with them for attention."""
     btn = QPushButton(text)
     btn.setStyleSheet(
-        "QPushButton { background-color: transparent; color: #b91c1c;"
+        "QPushButton { background-color: #fdeceb; color: #b91c1c;"
         "  border: 1px solid #e6b4b0; border-radius: 8px; padding: 7px 14px; font-weight: 700; }"
-        "QPushButton:hover { background-color: #fdeceb; border-color: #dc2626; }"
-        "QPushButton:pressed { background-color: #fbd9d6; }"
+        "QPushButton:hover { background-color: #fbd9d6; border-color: #dc2626; }"
+        "QPushButton:pressed { background-color: #f8c4bf; }"
     )
     return btn
 
@@ -133,7 +144,17 @@ def fit_table_height(table: QTableWidget, minimum=90):
     rows_height = table.verticalHeader().length()
     frame = table.frameWidth() * 2
     total = header_height + rows_height + frame + 2
+    if table.horizontalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff:
+        total += table.horizontalScrollBar().sizeHint().height()
     table.setFixedHeight(max(total, minimum))
+    # QTableWidget's own default policy wants to grow (Expanding), so a
+    # parent layout with room to spare - a QTabWidget always hands its
+    # current page the tab bar's own full height, regardless of what that
+    # page's layout actually needs - still allocates this table more room
+    # than setFixedHeight lets it use. The table cannot fill that extra
+    # room, so it ends up centred inside it: a blank gap opening up above
+    # the table instead of the layout collapsing tightly around it.
+    table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     _forward_wheel_to_page_scroll(table)
 
 
@@ -232,9 +253,10 @@ def collapsible(form_widget, show_text, hide_text, start_collapsed=False):
     button = QPushButton()
     button.setCheckable(True)
     button.setStyleSheet(
-        "QPushButton { background-color: transparent; color: #1f3b57;"
+        "QPushButton { background-color: #eef4fa; color: #1f3b57;"
         "  border: 1px solid #c9d6e4; border-radius: 8px; padding: 6px 14px; font-weight: 700; }"
-        "QPushButton:hover { background-color: #eef4fa; border-color: #4f78a8; }"
+        "QPushButton:hover { background-color: #dbe7f4; border-color: #4f78a8; }"
+        "QPushButton:pressed { background-color: #cbdbef; }"
     )
 
     def apply_state():

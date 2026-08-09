@@ -98,11 +98,12 @@ class CustomersModule(QWidget):
         self.customers_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.customers_table.setMinimumHeight(90)
         self.customers_table.itemSelectionChanged.connect(self.on_customer_selected)
-        list_layout.addWidget(self.customers_table, 1)
+        list_layout.addWidget(self.customers_table)
 
         self.total_balance_label = QLabel("إجمالي المستحق على العملاء: 0.00 ريال")
         self.total_balance_label.setStyleSheet("font-weight: 800; color: #2c7be5; padding: 4px 2px;")
         list_layout.addWidget(self.total_balance_label)
+        list_layout.addStretch()
         tabs.addTab(list_tab, "العملاء والأرصدة")
 
         # ---- Tab 2: credit sale, collection, and statement ----
@@ -183,7 +184,8 @@ class CustomersModule(QWidget):
         self.statement_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.statement_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.statement_table.setMinimumHeight(90)
-        pay_layout.addWidget(self.statement_table, 1)
+        pay_layout.addWidget(self.statement_table)
+        pay_layout.addStretch()
         tabs.addTab(pay_tab, "بيع آجل وتحصيل")
 
         self.load_customers()

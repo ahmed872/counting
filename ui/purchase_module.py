@@ -131,12 +131,13 @@ class PurchaseModule(QWidget):
         delete_btn.clicked.connect(self.delete_selected_purchase)
         table_header.addWidget(delete_btn)
         layout.addLayout(table_header)
-        layout.addWidget(self.table, 1)
+        layout.addWidget(self.table)
 
         self.purchases_total_label = QLabel()
         self.purchases_total_label.setStyleSheet(
             "font-weight:800; color:#1f3b57; padding:6px 2px;")
         layout.addWidget(self.purchases_total_label)
+        layout.addStretch()
 
         self.on_category_changed()
         self.load_purchases()
@@ -233,7 +234,8 @@ class PurchaseModule(QWidget):
         self.returns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.returns_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.returns_table.setMinimumHeight(90)
-        layout.addWidget(self.returns_table, 1)
+        layout.addWidget(self.returns_table)
+        layout.addStretch()
 
         self.load_purchase_returns()
         return widget

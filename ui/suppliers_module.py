@@ -99,11 +99,12 @@ class SuppliersModule(QWidget):
         self.suppliers_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.suppliers_table.setMinimumHeight(90)
         self.suppliers_table.itemSelectionChanged.connect(self.on_supplier_selected)
-        list_layout.addWidget(self.suppliers_table, 1)
+        list_layout.addWidget(self.suppliers_table)
 
         self.total_balance_label = QLabel("إجمالي أرصدة الموردين الدائنة: 0.00 ريال")
         self.total_balance_label.setStyleSheet("font-weight: 800; color: #e67e22; padding: 4px 2px;")
         list_layout.addWidget(self.total_balance_label)
+        list_layout.addStretch()
         tabs.addTab(list_tab, "الموردون والأرصدة")
 
         # ---- Tab 2: payment and statement ----
@@ -169,7 +170,8 @@ class SuppliersModule(QWidget):
         self.statement_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.statement_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.statement_table.setMinimumHeight(90)
-        pay_layout.addWidget(self.statement_table, 1)
+        pay_layout.addWidget(self.statement_table)
+        pay_layout.addStretch()
         tabs.addTab(pay_tab, "السداد وكشف الحساب")
 
         self.load_suppliers()

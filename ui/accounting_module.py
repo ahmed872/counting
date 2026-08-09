@@ -121,6 +121,7 @@ class AccountingModule(QWidget):
         self.tb_totals_label = QLabel("إجمالي مدين: 0.00   |   إجمالي دائن: 0.00")
         self.tb_totals_label.setStyleSheet("font-weight: 700; padding: 6px;")
         v.addWidget(self.tb_totals_label)
+        v.addStretch()
         return widget
 
     def build_income_tab(self):
@@ -198,7 +199,8 @@ class AccountingModule(QWidget):
         self.bs_table.setAlternatingRowColors(True)
         self.bs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.bs_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        v.addWidget(self.bs_table, 1)
+        v.addWidget(self.bs_table)
+        v.addStretch()
         return widget
 
     def build_ledger_tab(self):
@@ -237,7 +239,8 @@ class AccountingModule(QWidget):
         self.ledger_table.setAlternatingRowColors(True)
         self.ledger_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.ledger_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        v.addWidget(self.ledger_table, 1)
+        v.addWidget(self.ledger_table)
+        v.addStretch()
 
         for account in self.accounting.get_all_accounts():
             self.ledger_account_input.addItem(f"{account['code']} - {account['name']}", account['code'])

@@ -99,6 +99,7 @@ class SettingsModule(QWidget):
         outer.addLayout(form)
 
         add_btn = QPushButton("إضافة مستخدم")
+        add_btn.setMaximumWidth(220)
         add_btn.clicked.connect(self.add_user)
         outer.addWidget(add_btn)
 
@@ -207,6 +208,7 @@ class SettingsModule(QWidget):
         self.company_name = QLineEdit()
         self.company_tax = QLineEdit()
         save = QPushButton("حفظ بيانات المنشأة")
+        save.setMaximumWidth(220)
         save.clicked.connect(self.save_company)
         form.addRow("اسم المنشأة:", self.company_name)
         form.addRow("الرقم الضريبي:", self.company_tax)
@@ -251,6 +253,7 @@ class SettingsModule(QWidget):
         outer.addWidget(self.opening_status)
 
         save = QPushButton("حفظ الأرصدة الافتتاحية")
+        save.setMaximumWidth(220)
         save.clicked.connect(self.save_opening_balances)
         outer.addWidget(save)
         return box
@@ -397,6 +400,7 @@ class SettingsModule(QWidget):
         outer.addWidget(note)
 
         open_manual = QPushButton("فتح دليل الاستخدام")
+        open_manual.setMaximumWidth(220)
         open_manual.clicked.connect(self.open_manual)
         outer.addWidget(open_manual)
         return box

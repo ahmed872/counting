@@ -153,6 +153,7 @@ class HRModule(QWidget):
         form_outer.addSpacing(6)
         form_outer.addLayout(buttons_row)
         setup_layout.addWidget(form_group)
+        setup_layout.addStretch()
 
         attendance_group = QGroupBox("تسجيل الحضور والغياب")
         attendance_layout = QFormLayout(attendance_group)
@@ -169,6 +170,7 @@ class HRModule(QWidget):
         self.attendance_note = QLineEdit()
         self._apply_field_widths([self.attendance_employee, self.attendance_date, self.attendance_status, self.attendance_note])
         attendance_btn = QPushButton("تسجيل الحضور/الغياب")
+        attendance_btn.setMaximumWidth(220)
         attendance_btn.clicked.connect(self.record_attendance)
         attendance_layout.addRow("العامل:", self.attendance_employee)
         attendance_layout.addRow("التاريخ:", self.attendance_date)
@@ -194,6 +196,7 @@ class HRModule(QWidget):
         self.deduction_notes = QLineEdit()
         self._apply_field_widths([self.deduction_employee, self.deduction_type, self.deduction_date, self.deduction_amount, self.deduction_notes])
         deduction_btn = QPushButton("تسجيل الحركة")
+        deduction_btn.setMaximumWidth(220)
         deduction_btn.clicked.connect(self.add_deduction)
         deduction_layout.addRow("العامل:", self.deduction_employee)
         deduction_layout.addRow("النوع:", self.deduction_type)
@@ -289,12 +292,14 @@ class HRModule(QWidget):
         self.accrued_pay_method.addItem("نقدي", "Cash")
         self.accrued_pay_method.addItem("تحويل بنكي", "Bank")
         accrued_pay_btn = QPushButton("تسجيل السداد")
+        accrued_pay_btn.setMaximumWidth(220)
         accrued_pay_btn.clicked.connect(self.pay_accrued_wages)
         accrued_layout.addRow("الرصيد المستحق حالياً:", self.accrued_balance_label)
         accrued_layout.addRow("المبلغ:", self.accrued_pay_amount)
         accrued_layout.addRow("طريقة السداد:", self.accrued_pay_method)
         accrued_layout.addRow(accrued_pay_btn)
         payroll_tab_layout.addWidget(accrued_box)
+        payroll_tab_layout.addStretch()
 
         tabs.addTab(payroll_widget, "الرواتب")
 

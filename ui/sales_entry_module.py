@@ -147,6 +147,7 @@ class SalesEntryModule(QWidget):
 
         save_btn = QPushButton("حفظ مبيعات اليوم")
         save_btn.setMinimumHeight(46)
+        save_btn.setMaximumWidth(260)
         save_btn.clicked.connect(self.save_daily_sales)
         form_outer.addWidget(save_btn)
 
@@ -177,7 +178,8 @@ class SalesEntryModule(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setMinimumHeight(90)
-        layout.addWidget(self.table, 1)
+        layout.addWidget(self.table)
+        layout.addStretch()
 
         self.update_preview()
         self.load_history()
@@ -237,6 +239,7 @@ class SalesEntryModule(QWidget):
 
         save_return_btn = QPushButton("تسجيل مرتجع المبيعات")
         save_return_btn.setMinimumHeight(44)
+        save_return_btn.setMaximumWidth(260)
         save_return_btn.clicked.connect(self.save_sales_return)
         form_outer.addWidget(save_return_btn)
 
@@ -263,7 +266,8 @@ class SalesEntryModule(QWidget):
         self.returns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.returns_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.returns_table.setMinimumHeight(90)
-        layout.addWidget(self.returns_table, 1)
+        layout.addWidget(self.returns_table)
+        layout.addStretch()
 
         self.load_sales_returns()
         return widget
