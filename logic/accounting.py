@@ -418,7 +418,7 @@ class AccountingLogic:
                 GROUP BY s.payment_method""",
             (start_date, end_date) + params,
         )
-        result = {m: {'total': 0.0, 'vat': 0.0} for m in ('Cash', 'POS', 'Transfer')}
+        result = {m: {'total': 0.0, 'vat': 0.0} for m in ('Cash', 'POS', 'Transfer', 'Delivery')}
         for row in rows:
             result.setdefault(row['method'], {'total': 0.0, 'vat': 0.0})
             result[row['method']]['total'] = row['total'] or 0
@@ -482,6 +482,7 @@ class AccountingLogic:
                        COALESCE(SUM(CASE WHEN s.payment_method='Cash' THEN s.total_amount ELSE 0 END), 0) as cash,
                        COALESCE(SUM(CASE WHEN s.payment_method='POS' THEN s.total_amount ELSE 0 END), 0) as pos,
                        COALESCE(SUM(CASE WHEN s.payment_method='Transfer' THEN s.total_amount ELSE 0 END), 0) as transfer,
+                       COALESCE(SUM(CASE WHEN s.payment_method='Delivery' THEN s.total_amount ELSE 0 END), 0) as delivery,
                        COALESCE(SUM(s.total_amount), 0) as total,
                        COALESCE(SUM(s.vat_amount), 0) as vat
                 FROM sales s
@@ -503,12 +504,13 @@ class AccountingLogic:
         for row in sales_rows:
             days[row['day']] = {
                 'day': row['day'], 'cash': row['cash'] or 0, 'pos': row['pos'] or 0,
-                'transfer': row['transfer'] or 0, 'sales_total': row['total'] or 0,
+                'transfer': row['transfer'] or 0, 'delivery': row['delivery'] or 0,
+                'sales_total': row['total'] or 0,
                 'output_vat': row['vat'] or 0, 'purchases': 0.0, 'input_vat': 0.0,
             }
         for row in purchase_rows:
             entry = days.setdefault(row['day'], {
-                'day': row['day'], 'cash': 0.0, 'pos': 0.0, 'transfer': 0.0,
+                'day': row['day'], 'cash': 0.0, 'pos': 0.0, 'transfer': 0.0, 'delivery': 0.0,
                 'sales_total': 0.0, 'output_vat': 0.0, 'purchases': 0.0, 'input_vat': 0.0,
             })
             entry['purchases'] = row['net'] or 0

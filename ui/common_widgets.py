@@ -1,7 +1,7 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QWidget, QPushButton,
-    QTableWidget, QSizePolicy,
+    QTableWidget, QSizePolicy, QScrollArea,
 )
 
 
@@ -134,6 +134,31 @@ def fit_table_height(table: QTableWidget, minimum=90):
     frame = table.frameWidth() * 2
     total = header_height + rows_height + frame + 2
     table.setFixedHeight(max(total, minimum))
+    _forward_wheel_to_page_scroll(table)
+
+
+def _forward_wheel_to_page_scroll(table):
+    """A table sized to fit every row (see above) has nothing left to scroll
+    on its own - but Qt does not hand a wheel event up to the parent just
+    because the table's own scrollbar has nothing to do; QAbstractScrollArea
+    swallows it regardless. The mouse wheel silently did nothing at all while
+    the cursor happened to be over a table, on every page that scrolls as a
+    whole. Installed once per table; forwards straight to the page's own
+    QScrollArea (see add_page in main_window.py)."""
+    if getattr(table, "_wheel_forwards_to_page", False):
+        return
+    table._wheel_forwards_to_page = True
+
+    def wheel_event(event, table=table):
+        node = table.parentWidget()
+        while node is not None and not isinstance(node, QScrollArea):
+            node = node.parentWidget()
+        if node is not None:
+            node.wheelEvent(event)
+        else:
+            QTableWidget.wheelEvent(table, event)
+
+    table.wheelEvent = wheel_event
 
 
 def create_stat_card(title, value, accent_color="#4f78a8"):
@@ -145,7 +170,14 @@ def create_stat_card(title, value, accent_color="#4f78a8"):
     """
     frame = QFrame()
     frame.setObjectName("statCard")
-    frame.setMinimumWidth(200)
+    # A row of 4 at the old 200px minimum needed 836px - more than fits in
+    # the content area at the app's own documented minimum window size
+    # (1040px wide). Horizontal scrolling is deliberately off on every page
+    # (see add_page in main_window.py), so there was no way to reach the
+    # card that got pushed off the edge - confirmed live: "عدد الموظفين"
+    # simply was not on screen at that size, and the title label already
+    # wraps to two lines, so a narrower card still reads fine.
+    frame.setMinimumWidth(150)
     # Fixed height keeps the KPI row compact - without it the cards stretch to
     # absorb spare vertical space and leave a big gap between title and value.
     frame.setFixedHeight(104)

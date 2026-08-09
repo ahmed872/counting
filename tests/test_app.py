@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QPushButton, QDateEdit, QLabel, QScrollArea,
-    QTableWidget,
+    QTableWidget, QFrame,
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, QDate
@@ -838,6 +838,58 @@ def main():
         assert abs(row["v"] - 225) < 0.01, row["v"]   # 15% of the 1500 net
     check("daily sales split VAT out of a tax-inclusive total", daily_sales_vat)
 
+    def delivery_app_sales_post_to_the_bank_account_not_cash():
+        """تطبيقات التوصيل (هنقرستيشن / جاهز وغيرها) settle to the bank, never
+        handed over as physical cash - a new payment_method value the sales
+        table's own CHECK constraint has to allow (it used to list only Cash/
+        POS/Transfer), routed the same way a bank transfer already is. Uses a
+        date outside the 2000-2100 range the accounting checks scan, and
+        cleans itself up afterwards - see cashier_number_is_saved_and_shown
+        for the same convention."""
+        goto("sales")
+        s = window.sales
+        far_date = "1997-06-15"
+        s.date_input.setDate(s.date_input.date().fromString(far_date, "yyyy-MM-dd"))
+        s.cash_input.setText("0")
+        s.network_input.setText("0")
+        s.transfer_input.setText("0")
+        s.delivery_input.setText("230")
+        s.save_daily_sales()
+
+        stored = db.fetch_one(
+            "SELECT id, journal_entry_id, payment_method, total_amount FROM sales WHERE date = ?",
+            (far_date,))
+        assert stored is not None, "the delivery-apps row was not saved at all"
+        assert stored["payment_method"] == "Delivery", stored["payment_method"]
+        assert abs(stored["total_amount"] - 230) < 0.01, stored["total_amount"]
+
+        items = db.fetch_all(
+            "SELECT account_code, debit, credit FROM journal_items WHERE entry_id = ?",
+            (stored["journal_entry_id"],))
+        cash_debit = sum(i["debit"] for i in items if i["account_code"] == "1000")
+        bank_debit = sum(i["debit"] for i in items if i["account_code"] == "1001")
+        assert cash_debit == 0, "a delivery-app sale hit the cash account"
+        assert abs(bank_debit - 230) < 0.01, "a delivery-app sale did not hit the bank account"
+
+        match = next(
+            (r for r in range(s.table.rowCount()) if s.table.item(r, 0).text() == far_date),
+            None)
+        assert match is not None, "the saved day is not shown in the history table"
+        assert "230.00" in s.table.item(match, 5).text(), \
+            "the delivery-apps column in the history table does not show the amount"
+
+        db.execute_query("DELETE FROM sales WHERE date = ?", (far_date,))
+        if stored["journal_entry_id"]:
+            db.delete_journal_entry(stored["journal_entry_id"])
+        # Tests below this one read s.date_input as "today" rather than
+        # setting it themselves - restore it, or a later save lands on this
+        # far-past date instead of the one those checks expect.
+        s.date_input.setDate(QDate.currentDate())
+        s.delivery_input.clear()
+        s.load_history()
+    check("delivery-app sales are their own payment channel and post to the bank, not cash",
+          delivery_app_sales_post_to_the_bank_account_not_cash)
+
     def saving_the_same_day_twice_replaces_it():
         goto("sales")
         s = window.sales
@@ -883,7 +935,7 @@ def main():
             (r for r in range(sales.table.rowCount()) if sales.table.item(r, 0).text() == far_date),
             None)
         assert match is not None, "the saved day is not shown in the history table"
-        assert sales.table.item(match, 7).text() == "كاشير-3"
+        assert sales.table.item(match, 8).text() == "كاشير-3"
 
         db.execute_query("DELETE FROM sales WHERE date = ?", (far_date,))
         if stored["journal_entry_id"]:
@@ -2246,17 +2298,191 @@ def main():
         container = window.content_stack.currentWidget()
         assert isinstance(container, QScrollArea), \
             "the dashboard is no longer wrapped in a page-level QScrollArea"
+        real_size = container.size()
         container.resize(400, 300)
         for _ in range(3):
             app.processEvents()
-        image = render(container)
-        # Just inside the frame, above/left of where dashboard's own content
-        # starts - painted only by the scroll area/viewport, never by a widget.
-        colour = image.pixelColor(2, 2)
-        white = colour.red() >= 250 and colour.green() >= 250 and colour.blue() >= 250
-        assert white, f"scroll area corner is {colour.name()}, not white - the grey patch is back"
+        try:
+            image = render(container)
+            # Just inside the frame, above/left of where dashboard's own content
+            # starts - painted only by the scroll area/viewport, never by a widget.
+            colour = image.pixelColor(2, 2)
+            white = colour.red() >= 250 and colour.green() >= 250 and colour.blue() >= 250
+            assert white, f"scroll area corner is {colour.name()}, not white - the grey patch is back"
+        finally:
+            # This container is the *shared* window's actual page, not a
+            # throwaway - left at 400x300, every later test that reads
+            # geometry off this same dashboard page inherited the shrunken
+            # size instead of the real window size, with no window resize of
+            # its own to trigger a recovery.
+            container.resize(real_size)
+            for _ in range(3):
+                app.processEvents()
     check("the page scroll area's background matches the white content card, no grey patch",
           page_scroll_area_background_matches_the_white_content_card)
+
+    def page_widgets_have_no_leftover_grey_gaps():
+        """The scroll area's own margin was fixed above, but the page WIDGET
+        it wraps (e.g. DashboardModule) also paints the plain grey Window
+        colour wherever nothing else covers a pixel - a label's own
+        background is transparent, so the spacing between two widgets (the
+        page title and the day's status banner, here) showed the same grey
+        against the white card. Sampled at the real gap between them, not a
+        guessed offset."""
+        before = window.size()
+        window.resize(1440, 900)   # a known comfortable size - irrelevant to what is being checked
+        for _ in range(3):
+            app.processEvents()
+        try:
+            goto("dashboard")
+            dash = window.dashboard
+            banner_top_local = dash.today_banner.geometry().top()
+            gap_point = dash.mapTo(window, dash.today_banner.geometry().topLeft())
+            gap_point.setY(gap_point.y() - banner_top_local // 2)
+            image = render(window)
+            colour = image.pixelColor(gap_point)
+            white = colour.red() >= 250 and colour.green() >= 250 and colour.blue() >= 250
+            assert white, f"a layout gap on the dashboard is {colour.name()}, not white"
+        finally:
+            window.resize(before)
+            for _ in range(3):
+                app.processEvents()
+    check("page widgets have no leftover grey gaps between their own children",
+          page_widgets_have_no_leftover_grey_gaps)
+
+    def buttons_inside_scrollable_pages_keep_their_styling():
+        """Giving the page's own QScrollArea (or its viewport, or the page
+        widget itself) a Qt stylesheet - even a trivial "background:
+        transparent" one - stops Qt cascading the app-wide QSS to every
+        widget below it in that subtree, so a page's own buttons lost their
+        blue fill and white text entirely, leaving only a thin outline (an
+        actual regression caught while building the delivery-apps sales
+        field). The two greyness fixes above must stay palette-only. Checked
+        by sampling the centre of a real save button on a scrollable page -
+        it must be a solid mid blue, not white."""
+        goto("sales")
+        save_btn = next(b for b in window.sales.findChildren(QPushButton)
+                        if b.text() == "حفظ مبيعات اليوم")
+        center = save_btn.mapTo(window, save_btn.rect().center())
+        image = render(window)
+        colour = image.pixelColor(center)
+        near_white = colour.red() > 230 and colour.green() > 230 and colour.blue() > 230
+        assert not near_white, f"the save button lost its background fill - now {colour.name()}"
+    check("buttons inside scrollable pages keep their blue fill and white text",
+          buttons_inside_scrollable_pages_keep_their_styling)
+
+    def dashboard_stat_cards_fit_within_the_minimum_window_width():
+        """create_stat_card()'s old 200px minimum meant the dashboard's row
+        of 4 needed 836px - more than fits in the content area at the app's
+        own documented minimum window size (1040px wide). Horizontal
+        scrolling is deliberately off on every page (see add_page), so
+        "عدد الموظفين" got pushed past the edge with no way to reach it at
+        all - confirmed live. Reproduced at that exact size. (accounting and
+        hr have their own, unrelated wide-toolbar overflow at this same
+        window size - a pre-existing issue outside what this fix covers.)"""
+        before = window.size()
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+        try:
+            entry = goto("dashboard")
+            page = entry["page"]
+            container = window.content_stack.currentWidget()
+            available = container.viewport().width() if isinstance(container, QScrollArea) else container.width()
+            for card in page.findChildren(QFrame, "statCard"):
+                right_edge = card.mapTo(page, card.rect().topRight()).x()
+                assert right_edge <= available + 2, \
+                    f"a dashboard stat card is pushed past the visible width " \
+                    f"({right_edge}px in a {available}px viewport)"
+        finally:
+            window.resize(before)
+            for _ in range(3):
+                app.processEvents()
+    check("dashboard stat cards fit within the app's own documented minimum window width",
+          dashboard_stat_cards_fit_within_the_minimum_window_width)
+
+    def mouse_wheel_over_a_table_still_scrolls_the_page():
+        """Every table on a page that scrolls as a whole (see fit_table_height)
+        has its own scrollbar turned off - Qt then silently swallows the wheel
+        event instead of handing it up to the parent, since the table's own
+        (invisible) scrollbar has nothing to do with it either way. The wheel
+        did nothing at all while the cursor happened to be over a table -
+        which on the dashboard is a large fraction of the page. Reproduced
+        with a real QWheelEvent sent straight at the alerts table."""
+        from PyQt6.QtGui import QWheelEvent
+        from PyQt6.QtCore import QPoint, QPointF
+        goto("dashboard")
+        fake_alerts = [
+            {"name": f"e{i}", "doc_type": "x", "expiry_date": "2026-08-20", "days_left": 11}
+            for i in range(20)
+        ]
+        original_alerts = window.dashboard.hr_logic.get_document_alerts
+        window.dashboard.hr_logic.get_document_alerts = lambda days=30: fake_alerts
+        try:
+            window.dashboard.refresh_dashboard()
+            for _ in range(3):
+                app.processEvents()
+            container = window.content_stack.currentWidget()
+            vbar = container.verticalScrollBar()
+            assert vbar.maximum() > 0, "the dashboard is not even tall enough to need to scroll"
+            before = vbar.value()
+            table = window.dashboard.alerts_table
+            point = table.viewport().rect().center()
+            event = QWheelEvent(
+                QPointF(point), QPointF(point), QPoint(0, 0), QPoint(0, -240),
+                Qt.MouseButton.NoButton, Qt.KeyboardModifier.NoModifier,
+                Qt.ScrollPhase.NoScrollPhase, False,
+            )
+            app.sendEvent(table.viewport(), event)
+            app.processEvents()
+            assert vbar.value() > before, \
+                "scrolling the mouse wheel over a table does not move the page"
+        finally:
+            window.dashboard.hr_logic.get_document_alerts = original_alerts
+            window.dashboard.refresh_dashboard()
+            for _ in range(3):
+                app.processEvents()
+    check("the mouse wheel still scrolls the page when hovering over a table",
+          mouse_wheel_over_a_table_still_scrolls_the_page)
+
+    def transaction_dates_cannot_be_set_in_the_future():
+        """A sale, purchase, attendance day, deduction or termination all
+        record something that already happened - a mis-set clock or a stray
+        calendar click used to be able to post revenue, VAT or a day's wage
+        into a month that has not happened yet. Employee document EXPIRY
+        dates are the opposite by nature - they are only ever meaningful in
+        the future - and must stay uncapped, or the whole expiry-alert
+        feature breaks; checked here too, so a blanket future fix never
+        creeps onto them by mistake."""
+        far_future = QDate.currentDate().addYears(1)
+
+        goto("sales")
+        for field in (window.sales.date_input, window.sales.return_date_input):
+            field.setDate(far_future)
+            assert field.date() <= QDate.currentDate(), \
+                f"{field.objectName() or field} accepted a future date"
+
+        goto("purchases")
+        for field in (window.purchases.date_input, window.purchases.return_date_input):
+            field.setDate(far_future)
+            assert field.date() <= QDate.currentDate(), \
+                f"{field.objectName() or field} accepted a future date"
+
+        goto("hr")
+        for field in (window.hr.attendance_date, window.hr.deduction_date, window.hr.termination_date):
+            field.setDate(far_future)
+            assert field.date() <= QDate.currentDate(), \
+                f"{field.objectName() or field} accepted a future date"
+
+        # Expiry fields must still accept a future date - that is their
+        # entire purpose.
+        for field in (window.hr.iqama_expiry, window.hr.passport_expiry,
+                      window.hr.work_permit_expiry, window.hr.work_card_expiry):
+            field.setDate(far_future)
+            assert field.date() == far_future, \
+                f"{field.objectName() or field} an expiry field must still accept a future date"
+    check("transaction dates cannot be set in the future, but expiry dates still can",
+          transaction_dates_cannot_be_set_in_the_future)
 
     print("\n" + "=" * 52)
     if failures:

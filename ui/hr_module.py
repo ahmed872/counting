@@ -118,6 +118,9 @@ class HRModule(QWidget):
         termination_label.setStyleSheet("color:#64748b; font-size:12px;")
         self.termination_date = QDateEdit(QDate.currentDate())
         self.termination_date.setCalendarPopup(True)
+        # An employee's last working day cannot be scheduled in the future -
+        # this only records that someone already left.
+        self.termination_date.setMaximumDate(QDate.currentDate())
         termination_row.addWidget(termination_label)
         termination_row.addWidget(self.termination_date)
         termination_row.addStretch()
@@ -156,6 +159,8 @@ class HRModule(QWidget):
         self.attendance_employee = QComboBox()
         self.attendance_date = QDateEdit(QDate.currentDate())
         self.attendance_date.setCalendarPopup(True)
+        # Attendance cannot be recorded for a day that has not happened yet.
+        self.attendance_date.setMaximumDate(QDate.currentDate())
         self.attendance_status = QComboBox()
         self.attendance_status.addItem("حاضر", "Present")
         self.attendance_status.addItem("غائب", "Absent")
@@ -180,6 +185,9 @@ class HRModule(QWidget):
         self.deduction_type.addItem("مكافأة", "Bonus")
         self.deduction_date = QDateEdit(QDate.currentDate())
         self.deduction_date.setCalendarPopup(True)
+        # A deduction/advance/bonus records something already granted, not a
+        # future promise.
+        self.deduction_date.setMaximumDate(QDate.currentDate())
         self.deduction_amount = QLineEdit()
         self.deduction_notes = QLineEdit()
         self._apply_field_widths([self.deduction_employee, self.deduction_type, self.deduction_date, self.deduction_amount, self.deduction_notes])

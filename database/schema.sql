@@ -86,7 +86,7 @@ CREATE TABLE IF NOT EXISTS sales (
     date DATETIME DEFAULT CURRENT_TIMESTAMP,
     total_amount REAL,
     vat_amount REAL,
-    payment_method TEXT CHECK(payment_method IN ('Cash', 'POS', 'Transfer')),
+    payment_method TEXT CHECK(payment_method IN ('Cash', 'POS', 'Transfer', 'Delivery')),
     cashier_number TEXT,
     FOREIGN KEY (branch_id) REFERENCES branches(id)
 );
@@ -221,7 +221,7 @@ CREATE TABLE IF NOT EXISTS sales_returns (
     date DATETIME DEFAULT CURRENT_TIMESTAMP,
     amount REAL DEFAULT 0,
     vat_amount REAL DEFAULT 0,
-    refund_method TEXT CHECK(refund_method IN ('Cash', 'POS', 'Transfer')),
+    refund_method TEXT CHECK(refund_method IN ('Cash', 'POS', 'Transfer', 'Delivery')),
     notes TEXT,
     journal_entry_id INTEGER,
     FOREIGN KEY (branch_id) REFERENCES branches(id)

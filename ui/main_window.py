@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
     QSizePolicy,
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
+from PyQt6.QtGui import QFont, QPalette, QColor
 
 class MainWindow(QMainWindow):
     def __init__(self, db_manager):
@@ -224,16 +224,27 @@ class MainWindow(QMainWindow):
             container.setWidgetResizable(True)
             container.setFrameShape(QScrollArea.Shape.NoFrame)
             container.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-            # A QScrollArea's viewport paints the palette's plain grey Window
-            # colour by default, not its parent's. Nothing in a page normally
-            # covers every last pixel up to the scrollbar's own edge, so that
-            # grey showed through as a hard-edged rectangular patch sitting
-            # inside the white, rounded content card - most visible right at
-            # the top corner where the scrollbar starts, next to the page
-            # title. Making both the scroll area and its viewport transparent
-            # lets the white card underneath show through everywhere instead.
-            container.setStyleSheet("QScrollArea { background: transparent; }")
-            container.viewport().setStyleSheet("background: transparent;")
+            # Both the QScrollArea's own viewport AND the page widget it wraps
+            # paint the palette's plain grey Window colour wherever nothing
+            # else covers a pixel - a label's own background is transparent,
+            # so it is the page widget behind it that actually shows through
+            # its padding and the gaps between widgets. Every page lives
+            # inside the white, rounded content card, so any such gap showed
+            # as a hard-edged grey patch against it - most visible right at
+            # the top corner next to the page title, where the scrollbar
+            # starts. Fixed through the palette, not setStyleSheet(): giving
+            # *any* widget its own stylesheet - even a one-line "background:
+            # transparent" - makes Qt stop cascading the app-wide QSS to
+            # everything below it in that subtree, which silently strips
+            # every button inside the page back to an unstyled, textless
+            # outline (found rendering the delivery-apps sales field this
+            # way). The palette has no such side effect.
+            white = QPalette(container.viewport().palette())
+            white.setColor(QPalette.ColorRole.Window, QColor("#ffffff"))
+            container.viewport().setPalette(white)
+            container.setPalette(white)
+            widget.setPalette(white)
+            widget.setAutoFillBackground(True)
             container.setWidget(widget)
         else:
             container = widget

@@ -204,7 +204,7 @@ class ReportsModule(QWidget):
         # side to whoever only needs that one.
         sales_daily_rows = ""
         for entry in d['daily']:
-            if not (entry['cash'] or entry['pos'] or entry['transfer']):
+            if not (entry['cash'] or entry['pos'] or entry['transfer'] or entry['delivery']):
                 continue
             sales_daily_rows += (
                 "<tr>"
@@ -212,12 +212,13 @@ class ReportsModule(QWidget):
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['cash'])}</td>"
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['pos'])}</td>"
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['transfer'])}</td>"
+                f"<td style='padding:5px 8px;text-align:left'>{money(entry['delivery'])}</td>"
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['sales_total'])}</td>"
                 f"<td style='padding:5px 8px;text-align:left'>{money(entry['output_vat'])}</td>"
                 "</tr>"
             )
         if not sales_daily_rows:
-            sales_daily_rows = ("<tr><td colspan='6' style='padding:12px;text-align:center;color:#64748b'>"
+            sales_daily_rows = ("<tr><td colspan='7' style='padding:12px;text-align:center;color:#64748b'>"
                                 "لا توجد مبيعات في هذه الفترة</td></tr>")
 
         purchases_daily_rows = ""
@@ -309,6 +310,7 @@ class ReportsModule(QWidget):
             {row("كاش", sales['Cash']['total'])}
             {row("شبكة (مدى / فيزا)", sales['POS']['total'])}
             {row("تحويل بنكي", sales['Transfer']['total'])}
+            {row("تطبيقات التوصيل", sales['Delivery']['total'])}
             {row("إجمالي التحصيل", sales['grand_total'], bold=True)}
             {row("مرتجعات مبيعات", returns['sales_returns'])}
             {row("صافي المبيعات (بدون ضريبة)", d['net_sales'], bold=True)}
@@ -347,6 +349,7 @@ class ReportsModule(QWidget):
               <th style="padding:6px 8px;">كاش</th>
               <th style="padding:6px 8px;">شبكة</th>
               <th style="padding:6px 8px;">تحويل</th>
+              <th style="padding:6px 8px;">تطبيقات التوصيل</th>
               <th style="padding:6px 8px;">إجمالي المبيعات</th>
               <th style="padding:6px 8px;">ضريبة المبيعات</th>
             </tr>

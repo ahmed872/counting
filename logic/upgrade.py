@@ -25,7 +25,7 @@ from datetime import datetime
 # entirely once a database is already stamped with the current value - this
 # constant sitting still while the schema kept moving is exactly how a build
 # could ship a real migration with the safety net silently turned off.
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.3.0"
 
 _VERSION_KEY = "app_version"
 _BACKUP_PREFIX = "قبل-التحديث-"
