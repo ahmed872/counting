@@ -224,6 +224,16 @@ class MainWindow(QMainWindow):
             container.setWidgetResizable(True)
             container.setFrameShape(QScrollArea.Shape.NoFrame)
             container.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            # A QScrollArea's viewport paints the palette's plain grey Window
+            # colour by default, not its parent's. Nothing in a page normally
+            # covers every last pixel up to the scrollbar's own edge, so that
+            # grey showed through as a hard-edged rectangular patch sitting
+            # inside the white, rounded content card - most visible right at
+            # the top corner where the scrollbar starts, next to the page
+            # title. Making both the scroll area and its viewport transparent
+            # lets the white card underneath show through everywhere instead.
+            container.setStyleSheet("QScrollArea { background: transparent; }")
+            container.viewport().setStyleSheet("background: transparent;")
             container.setWidget(widget)
         else:
             container = widget
@@ -275,18 +285,27 @@ class MainWindow(QMainWindow):
         self.accounting = AccountingModule(self.db)
         self.other_balances = OtherBalancesModule(self.db)
 
-        # Screens built around a table must NOT be wrapped in a scroll area:
-        # inside one, the table only ever gets its minimum height and the page
-        # scrolls instead, so a 720p screen showed 5 rows out of 12. Left
-        # unwrapped, the table takes every spare pixel and scrolls its own rows.
-        # Only genuinely long documents keep the page-level scroll.
+        # Every table on every page now sizes itself to fit all of its own
+        # rows (see fit_table_height in common_widgets.py) instead of being
+        # boxed into a fixed height with its own small, easy-to-miss
+        # scrollbar - that is what let a payroll table show two of three
+        # employees with the third one simply gone from view. With that in
+        # place, every page can scroll as a whole - the same big,
+        # high-contrast scrollbar used throughout the app (see the note in
+        # theme.py), one consistent way to reach anything that does not fit,
+        # instead of a different rule on every screen. "التقارير" is the one
+        # exception: its QTextBrowser already scrolls its own long report
+        # content, and wrapping that in a second, outer scroll area produces
+        # exactly the nested-scroll confusion this change is fixing everywhere
+        # else - see the dashboard alerts-table fix earlier for what that
+        # looked like in practice.
         self.add_page("dashboard", self.dashboard)
-        self.add_page("sales", self.sales, scrollable=False)
-        self.add_page("hr", self.hr, scrollable=False)
-        self.add_page("purchases", self.purchases, scrollable=False)
-        self.add_page("suppliers", self.suppliers, scrollable=False)
-        self.add_page("customers", self.customers, scrollable=False)
+        self.add_page("sales", self.sales)
+        self.add_page("hr", self.hr)
+        self.add_page("purchases", self.purchases)
+        self.add_page("suppliers", self.suppliers)
+        self.add_page("customers", self.customers)
         self.add_page("reports", self.reports, scrollable=False)
-        self.add_page("accounting", self.accounting, scrollable=False)
-        self.add_page("other_balances", self.other_balances, scrollable=False)
+        self.add_page("accounting", self.accounting)
+        self.add_page("other_balances", self.other_balances)
         self.add_page("settings", self.settings)

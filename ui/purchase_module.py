@@ -21,7 +21,7 @@ from ui.labels import PAYMENT_STATUS_LABELS, REFUND_METHOD_LABELS, label_for
 from ui.formatting import money_item, money
 from ui.common_widgets import (page_header, danger_button, fill_table, compact_form,
                               pin_height, collapsible,
-                              collapse_when_short)
+                              collapse_when_short, fit_table_height)
 from logic.money import parse_money
 
 CATEGORY_LABELS = {
@@ -112,6 +112,8 @@ class PurchaseModule(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setMinimumHeight(90)
 
         table_header = QHBoxLayout()
         table_label = QLabel("الفواتير المسجلة:")
@@ -225,6 +227,8 @@ class PurchaseModule(QWidget):
         self.returns_table.verticalHeader().setVisible(False)
         self.returns_table.setAlternatingRowColors(True)
         self.returns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.returns_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.returns_table.setMinimumHeight(90)
         layout.addWidget(self.returns_table, 1)
 
         self.load_purchase_returns()
@@ -342,6 +346,7 @@ class PurchaseModule(QWidget):
         purchases = self.db.fetch_all(query)
         if not fill_table(self.table, len(purchases), "لا توجد فواتير مسجلة بعد"):
             self.purchases_total_label.setText("")
+            fit_table_height(self.table)
             return
         for row, p in enumerate(purchases):
             date_item = QTableWidgetItem(str(p['date']))
@@ -361,6 +366,7 @@ class PurchaseModule(QWidget):
             f"     |     الإجمالي: {money(total)} ريال"
             f"     |     منها ضريبة: {money(vat)} ريال"
         )
+        fit_table_height(self.table)
 
     def save_purchase_return(self):
         try:
@@ -454,6 +460,7 @@ class PurchaseModule(QWidget):
         """
         rows = self.db.fetch_all(query)
         if not fill_table(self.returns_table, len(rows), "لا توجد مرتجعات مسجلة"):
+            fit_table_height(self.returns_table)
             return
         for row, r in enumerate(rows):
             date_item = QTableWidgetItem(str(r['date']))
@@ -464,3 +471,4 @@ class PurchaseModule(QWidget):
             self.returns_table.setItem(row, 3, money_item(r['vat_amount']))
             method_label = label_for(REFUND_METHOD_LABELS, r['refund_method'])
             self.returns_table.setItem(row, 4, QTableWidgetItem(method_label))
+        fit_table_height(self.returns_table)

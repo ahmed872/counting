@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
                              QGroupBox, QTabWidget, QScrollArea)
 from PyQt6.QtCore import QDate, Qt
-from ui.common_widgets import create_stat_card, page_header, fill_table
+from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height
 from ui.formatting import money_item, money
 from logic.money import parse_money
 from logic.accounting import AccountingLogic
@@ -247,7 +247,12 @@ class HRModule(QWidget):
         self.payroll_table.setAlternatingRowColors(True)
         self.payroll_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.payroll_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.payroll_table.setMinimumHeight(140)
+        # No internal scrollbar: this table was boxed into a fixed height
+        # with its own hard-to-notice scrollbar, and three employees showed
+        # as two with the third hidden below the fold. It now grows to fit
+        # every row, and the page scrolls as a whole (see refresh_payroll).
+        self.payroll_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.payroll_table.setMinimumHeight(90)
         payroll_box = QGroupBox("ملخص الرواتب")
         payroll_box_layout = QVBoxLayout(payroll_box)
         payroll_box_layout.addWidget(self.payroll_table)
@@ -300,7 +305,11 @@ class HRModule(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.table.setMinimumHeight(140)
+        # Horizontal scroll (above) stays on the table itself; vertical
+        # scrolling is the page's job now, so the table shows every employee
+        # instead of a few behind its own internal scrollbar.
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.table.setMinimumHeight(90)
         employees_box = QGroupBox("قائمة العاملين والوثائق")
         employees_box_layout = QVBoxLayout(employees_box)
         employees_box_layout.addWidget(self.table)
@@ -645,6 +654,7 @@ class HRModule(QWidget):
         total_absent = 0
         if not fill_table(self.payroll_table, len(payroll), "لا يوجد موظفون مسجلون"):
             self.absent_card.value_label.setText("0")
+            fit_table_height(self.payroll_table)
             self.load_employees()
             return
         for row, item in enumerate(payroll):
@@ -661,6 +671,7 @@ class HRModule(QWidget):
             self.payroll_table.setItem(row, 9, money_item(item['net_salary'], bold=True))
 
         self.absent_card.value_label.setText(str(total_absent))
+        fit_table_height(self.payroll_table)
         self.load_employees()
 
     def load_employees(self):
@@ -697,6 +708,7 @@ class HRModule(QWidget):
             self.total_employees_card.value_label.setText("0")
             self.doc_alerts_card.value_label.setText(str(len(self.hr_logic.get_document_alerts())))
             self.advances_card.value_label.setText(money(self.hr_logic.get_outstanding_advances_total()))
+            fit_table_height(self.table)
             return
         for row, emp in enumerate(employees):
             self.table.setItem(row, 0, QTableWidgetItem(emp['name']))
@@ -717,6 +729,7 @@ class HRModule(QWidget):
         self.doc_alerts_card.value_label.setText(str(len(alerts)))
         outstanding_advances = self.hr_logic.get_outstanding_advances_total()
         self.advances_card.value_label.setText(money(outstanding_advances))
+        fit_table_height(self.table)
 
     def refresh_on_show(self):
         self.load_employees()

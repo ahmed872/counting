@@ -113,6 +113,29 @@ def fill_table(table: QTableWidget, row_count, empty_message):
     return True
 
 
+def fit_table_height(table: QTableWidget, minimum=90):
+    """Grow a table to fit every one of its own rows instead of being boxed
+    into a fixed height with its own internal scrollbar.
+
+    A table on a page with no scroll of its own used to get squeezed to a
+    couple of rows on a short window - the fix at the time was to keep that
+    page unwrapped so the table could claim all the spare space. That traded
+    one problem for another: a table with more rows than fit is still boxed
+    into whatever height the layout happens to give it, with a small,
+    easy-to-miss internal scrollbar hiding the rest (this is exactly what
+    happened to the payroll summary table - three employees, only two
+    visible). Call this after populating a table on a page that scrolls as a
+    whole (see add_page in main_window.py): the table always shows every row
+    it has, and the page's own scrollbar - big, familiar, the same one used
+    everywhere else - handles anything that does not fit on screen.
+    """
+    header_height = table.horizontalHeader().height()
+    rows_height = table.verticalHeader().length()
+    frame = table.frameWidth() * 2
+    total = header_height + rows_height + frame + 2
+    table.setFixedHeight(max(total, minimum))
+
+
 def create_stat_card(title, value, accent_color="#4f78a8"):
     """A plain light card with a colored top accent bar and dark text.
 

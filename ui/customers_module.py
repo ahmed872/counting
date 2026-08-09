@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, fill_table, compact_form, pin_height
+from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height
 from logic.money import parse_money
 
 
@@ -95,7 +95,8 @@ class CustomersModule(QWidget):
         self.customers_table.setAlternatingRowColors(True)
         self.customers_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.customers_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.customers_table.setMinimumHeight(120)
+        self.customers_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.customers_table.setMinimumHeight(90)
         self.customers_table.itemSelectionChanged.connect(self.on_customer_selected)
         list_layout.addWidget(self.customers_table, 1)
 
@@ -180,7 +181,8 @@ class CustomersModule(QWidget):
         self.statement_table.verticalHeader().setVisible(False)
         self.statement_table.setAlternatingRowColors(True)
         self.statement_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.statement_table.setMinimumHeight(140)
+        self.statement_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.statement_table.setMinimumHeight(90)
         pay_layout.addWidget(self.statement_table, 1)
         tabs.addTab(pay_tab, "بيع آجل وتحصيل")
 
@@ -226,6 +228,7 @@ class CustomersModule(QWidget):
         total = 0
         if not fill_table(self.customers_table, len(balances), "لا يوجد عملاء مسجلون بعد"):
             self.total_balance_label.setText("")
+            fit_table_height(self.customers_table)
             return
         for row, c in enumerate(balances):
             total += c['balance']
@@ -249,6 +252,7 @@ class CustomersModule(QWidget):
         else:
             summary = "لا يوجد مستحق على العملاء — كل الحسابات مسددة"
         self.total_balance_label.setText(summary)
+        fit_table_height(self.customers_table)
 
     def reload_customer_picker(self, balances):
         previous = self.selected_customer_id
@@ -303,10 +307,12 @@ class CustomersModule(QWidget):
     def refresh_statement(self):
         if not self.selected_customer_id:
             self.statement_table.setRowCount(0)
+            fit_table_height(self.statement_table)
             return
         statement = self.accounting.get_customer_statement(self.selected_customer_id)
         entries = statement['entries']
         if not fill_table(self.statement_table, len(entries), "لا توجد حركات على هذا العميل"):
+            fit_table_height(self.statement_table)
             return
         for row, e in enumerate(entries):
             self.statement_table.setItem(row, 0, QTableWidgetItem(str(e['date'] or "")))
@@ -314,6 +320,7 @@ class CustomersModule(QWidget):
             self.statement_table.setItem(row, 2, money_item(e['debit'], blank_if_zero=True))
             self.statement_table.setItem(row, 3, money_item(e['credit'], blank_if_zero=True))
             self.statement_table.setItem(row, 4, money_item(e['balance'], bold=True))
+        fit_table_height(self.statement_table)
 
     def record_credit_sale(self):
         if not self.selected_customer_id:

@@ -20,7 +20,7 @@ from logic.accounting import AccountingLogic
 from ui.common_widgets import create_stat_card
 from ui.labels import ACCOUNT_TYPE_LABELS, label_for
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, hide_when_short, fill_table
+from ui.common_widgets import page_header, hide_when_short, fill_table, fit_table_height
 
 
 class AccountingModule(QWidget):
@@ -116,6 +116,7 @@ class AccountingModule(QWidget):
         self.table.setAlternatingRowColors(True)
         self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         v.addWidget(self.table)
 
         self.tb_totals_label = QLabel("إجمالي مدين: 0.00   |   إجمالي دائن: 0.00")
@@ -211,6 +212,7 @@ class AccountingModule(QWidget):
         self.bs_table.verticalHeader().setVisible(False)
         self.bs_table.setAlternatingRowColors(True)
         self.bs_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.bs_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         v.addWidget(self.bs_table, 1)
         return widget
 
@@ -249,6 +251,7 @@ class AccountingModule(QWidget):
         self.ledger_table.verticalHeader().setVisible(False)
         self.ledger_table.setAlternatingRowColors(True)
         self.ledger_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.ledger_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         v.addWidget(self.ledger_table, 1)
 
         for account in self.accounting.get_all_accounts():
@@ -262,6 +265,7 @@ class AccountingModule(QWidget):
         ledger = self.accounting.get_account_ledger(code)
         if not fill_table(self.ledger_table, len(ledger['entries']), "لا توجد حركات على هذا الحساب"):
             self.ledger_balance_label.setText(f"الرصيد: {money(ledger['balance'])} ريال")
+            fit_table_height(self.ledger_table)
             return
         for row, e in enumerate(ledger['entries']):
             self.ledger_table.setItem(row, 0, QTableWidgetItem(str(e['date'] or "")))
@@ -269,6 +273,7 @@ class AccountingModule(QWidget):
             self.ledger_table.setItem(row, 2, money_item(e['debit'], blank_if_zero=True))
             self.ledger_table.setItem(row, 3, money_item(e['credit'], blank_if_zero=True))
         self.ledger_balance_label.setText(f"الرصيد: {money(ledger['balance'])} ريال")
+        fit_table_height(self.ledger_table)
 
     # ---------- Behaviour ----------
 
@@ -352,6 +357,7 @@ class AccountingModule(QWidget):
         self.tb_totals_label.setStyleSheet(
             f"font-weight: 800; padding: 8px; color: {color}; background: transparent; border: none;"
         )
+        fit_table_height(self.table)
 
         self.refresh_trading_account()
 
@@ -363,6 +369,7 @@ class AccountingModule(QWidget):
             self.bs_table.setItem(row, 1, QTableWidgetItem(item['name']))
             self.bs_table.setItem(row, 2, money_item(item['debit'], blank_if_zero=True))
             self.bs_table.setItem(row, 3, money_item(item['credit'], blank_if_zero=True))
+        fit_table_height(self.bs_table)
 
     def refresh_trading_account(self):
         start_date, end_date = self.resolve_period()

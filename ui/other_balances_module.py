@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, fill_table, compact_form, pin_height
+from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height
 from logic.money import parse_money
 
 PREPAID_TARGET_LABELS = [
@@ -103,7 +103,8 @@ class OtherBalancesModule(QWidget):
         self.loans_table.setAlternatingRowColors(True)
         self.loans_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.loans_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.loans_table.setMinimumHeight(120)
+        self.loans_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.loans_table.setMinimumHeight(90)
         self.loans_table.itemSelectionChanged.connect(self.on_loan_selected)
         layout.addWidget(self.loans_table, 1)
 
@@ -268,7 +269,8 @@ class OtherBalancesModule(QWidget):
         self.prepaid_table.setAlternatingRowColors(True)
         self.prepaid_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.prepaid_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.prepaid_table.setMinimumHeight(120)
+        self.prepaid_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.prepaid_table.setMinimumHeight(90)
         self.prepaid_table.itemSelectionChanged.connect(self.on_prepaid_selected)
         layout.addWidget(self.prepaid_table, 1)
 

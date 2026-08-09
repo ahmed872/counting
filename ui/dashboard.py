@@ -6,7 +6,7 @@ from PyQt6.QtGui import QColor
 from PyQt6.QtCore import Qt
 from logic.hr import HRLogic
 from logic.accounting import AccountingLogic
-from ui.common_widgets import create_stat_card, page_header, fill_table
+from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height
 from ui.formatting import riyal, money
 
 
@@ -146,7 +146,7 @@ class DashboardModule(QWidget):
 
         if not fill_table(self.alerts_table, len(alerts),
                           "لا توجد وثائق تقترب من الانتهاء خلال هذه المدة"):
-            self._fit_alerts_table_height()
+            fit_table_height(self.alerts_table)
             return
 
         for row, alert in enumerate(alerts):
@@ -180,16 +180,7 @@ class DashboardModule(QWidget):
                     if item:
                         item.setBackground(colour)
 
-        self._fit_alerts_table_height()
-
-    def _fit_alerts_table_height(self):
-        """Grow the table to fit every row instead of hiding rows behind its
-        own internal scrollbar (see the comment where the table is built)."""
-        header_height = self.alerts_table.horizontalHeader().height()
-        rows_height = self.alerts_table.verticalHeader().length()
-        frame = self.alerts_table.frameWidth() * 2
-        total = header_height + rows_height + frame + 2
-        self.alerts_table.setFixedHeight(max(total, 90))
+        fit_table_height(self.alerts_table)
 
     def _set_banner(self, text, fg, bg, border):
         self.today_banner.setText(text)
