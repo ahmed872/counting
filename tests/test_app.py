@@ -1905,7 +1905,7 @@ def main():
             usernames = {u["username"] for u in auth.list_users()}
             assert "old_admin" in usernames, \
                 "the existing account did not survive the CHECK-constraint rebuild"
-            auth.create_user("cashier_migration_test", "pass123456", "cashier")
+            auth.create_user("cashier_migration_test", "pass123456", "cashier", branch_id=1)
             cashier = next(u for u in auth.list_users() if u["username"] == "cashier_migration_test")
             assert cashier["role"] == "cashier", \
                 "an old-shaped users table still rejects the cashier role"
@@ -2036,7 +2036,7 @@ def main():
         from logic.auth import AuthLogic
         from PyQt6.QtWidgets import QPushButton
         auth = AuthLogic(db)
-        uid = auth.create_user("cashier_role_test", "cashierpass1", "cashier")
+        uid = auth.create_user("cashier_role_test", "cashierpass1", "cashier", branch_id=1)
         cashier_user = auth.authenticate("cashier_role_test", "cashierpass1")
         cashier_window = MainWindow(db, current_user=cashier_user)
         cashier_window.show()
@@ -2062,6 +2062,97 @@ def main():
             db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
     check("a cashier only reaches dashboard/sales/customers, fully usable there",
           cashier_role_only_reaches_sales_customers_and_dashboard)
+
+    def creating_a_cashier_without_a_branch_is_refused():
+        """A cashier account with no branch to lock to would default to
+        seeing every branch - exactly the access a cashier must not have.
+        create_user refuses to create one at all rather than silently
+        seeding an unscoped account."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        try:
+            auth.create_user("cashier_no_branch_test", "pass123456", "cashier")
+            assert False, "creating a cashier with no branch_id was accepted"
+        except ValueError as exc:
+            assert "فرع" in str(exc), f"wrong rejection reason: {exc}"
+        finally:
+            # Only matters if the guard above is broken and a row actually
+            # got created - kept so a regression here does not also take
+            # down every later test that assumes a clean users table.
+            db.execute_query(
+                "DELETE FROM users WHERE username = 'cashier_no_branch_test'")
+    check("a cashier account cannot be created without a branch",
+          creating_a_cashier_without_a_branch_is_refused)
+
+    def a_cashier_is_locked_to_their_own_branch_in_sales():
+        """The nav-level restriction above keeps a cashier off every page
+        but Sales/Customers/dashboard - this checks the finer-grained rule
+        inside Sales itself: a cashier for one branch must not see or
+        touch another branch's register at all. Checked with two real
+        branches and one real sale recorded against each: the cashier's own
+        branch dropdown is locked (disabled, pre-selected to their branch)
+        on both the entry form and the returns tab, and the day's-history
+        table only ever shows their own branch's row, not the other one."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        second_branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)", ("فرع الاختبار الثاني", ""))
+        uid = auth.create_user("branch_lock_test", "pass123456", "cashier", branch_id=1)
+        cashier_user = auth.authenticate("branch_lock_test", "pass123456")
+        cashier_window = MainWindow(db, current_user=cashier_user)
+        cashier_window.show()
+        app.processEvents()
+        app.processEvents()
+        try:
+            sales = cashier_window.sales
+            assert not sales.branch_input.isEnabled(), \
+                "a cashier can still change the branch on the sales entry form"
+            assert sales.branch_input.currentData() == 1, \
+                "the sales entry form is not pre-locked to the cashier's own branch"
+            assert not sales.return_branch_input.isEnabled(), \
+                "a cashier can still change the branch on the returns tab"
+
+            # One real sale against each branch, straight through the same
+            # save path an admin uses, so the history table's own branch
+            # filter is what is actually under test, not a data-setup shortcut.
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for branch_id, amount in ((1, 1000), (second_branch_id, 2000)):
+                # Same "replace today's row" rule the real save path uses
+                # (see save_daily_sales) - earlier tests sharing this same
+                # database may already have a Cash row for branch 1 today.
+                db.execute_query(
+                    "DELETE FROM sales WHERE branch_id = ? AND date(date) = date('now') "
+                    "AND payment_method = 'Cash'", (branch_id,))
+                with db.transaction() as cursor:
+                    db.insert_journal_entry(cursor, timestamp, "اختبار قفل الفرع", None, [
+                        {"account_code": "1000", "debit": amount, "credit": 0},
+                        {"account_code": "4000", "debit": 0, "credit": amount},
+                    ])
+                db.execute_query(
+                    "INSERT INTO sales (branch_id, date, total_amount, vat_amount, payment_method) "
+                    "VALUES (?, date('now'), ?, 0, 'Cash')", (branch_id, amount))
+            sales.load_history()
+            for _ in range(2):
+                app.processEvents()
+
+            branch_names_shown = {sales.table.item(row, 1).text()
+                                   for row in range(sales.table.rowCount())}
+            assert "فرع الاختبار الثاني" not in branch_names_shown, (
+                f"a Branch-1 cashier can see the other branch's sales history: "
+                f"{branch_names_shown}")
+        finally:
+            cashier_window.close()
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+            # Only the exact rows this test itself inserted (today, Cash,
+            # these two branches) - not every branch-1 sale, which other
+            # tests sharing this same database may still depend on.
+            db.execute_query(
+                "DELETE FROM sales WHERE branch_id IN (?, ?) AND date(date) = date('now') "
+                "AND payment_method = 'Cash'", (1, second_branch_id))
+            db.execute_query("DELETE FROM branches WHERE id = ?", (second_branch_id,))
+    check("a cashier is locked to their own branch's register, cannot see the other branch's",
+          a_cashier_is_locked_to_their_own_branch_in_sales)
 
     def admin_sees_settings_and_the_user_list_inside_it():
         from logic.auth import AuthLogic

@@ -94,7 +94,7 @@ class AuthLogic:
         return self._public(row)
 
     def create_user(self, username, password, role, display_name=None,
-                     must_change_password=False):
+                     must_change_password=False, branch_id=None):
         username = (username or "").strip().lower()
         if not username:
             raise ValueError("اسم المستخدم مطلوب")
@@ -102,22 +102,31 @@ class AuthLogic:
             raise ValueError("كلمة المرور مطلوبة")
         if role not in (ROLE_ADMIN, ROLE_MANAGER, ROLE_CASHIER, ROLE_VIEWER):
             raise ValueError("صلاحية غير معروفة")
+        # A cashier's whole job is scoped to one branch (see
+        # apply_role_restrictions in main_window.py) - an account with no
+        # branch to lock to would default to seeing every branch, exactly
+        # the access a cashier is not supposed to have.
+        if role == ROLE_CASHIER and not branch_id:
+            raise ValueError("الكاشير لازم يتربط بفرع واحد")
         if self.db.fetch_one("SELECT id FROM users WHERE username = ?", (username,)):
             raise ValueError(f"اسم المستخدم «{username}» مستخدم بالفعل")
         password_hash, salt = _hash_password(password)
         self.db.execute_query(
             """INSERT INTO users
-               (username, password_hash, password_salt, role, display_name, must_change_password)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (username, password_hash, salt, role, display_name or username,
-             1 if must_change_password else 0),
+               (username, password_hash, password_salt, role, branch_id, display_name,
+                must_change_password)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (username, password_hash, salt, role, branch_id if role == ROLE_CASHIER else None,
+             display_name or username, 1 if must_change_password else 0),
         )
         return self.db.fetch_one("SELECT id FROM users WHERE username = ?", (username,))["id"]
 
     def list_users(self):
         rows = self.db.fetch_all(
-            "SELECT id, username, role, display_name, must_change_password, is_active, created_at "
-            "FROM users ORDER BY role, username"
+            "SELECT u.id, u.username, u.role, u.branch_id, b.name AS branch_name, "
+            "       u.display_name, u.must_change_password, u.is_active, u.created_at "
+            "FROM users u LEFT JOIN branches b ON b.id = u.branch_id "
+            "ORDER BY u.role, u.username"
         )
         return [dict(r) for r in rows]
 
@@ -147,6 +156,7 @@ class AuthLogic:
             "id": row["id"],
             "username": row["username"],
             "role": row["role"],
+            "branch_id": row["branch_id"],
             "display_name": row["display_name"],
             "must_change_password": bool(row["must_change_password"]),
         }

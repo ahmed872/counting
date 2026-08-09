@@ -333,7 +333,7 @@ class MainWindow(QMainWindow):
         self.hr_logic = HRLogic(self.db)
 
         self.dashboard = DashboardModule(self.db)
-        self.sales = SalesEntryModule(self.db)
+        self.sales = SalesEntryModule(self.db, current_user=self.current_user)
         self.hr = HRModule(self.db, self.hr_logic)
         self.purchases = PurchaseModule(self.db)
         self.suppliers = SuppliersModule(self.db)
@@ -389,7 +389,11 @@ class MainWindow(QMainWindow):
         from using. A cashier is narrower still: rather than every page
         with its mutating widgets disabled, only CASHIER_PAGES are reachable
         at all - the rest do not even appear in the sidebar, the same
-        treatment Settings already gets for every non-admin."""
+        treatment Settings already gets for every non-admin. Within Sales
+        itself a cashier is further locked to the one branch on their own
+        account (see SalesEntryModule._locked_branch_id) - a cashier for
+        Branch A must not see or touch Branch B's register at all, not just
+        stay off the pages that are not their job."""
         role = self.current_user.get("role")
         if role != "admin":
             self.btn_settings.setVisible(False)

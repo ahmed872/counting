@@ -231,6 +231,7 @@ class DBManager:
                     password_hash TEXT NOT NULL,
                     password_salt TEXT NOT NULL,
                     role TEXT CHECK(role IN ('admin', 'manager', 'cashier', 'viewer')) NOT NULL,
+                    branch_id INTEGER REFERENCES branches(id),
                     display_name TEXT,
                     must_change_password INTEGER DEFAULT 0,
                     is_active INTEGER DEFAULT 1,
@@ -245,6 +246,13 @@ class DBManager:
                 FROM users_pre_cashier
             """)
             cursor.execute("DROP TABLE users_pre_cashier")
+
+        # A cashier is now locked to one branch (see apply_role_restrictions
+        # in main_window.py) - a plain ADD COLUMN, not a CHECK constraint,
+        # so no rebuild needed even for a database that already went
+        # through the rebuild above in an earlier run.
+        if self.table_exists(cursor, 'users') and 'branch_id' not in table_columns('users'):
+            cursor.execute("ALTER TABLE users ADD COLUMN branch_id INTEGER REFERENCES branches(id)")
 
         self.arabise_account_names(cursor)
         self.enforce_uniqueness(cursor)
