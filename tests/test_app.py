@@ -2816,7 +2816,6 @@ def main():
         label that used to vanish is reachable by actually scrolling to it,
         not just that a scrollbar exists."""
         from PyQt6.QtGui import QFont
-        from PyQt6.QtWidgets import QTabWidget, QLabel
         original_font = app.font()
         big_font = QFont(original_font)
         big_font.setPointSize(original_font.pointSize() + 6)
@@ -2826,8 +2825,15 @@ def main():
             window.resize(1280, 800)
             for _ in range(3):
                 app.processEvents()
-            goto("customers")
-            window.customers.findChild(QTabWidget).setCurrentIndex(1)
+            # Suppliers' "الموردون والأرصدة" tab still packs enough fields
+            # into one compact_form row to reliably outgrow the window under
+            # the stress font. Customers used to be the reliable case here,
+            # but its own compact_form rows were split across more rows to
+            # stop it overflowing at all under normal use (reported live -
+            # a scrollbar was showing up on an ordinary window), so it no
+            # longer overflows even under this much stress - which is the
+            # point of that fix, not a reason to drop this check.
+            goto("suppliers")
             for _ in range(3):
                 app.processEvents()
 
@@ -2843,8 +2849,10 @@ def main():
             assert hbar.isVisible(), \
                 "content overflows the window but the horizontal scrollbar is not visible to reach it"
 
-            target = next(l for l in window.customers.findChildren(QLabel)
-                          if "لا يوجد عملاء" in l.text())
+            # total_balance_label's text is entirely data-dependent (empty,
+            # "المستحق للموردين", "مدفوع بالزيادة"...), so target the widget
+            # itself rather than search for text that may not be showing.
+            target = window.suppliers.total_balance_label
             hbar.setValue(0)
             for _ in range(2):
                 app.processEvents()
@@ -2864,6 +2872,37 @@ def main():
                 app.processEvents()
     check("content wider than the window is reachable by horizontal scroll, not silently clipped",
           wide_content_is_reachable_by_horizontal_scroll_not_silently_clipped)
+
+    def customers_page_needs_no_horizontal_scroll_at_the_app_minimum_size():
+        """The "بيع آجل وتحصيل" tab's two compact_form rows - "تسجيل بيع
+        آجل" (3 fields in one row) and "تسجيل تحصيل من العميل" (4 fields in
+        one row) - together forced this page more than 1000px wide even at
+        the app's own normal font, wider than a horizontal scrollbar showed
+        up on an ordinary window - reported live via screenshot (a clipped
+        "لاء" instead of "العملاء" and a cut-off tab label). Given a
+        QTabWidget sizes itself to the widest of ALL its tabs, not just the
+        current one (see the dead-space fix elsewhere in this file for the
+        same "hidden tab still counts" mechanic), the fix was splitting
+        those two rows across more, narrower rows instead of one wide one.
+        Checked at the app's own documented minimum window size (1040x640,
+        see MainWindow.setMinimumSize) with the normal font - no font
+        stress needed here, this reproduced at completely ordinary sizes."""
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+        goto("customers")
+        for _ in range(3):
+            app.processEvents()
+        container = window.content_stack.currentWidget()
+        hbar = container.horizontalScrollBar()
+        assert not hbar.isVisible(), (
+            f"العملاء still needs horizontal scroll at the app's own minimum "
+            f"window size (hbar max={hbar.maximum()})")
+        window.resize(1526, 900)
+        for _ in range(3):
+            app.processEvents()
+    check("the customers page fits without horizontal scroll at the app's minimum window size",
+          customers_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
 
     def hr_table_boxes_do_not_stretch_into_a_dead_gap():
         """"قائمة العاملين والوثائق" and "ملخص الرواتب" each used to give

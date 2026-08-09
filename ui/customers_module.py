@@ -72,7 +72,7 @@ class CustomersModule(QWidget):
             ("رقم الجوال", self.phone_input),
             ("رصيد افتتاحي (مستحق له علينا)", self.opening_balance_input),
             (None, add_btn),
-        ], columns=3, field_min_width=150))
+        ], columns=2, field_min_width=130))
         list_layout.addWidget(pin_height(form_box))
 
         list_header_row = QHBoxLayout()
@@ -145,7 +145,7 @@ class CustomersModule(QWidget):
             ("المبلغ", self.sale_amount),
             ("البيان", self.sale_notes),
             (None, sale_btn),
-        ], columns=3, field_min_width=150))
+        ], columns=2, field_min_width=150))
         pay_layout.addWidget(pin_height(sale_box))
 
         self.collect_amount = QLineEdit()
@@ -168,7 +168,7 @@ class CustomersModule(QWidget):
             ("طريقة التحصيل", self.collect_method),
             ("ملاحظات", self.collect_notes),
             (None, collect_btn),
-        ], columns=4, field_min_width=130))
+        ], columns=2, field_min_width=150))
         pay_layout.addWidget(pin_height(collect_box))
 
         statement_label = QLabel("كشف حساب العميل")
