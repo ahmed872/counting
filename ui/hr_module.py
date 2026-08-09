@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QTableWidgetItem, QPushButton, QFormLayout, QLineEdit,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
-                             QGroupBox, QTabWidget, QScrollArea)
+                             QGroupBox, QTabWidget)
 from PyQt6.QtCore import QDate, Qt
 from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height
 from ui.formatting import money_item, money
@@ -30,10 +30,12 @@ class HRModule(QWidget):
         tabs.setDocumentMode(True)
         root_layout.addWidget(tabs)
 
-        setup_scroll = QScrollArea()
-        setup_scroll.setWidgetResizable(True)
-        setup_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
-        setup_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        # A plain widget, like the other three tabs - not its own QScrollArea.
+        # The whole HR page already scrolls as a single unit (see add_page in
+        # main_window.py); wrapping this one tab in a second, inner scroll
+        # area on top of that gave "الموظفون" two separate scrollbars for
+        # the same content, one nested inside the other - confirmed live,
+        # and confusing about which one actually moved what.
         setup_scroll_widget = QWidget()
         setup_layout = QVBoxLayout(setup_scroll_widget)
         setup_layout.setContentsMargins(6, 6, 6, 6)
@@ -199,8 +201,7 @@ class HRModule(QWidget):
         deduction_layout.addRow("المبلغ:", self.deduction_amount)
         deduction_layout.addRow("ملاحظات:", self.deduction_notes)
         deduction_layout.addRow(deduction_btn)
-        setup_scroll.setWidget(setup_scroll_widget)
-        tabs.addTab(setup_scroll, "الموظفون")
+        tabs.addTab(setup_scroll_widget, "الموظفون")
 
         # --- Attendance / deductions get their own tab: cramming them under the
         # employee form pushed the payroll controls off the bottom of the window.

@@ -278,6 +278,35 @@ class MainWindow(QMainWindow):
             container.setPalette(white)
             widget.setPalette(white)
             widget.setAutoFillBackground(True)
+            # setWidgetResizable(True) is supposed to keep the widget's width
+            # pinned to the viewport's, but Qt only re-checks that on an
+            # actual resize *event* - the viewport can narrow (a scrollbar
+            # appearing) or the widget's own sizeHint can change (switching
+            # a QTabWidget's tab, a table gaining rows) with nothing telling
+            # the widget to match. It keeps its old, wider size and gets
+            # anchored under RTL with a large *negative* x offset instead of
+            # flush against the near edge - reported live: entire form
+            # fields and whole buttons pushed off the left of the window,
+            # unreachable, since horizontal scrolling is deliberately off
+            # (see above). Pinned from two angles so neither trigger is
+            # missed: the viewport's own resize (covers a window resize or a
+            # scrollbar toggling), and explicitly whenever a page is actually
+            # shown (covers everything else - a tab switch, a table
+            # growing - since Qt does not guarantee the resize fires
+            # synchronously inside whatever triggered it).
+            policy = widget.sizePolicy()
+            policy.setHorizontalPolicy(QSizePolicy.Policy.Expanding)
+            widget.setSizePolicy(policy)
+            viewport = container.viewport()
+            original_viewport_resize = viewport.resizeEvent
+
+            def _pin_widget_width(event, viewport=viewport, widget=widget,
+                                   original=original_viewport_resize):
+                original(event)
+                if widget.width() != viewport.width():
+                    widget.resize(viewport.width(), widget.height())
+
+            viewport.resizeEvent = _pin_widget_width
             container.setWidget(widget)
         else:
             container = widget
@@ -302,6 +331,20 @@ class MainWindow(QMainWindow):
         refresh = getattr(entry["page"], "refresh_on_show", None)
         if callable(refresh):
             refresh()
+        # refresh() can grow a page's own content (a table gaining rows, a
+        # QTabWidget switching to a wider tab) enough to change how wide the
+        # page wants to be, without the window itself ever resizing. The
+        # viewport's own resize handler (see add_page) catches most of that,
+        # but Qt does not guarantee it fires synchronously inside refresh()
+        # itself - re-checked here too, right as the page is actually about
+        # to be shown, the point where a stale, mismatched width would
+        # otherwise get anchored off screen under RTL.
+        container = self.content_stack.widget(index)
+        if isinstance(container, QScrollArea):
+            page_widget = container.widget()
+            viewport_width = container.viewport().width()
+            if page_widget is not None and page_widget.width() != viewport_width:
+                page_widget.resize(viewport_width, page_widget.height())
 
     def init_modules(self):
         from ui.dashboard import DashboardModule

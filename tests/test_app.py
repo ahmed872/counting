@@ -2783,6 +2783,24 @@ def main():
     check("transaction dates cannot be set in the future, but expiry dates still can",
           transaction_dates_cannot_be_set_in_the_future)
 
+    def no_page_nests_a_second_scroll_area_inside_the_page_level_one():
+        """Every page already scrolls as a single unit (see add_page in
+        main_window.py). HR's "الموظفون" tab and two tabs on the accounting
+        page each used to wrap their own content in a *second* QScrollArea
+        on top of that - one scrollbar nested inside another, reported live
+        as "two scrollbars, I don't know which one does what". A page's own
+        widget tree must never contain a QScrollArea of its own; the outer
+        one add_page already provides is the only one that should exist."""
+        bad = []
+        for label in pages:
+            entry = goto(label)
+            nested = entry["page"].findChildren(QScrollArea)
+            if nested:
+                bad.append((label, len(nested)))
+        assert not bad, f"pages with their own nested scroll area: {bad}"
+    check("no page nests a second scroll area inside the page-level one",
+          no_page_nests_a_second_scroll_area_inside_the_page_level_one)
+
     print("\n" + "=" * 52)
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")
