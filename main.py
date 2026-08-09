@@ -84,6 +84,13 @@ def show_expiry_notifications(db):
     box.setWindowTitle("تنبيهات انتهاء وثائق العمال")
     box.setIcon(QMessageBox.Icon.Warning)
     box.setText("\n".join(lines))
+    # Every string this program shows is its own Arabic text - Qt's built-in
+    # standard-button labels are the one exception, since they come from Qt's
+    # own translation catalog rather than this codebase, and that catalog is
+    # never loaded (see packaging/restaurant_erp.spec). Without an explicit
+    # label, exec() falls back to Qt's compiled-in English "OK".
+    ok_button = box.addButton("موافق", QMessageBox.ButtonRole.AcceptRole)
+    box.setDefaultButton(ok_button)
     box.exec()
 
 

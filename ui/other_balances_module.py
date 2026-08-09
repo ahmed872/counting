@@ -106,7 +106,7 @@ class OtherBalancesModule(QWidget):
         self.loans_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.loans_table.setMinimumHeight(90)
         self.loans_table.itemSelectionChanged.connect(self.on_loan_selected)
-        layout.addWidget(self.loans_table, 1)
+        layout.addWidget(self.loans_table)
 
         self.loan_payment_amount = QLineEdit()
         self.loan_payment_amount.setPlaceholderText("0.00")
@@ -125,6 +125,7 @@ class OtherBalancesModule(QWidget):
             (None, pay_loan_btn),
         ], columns=3, field_min_width=150))
         layout.addWidget(pin_height(pay_loan_box))
+        layout.addStretch()
 
         return widget
 
@@ -272,7 +273,7 @@ class OtherBalancesModule(QWidget):
         self.prepaid_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.prepaid_table.setMinimumHeight(90)
         self.prepaid_table.itemSelectionChanged.connect(self.on_prepaid_selected)
-        layout.addWidget(self.prepaid_table, 1)
+        layout.addWidget(self.prepaid_table)
 
         self.release_amount_input = QLineEdit()
         self.release_amount_input.setPlaceholderText("0.00")
@@ -287,6 +288,7 @@ class OtherBalancesModule(QWidget):
             (None, release_btn),
         ], columns=2, field_min_width=150))
         layout.addWidget(pin_height(release_box))
+        layout.addStretch()
 
         return widget
 

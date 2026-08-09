@@ -153,6 +153,7 @@ class HRModule(QWidget):
         form_outer.addSpacing(6)
         form_outer.addLayout(buttons_row)
         setup_layout.addWidget(form_group)
+        setup_layout.addStretch()
 
         attendance_group = QGroupBox("تسجيل الحضور والغياب")
         attendance_layout = QFormLayout(attendance_group)
@@ -295,6 +296,7 @@ class HRModule(QWidget):
         accrued_layout.addRow("طريقة السداد:", self.accrued_pay_method)
         accrued_layout.addRow(accrued_pay_btn)
         payroll_tab_layout.addWidget(accrued_box)
+        payroll_tab_layout.addStretch()
 
         tabs.addTab(payroll_widget, "الرواتب")
 

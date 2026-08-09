@@ -177,7 +177,8 @@ class SalesEntryModule(QWidget):
         self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.table.setMinimumHeight(90)
-        layout.addWidget(self.table, 1)
+        layout.addWidget(self.table)
+        layout.addStretch()
 
         self.update_preview()
         self.load_history()
@@ -263,7 +264,8 @@ class SalesEntryModule(QWidget):
         self.returns_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.returns_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.returns_table.setMinimumHeight(90)
-        layout.addWidget(self.returns_table, 1)
+        layout.addWidget(self.returns_table)
+        layout.addStretch()
 
         self.load_sales_returns()
         return widget

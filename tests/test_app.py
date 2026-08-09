@@ -2939,6 +2939,92 @@ def main():
     check("the employee-list table leaves room below its last row for its own horizontal scrollbar",
           employee_table_reserves_room_for_its_own_horizontal_scrollbar)
 
+    def hiding_a_form_does_not_leave_a_dead_gap_above_its_table():
+        """"المبيعات اليومية" and friends live inside a QTabWidget tab, and a
+        QTabWidget hands its current tab page the tab bar's own full
+        available height regardless of what that page's layout actually
+        needs (the same root cause behind the HR dead-gap bug above). The
+        history table below the entry form was given a layout stretch
+        factor - and even without one, QTableWidget's own default size
+        policy wants to grow - so any height the tab page is handed beyond
+        what its fixed-height content needs gets allocated to the table's
+        layout cell; since the table cannot actually grow past its own
+        fixed height, Qt centres it inside that cell instead, opening a
+        blank gap above the table that grows exactly when hiding the entry
+        form should have made the page more compact, not less - reported
+        live as "why is everything crammed at the bottom instead of taking
+        its own room". Checked by hiding the form and confirming the table
+        moves up to sit right under the toggle button/history row, not
+        floating in the middle of a lot of blank space."""
+        goto("sales")
+        page = window.sales
+        toggle = next(
+            b for b in page.findChildren(QPushButton)
+            if b.text() in ("إظهار نموذج التسجيل", "إخفاء النموذج"))
+        if toggle.text() == "إظهار نموذج التسجيل":
+            toggle.click()
+            for _ in range(2):
+                app.processEvents()
+        toggle.click()  # hide the form
+        for _ in range(4):
+            app.processEvents()
+        gap = page.table.geometry().top() - (toggle.geometry().top() + toggle.geometry().height())
+        assert gap < 40, (
+            f"hiding the entry form left a {gap}px dead gap above the table "
+            f"instead of the table sitting right under the toggle button")
+    check("hiding the sales entry form does not leave a dead gap above the history table",
+          hiding_a_form_does_not_leave_a_dead_gap_above_its_table)
+
+    def document_expiry_alert_uses_arabic_ok_button():
+        """A plain QMessageBox() with no explicit button falls back to Qt's
+        own compiled-in English standard-button text ("OK") since this app
+        never loads a QTranslator for Qt's own strings (see
+        packaging/restaurant_erp.spec) - every OTHER dialog in the app
+        supplies its own Arabic text, but this one alert, built with
+        box.exec() and no addButton() call, slipped through and showed an
+        English "OK" - reported live via screenshot. Checked by forcing an
+        alert (an employee with a document expiring inside 30 days) and
+        confirming the dialog's actual button carries the Arabic text, not
+        the English default."""
+        from main import show_expiry_notifications
+        from datetime import date, timedelta
+        row = db.fetch_one("SELECT id FROM employees LIMIT 1")
+        if row is None:
+            db.execute_query(
+                "INSERT INTO employees (name, job_title, base_salary) VALUES (?, ?, ?)",
+                ("موظف تنبيه", "عامل", 5000))
+            row = db.fetch_one("SELECT id FROM employees LIMIT 1")
+        soon = (date.today() + timedelta(days=5)).isoformat()
+        db.execute_query("UPDATE employees SET iqama_expiry = ? WHERE id = ?", (soon, row["id"]))
+
+        captured = {}
+        original_exec = QMessageBox.exec
+
+        def fake_exec(self):
+            # Qt only auto-adds its English default button once the box is
+            # actually shown/polished - exec() without ever showing it
+            # would miss the exact bug being checked for here.
+            self.show()
+            app.processEvents()
+            captured["box"] = self
+            self.close()
+            return QMessageBox.StandardButton.Ok
+
+        QMessageBox.exec = fake_exec
+        try:
+            show_expiry_notifications(db)
+        finally:
+            QMessageBox.exec = original_exec
+            db.execute_query("UPDATE employees SET iqama_expiry = NULL WHERE id = ?", (row["id"],))
+
+        box = captured.get("box")
+        assert box is not None, "test setup did not trigger the expiry alert at all"
+        texts = [b.text().replace("&", "") for b in box.buttons()]
+        assert "OK" not in texts, f"the alert still shows Qt's English default button: {texts}"
+        assert "موافق" in texts, f"expected the Arabic موافق button, found: {texts}"
+    check("the document-expiry alert's button reads موافق, not the English default OK",
+          document_expiry_alert_uses_arabic_ok_button)
+
     def login_dialog_has_a_clean_white_background_and_a_working_button():
         """A plain QDialog paints the palette's grey Window colour by
         default, which read as an unfinished box floating on the desktop

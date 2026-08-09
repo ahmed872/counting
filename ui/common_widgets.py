@@ -136,6 +136,14 @@ def fit_table_height(table: QTableWidget, minimum=90):
     if table.horizontalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff:
         total += table.horizontalScrollBar().sizeHint().height()
     table.setFixedHeight(max(total, minimum))
+    # QTableWidget's own default policy wants to grow (Expanding), so a
+    # parent layout with room to spare - a QTabWidget always hands its
+    # current page the tab bar's own full height, regardless of what that
+    # page's layout actually needs - still allocates this table more room
+    # than setFixedHeight lets it use. The table cannot fill that extra
+    # room, so it ends up centred inside it: a blank gap opening up above
+    # the table instead of the layout collapsing tightly around it.
+    table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
     _forward_wheel_to_page_scroll(table)
 
 
