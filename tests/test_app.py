@@ -1121,6 +1121,92 @@ def main():
     check("a failure mid-write rolls back completely, not partially",
           a_crash_mid_write_leaves_nothing_partial)
 
+    def every_connection_sets_a_busy_timeout():
+        """Every db_manager method opens and closes its own connection
+        around one short statement, so two writes can only ever overlap by
+        a hair - but SQLite's default busy timeout is 0, so even that
+        brief a collision throws "database is locked" immediately instead
+        of waiting the other one out. Asked live, before final delivery, to
+        confirm rapid concurrent entry cannot surface that error - checked
+        that every connection actually carries a real timeout, not just
+        the default."""
+        conn = db.get_connection()
+        try:
+            timeout_ms = conn.execute("PRAGMA busy_timeout").fetchone()[0]
+        finally:
+            conn.close()
+        assert timeout_ms > 0, \
+            f"connections still use SQLite's default busy timeout ({timeout_ms}ms) - " \
+            f"any overlap fails immediately instead of retrying"
+    check("every database connection sets a real busy timeout, not SQLite's default of zero",
+          every_connection_sets_a_busy_timeout)
+
+    def backup_produces_a_real_independent_snapshot():
+        """The manual "حفظ نسخة احتياطية" button used to shutil.copyfile the
+        live .db file directly - safe almost always, since every write here
+        commits and closes within milliseconds, but a raw copy has no way
+        to guarantee it never lands in that instant. Asked live, before
+        final delivery, whether a backup can corrupt if taken while a
+        transaction is active - fixed to go through SQLite's own backup API
+        (Connection.backup()) instead, which is built to hand back a
+        consistent snapshot regardless of what the source connection is
+        doing. Checked end to end through the real button: click it, and
+        confirm the file it wrote is a genuinely independent, valid SQLite
+        database carrying the data that existed at the time - not a
+        reference to the same file, and not a corrupt stub."""
+        import sqlite3
+        from ui.settings_module import SettingsModule
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db)
+        backup_path = os.path.join(tempfile.gettempdir(), "_erp_backup_test.db")
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+
+        original_get_save = QFileDialog.getSaveFileName
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.backup()
+            assert os.path.exists(backup_path), "the backup button did not write any file"
+            assert os.path.abspath(backup_path) != os.path.abspath(db.db_path), \
+                "the backup path is the live database itself, not a copy"
+            conn = sqlite3.connect(backup_path)
+            try:
+                tables = {row[0] for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+                assert "users" in tables and "sales" in tables, \
+                    f"the backup file is missing expected tables: {tables}"
+            finally:
+                conn.close()
+        finally:
+            QFileDialog.getSaveFileName = original_get_save
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+    check("the backup button writes a real, independent, valid SQLite snapshot",
+          backup_produces_a_real_independent_snapshot)
+
+    def backup_never_regresses_to_a_raw_file_copy():
+        """The functional check above (a real, valid, independent snapshot)
+        cannot by itself tell a proper SQLite backup from a plain
+        shutil.copyfile - both produce a perfectly good file as long as
+        nothing else happens to be writing at that exact instant, which is
+        true almost all of the time either way. The actual gap between them
+        only shows up in the rare case a write is genuinely in flight, which
+        is not something worth trying to race in a test. Guarded here
+        directly instead: the source must call sqlite3's own backup(), and
+        must not call shutil.copyfile against the live database path at
+        all - not even a reversion this is checking for, since that pattern
+        is exactly what silently reintroduces the corruption window."""
+        import re
+        import inspect
+        from ui.settings_module import SettingsModule
+        source_text = inspect.getsource(SettingsModule.backup)
+        assert re.search(r"shutil\.copyfile\(\s*self\.db\.db_path", source_text) is None, \
+            "backup() calls shutil.copyfile on the live database again - the corruption window is back"
+        assert ".backup(" in source_text, \
+            "backup() does not appear to use sqlite3's Connection.backup() API at all"
+    check("the backup button's source never regresses to a raw file copy of the live database",
+          backup_never_regresses_to_a_raw_file_copy)
+
     def purchase_return_credits_the_right_account():
         """Every return used to credit Inventory (1100) no matter what was
         actually being returned - refunding an operating expense quietly
@@ -1781,6 +1867,54 @@ def main():
     check("an existing database from before this feature shipped still gets both admin seats",
           an_existing_pre_login_database_gets_the_seed_admins_too)
 
+    def existing_database_with_the_old_users_check_constraint_accepts_cashier():
+        """Every users table created before the كاشير role shipped has a
+        CHECK(role IN ('admin', 'manager', 'viewer')) baked into it -
+        SQLite has no ALTER to widen a CHECK constraint in place, only a
+        rebuild (see the same pattern for sales.payment_method's 'Delivery'
+        value in db_manager.py). Checked against a real old-shaped table,
+        not just schema.sql, with an existing account carried over to make
+        sure the rebuild does not silently drop anyone."""
+        from logic.auth import AuthLogic
+        temp_path = DB_PATH + ".cashier_migration_test"
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        import sqlite3
+        conn = sqlite3.connect(temp_path)
+        conn.execute("""
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                role TEXT CHECK(role IN ('admin', 'manager', 'viewer')) NOT NULL,
+                display_name TEXT,
+                must_change_password INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "INSERT INTO users (username, password_hash, password_salt, role, display_name) "
+            "VALUES ('old_admin', 'x', 'y', 'admin', 'صاحب المطعم')")
+        conn.commit()
+        conn.close()
+        try:
+            upgraded_db = DBManager(temp_path)
+            auth = AuthLogic(upgraded_db)
+            usernames = {u["username"] for u in auth.list_users()}
+            assert "old_admin" in usernames, \
+                "the existing account did not survive the CHECK-constraint rebuild"
+            auth.create_user("cashier_migration_test", "pass123456", "cashier", branch_id=1)
+            cashier = next(u for u in auth.list_users() if u["username"] == "cashier_migration_test")
+            assert cashier["role"] == "cashier", \
+                "an old-shaped users table still rejects the cashier role"
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    check("an old-shaped users table (pre-كاشير) is upgraded to accept the cashier role",
+          existing_database_with_the_old_users_check_constraint_accepts_cashier)
+
     def admin_can_create_a_manager_or_viewer_who_can_then_log_in():
         from logic.auth import AuthLogic
         auth = AuthLogic(db)
@@ -1889,6 +2023,137 @@ def main():
     check("a manager keeps full operational access but never sees Settings",
           manager_role_has_full_operational_access_but_no_settings)
 
+    def cashier_role_only_reaches_sales_customers_and_dashboard():
+        """كاشير is for someone whose whole job is day-to-day sales entry -
+        دخول المبيعات, requested live - not full manager-style access to
+        purchasing, HR, suppliers, loans, reports, or the books, and
+        obviously never Settings or the user list. Rather than every page
+        staying reachable with its widgets disabled (the viewer treatment),
+        the pages outside CASHIER_PAGES do not even appear in the sidebar -
+        the same treatment Settings already gets for every non-admin. The
+        allowed pages (dashboard, sales, customers) stay fully usable, not
+        locked down like a viewer's."""
+        from logic.auth import AuthLogic
+        from PyQt6.QtWidgets import QPushButton
+        auth = AuthLogic(db)
+        uid = auth.create_user("cashier_role_test", "cashierpass1", "cashier", branch_id=1)
+        cashier_user = auth.authenticate("cashier_role_test", "cashierpass1")
+        cashier_window = MainWindow(db, current_user=cashier_user)
+        cashier_window.show()
+        app.processEvents()
+        app.processEvents()
+        try:
+            assert not cashier_window.btn_settings.isVisible(), \
+                "a cashier can still see the Settings nav button"
+
+            visible_labels = {e["label"] for e in cashier_window.nav_entries
+                               if e["button"].isVisible()}
+            assert visible_labels == {"dashboard", "sales", "customers"}, (
+                f"a cashier sees {visible_labels} in the sidebar - expected only "
+                f"dashboard, sales and customers")
+
+            save_btn = next(b for b in cashier_window.sales.findChildren(QPushButton)
+                            if b.text() == "حفظ مبيعات اليوم")
+            assert save_btn.isEnabled(), "a cashier's save button on Sales is disabled"
+            assert cashier_window.sales.cash_input.isEnabled(), \
+                "a cashier's amount field on Sales is disabled"
+        finally:
+            cashier_window.close()
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("a cashier only reaches dashboard/sales/customers, fully usable there",
+          cashier_role_only_reaches_sales_customers_and_dashboard)
+
+    def creating_a_cashier_without_a_branch_is_refused():
+        """A cashier account with no branch to lock to would default to
+        seeing every branch - exactly the access a cashier must not have.
+        create_user refuses to create one at all rather than silently
+        seeding an unscoped account."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        try:
+            auth.create_user("cashier_no_branch_test", "pass123456", "cashier")
+            assert False, "creating a cashier with no branch_id was accepted"
+        except ValueError as exc:
+            assert "فرع" in str(exc), f"wrong rejection reason: {exc}"
+        finally:
+            # Only matters if the guard above is broken and a row actually
+            # got created - kept so a regression here does not also take
+            # down every later test that assumes a clean users table.
+            db.execute_query(
+                "DELETE FROM users WHERE username = 'cashier_no_branch_test'")
+    check("a cashier account cannot be created without a branch",
+          creating_a_cashier_without_a_branch_is_refused)
+
+    def a_cashier_is_locked_to_their_own_branch_in_sales():
+        """The nav-level restriction above keeps a cashier off every page
+        but Sales/Customers/dashboard - this checks the finer-grained rule
+        inside Sales itself: a cashier for one branch must not see or
+        touch another branch's register at all. Checked with two real
+        branches and one real sale recorded against each: the cashier's own
+        branch dropdown is locked (disabled, pre-selected to their branch)
+        on both the entry form and the returns tab, and the day's-history
+        table only ever shows their own branch's row, not the other one."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        second_branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)", ("فرع الاختبار الثاني", ""))
+        uid = auth.create_user("branch_lock_test", "pass123456", "cashier", branch_id=1)
+        cashier_user = auth.authenticate("branch_lock_test", "pass123456")
+        cashier_window = MainWindow(db, current_user=cashier_user)
+        cashier_window.show()
+        app.processEvents()
+        app.processEvents()
+        try:
+            sales = cashier_window.sales
+            assert not sales.branch_input.isEnabled(), \
+                "a cashier can still change the branch on the sales entry form"
+            assert sales.branch_input.currentData() == 1, \
+                "the sales entry form is not pre-locked to the cashier's own branch"
+            assert not sales.return_branch_input.isEnabled(), \
+                "a cashier can still change the branch on the returns tab"
+
+            # One real sale against each branch, straight through the same
+            # save path an admin uses, so the history table's own branch
+            # filter is what is actually under test, not a data-setup shortcut.
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            for branch_id, amount in ((1, 1000), (second_branch_id, 2000)):
+                # Same "replace today's row" rule the real save path uses
+                # (see save_daily_sales) - earlier tests sharing this same
+                # database may already have a Cash row for branch 1 today.
+                db.execute_query(
+                    "DELETE FROM sales WHERE branch_id = ? AND date(date) = date('now') "
+                    "AND payment_method = 'Cash'", (branch_id,))
+                with db.transaction() as cursor:
+                    db.insert_journal_entry(cursor, timestamp, "اختبار قفل الفرع", None, [
+                        {"account_code": "1000", "debit": amount, "credit": 0},
+                        {"account_code": "4000", "debit": 0, "credit": amount},
+                    ])
+                db.execute_query(
+                    "INSERT INTO sales (branch_id, date, total_amount, vat_amount, payment_method) "
+                    "VALUES (?, date('now'), ?, 0, 'Cash')", (branch_id, amount))
+            sales.load_history()
+            for _ in range(2):
+                app.processEvents()
+
+            branch_names_shown = {sales.table.item(row, 1).text()
+                                   for row in range(sales.table.rowCount())}
+            assert "فرع الاختبار الثاني" not in branch_names_shown, (
+                f"a Branch-1 cashier can see the other branch's sales history: "
+                f"{branch_names_shown}")
+        finally:
+            cashier_window.close()
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+            # Only the exact rows this test itself inserted (today, Cash,
+            # these two branches) - not every branch-1 sale, which other
+            # tests sharing this same database may still depend on.
+            db.execute_query(
+                "DELETE FROM sales WHERE branch_id IN (?, ?) AND date(date) = date('now') "
+                "AND payment_method = 'Cash'", (1, second_branch_id))
+            db.execute_query("DELETE FROM branches WHERE id = ?", (second_branch_id,))
+    check("a cashier is locked to their own branch's register, cannot see the other branch's",
+          a_cashier_is_locked_to_their_own_branch_in_sales)
+
     def admin_sees_settings_and_the_user_list_inside_it():
         from logic.auth import AuthLogic
         auth = AuthLogic(db)
@@ -1920,6 +2185,32 @@ def main():
             "a viewer's own Settings module still built the user-management box"
     check("SettingsModule itself never builds the user box for a non-admin",
           settings_module_hides_the_users_box_for_non_admins)
+
+    def ahmed_admin_is_hidden_from_the_visible_user_list():
+        """ahmed_admin is the developer's own support account, seeded on
+        every install so a locked-out customer can always be helped back
+        in (see ensure_default_admins in logic/auth.py) - not something the
+        customer set up themselves. Asked live not to expose it: the
+        customer managing "their" users in Settings must never see an
+        account they did not create and would have no way to explain.
+        Checked that it still exists and can still log in (only the
+        Settings list hides it, not the account itself)."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        auth.ensure_default_admins()  # no-op if a real account already exists
+        assert db.fetch_one("SELECT id FROM users WHERE username = 'ahmed_admin'") is not None, \
+            "ahmed_admin does not exist at all - nothing to hide, test setup is wrong"
+        goto("settings")
+        for _ in range(2):
+            app.processEvents()
+        settings = window.settings
+        settings.load_users()
+        usernames = {settings.users_table.item(row, 0).text()
+                     for row in range(settings.users_table.rowCount())}
+        assert "ahmed_admin" not in usernames, \
+            f"ahmed_admin is still visible in the customer-facing user list: {usernames}"
+    check("ahmed_admin is hidden from the customer-facing user list but can still log in",
+          ahmed_admin_is_hidden_from_the_visible_user_list)
 
     def login_dialog_end_to_end_including_the_forced_password_change():
         """Drives the actual LoginDialog widget, not just the AuthLogic
@@ -2816,7 +3107,6 @@ def main():
         label that used to vanish is reachable by actually scrolling to it,
         not just that a scrollbar exists."""
         from PyQt6.QtGui import QFont
-        from PyQt6.QtWidgets import QTabWidget, QLabel
         original_font = app.font()
         big_font = QFont(original_font)
         big_font.setPointSize(original_font.pointSize() + 6)
@@ -2826,8 +3116,15 @@ def main():
             window.resize(1280, 800)
             for _ in range(3):
                 app.processEvents()
-            goto("customers")
-            window.customers.findChild(QTabWidget).setCurrentIndex(1)
+            # Suppliers' "الموردون والأرصدة" tab still packs enough fields
+            # into one compact_form row to reliably outgrow the window under
+            # the stress font. Customers used to be the reliable case here,
+            # but its own compact_form rows were split across more rows to
+            # stop it overflowing at all under normal use (reported live -
+            # a scrollbar was showing up on an ordinary window), so it no
+            # longer overflows even under this much stress - which is the
+            # point of that fix, not a reason to drop this check.
+            goto("suppliers")
             for _ in range(3):
                 app.processEvents()
 
@@ -2843,8 +3140,10 @@ def main():
             assert hbar.isVisible(), \
                 "content overflows the window but the horizontal scrollbar is not visible to reach it"
 
-            target = next(l for l in window.customers.findChildren(QLabel)
-                          if "لا يوجد عملاء" in l.text())
+            # total_balance_label's text is entirely data-dependent (empty,
+            # "المستحق للموردين", "مدفوع بالزيادة"...), so target the widget
+            # itself rather than search for text that may not be showing.
+            target = window.suppliers.total_balance_label
             hbar.setValue(0)
             for _ in range(2):
                 app.processEvents()
@@ -2864,6 +3163,37 @@ def main():
                 app.processEvents()
     check("content wider than the window is reachable by horizontal scroll, not silently clipped",
           wide_content_is_reachable_by_horizontal_scroll_not_silently_clipped)
+
+    def customers_page_needs_no_horizontal_scroll_at_the_app_minimum_size():
+        """The "بيع آجل وتحصيل" tab's two compact_form rows - "تسجيل بيع
+        آجل" (3 fields in one row) and "تسجيل تحصيل من العميل" (4 fields in
+        one row) - together forced this page more than 1000px wide even at
+        the app's own normal font, wider than a horizontal scrollbar showed
+        up on an ordinary window - reported live via screenshot (a clipped
+        "لاء" instead of "العملاء" and a cut-off tab label). Given a
+        QTabWidget sizes itself to the widest of ALL its tabs, not just the
+        current one (see the dead-space fix elsewhere in this file for the
+        same "hidden tab still counts" mechanic), the fix was splitting
+        those two rows across more, narrower rows instead of one wide one.
+        Checked at the app's own documented minimum window size (1040x640,
+        see MainWindow.setMinimumSize) with the normal font - no font
+        stress needed here, this reproduced at completely ordinary sizes."""
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+        goto("customers")
+        for _ in range(3):
+            app.processEvents()
+        container = window.content_stack.currentWidget()
+        hbar = container.horizontalScrollBar()
+        assert not hbar.isVisible(), (
+            f"العملاء still needs horizontal scroll at the app's own minimum "
+            f"window size (hbar max={hbar.maximum()})")
+        window.resize(1526, 900)
+        for _ in range(3):
+            app.processEvents()
+    check("the customers page fits without horizontal scroll at the app's minimum window size",
+          customers_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
 
     def hr_table_boxes_do_not_stretch_into_a_dead_gap():
         """"قائمة العاملين والوثائق" and "ملخص الرواتب" each used to give
@@ -2908,35 +3238,51 @@ def main():
         Checked by adding enough employees/columns of real width to force
         the scrollbar on, then confirming the table's own height leaves
         room below the last row's bottom edge for the scrollbar on top of
-        it, instead of the scrollbar's rect overlapping that row."""
-        goto("hr")
-        hr = window.hr
-        for i in range(4):
-            hr.name_input.setText(f"موظف اختبار {i + 1}")
-            hr.job_input.setText("عامل")
-            hr.salary_input.setText("5000")
-            hr.allowance_input.setText("500")
-            hr.save_employee()
-        for _ in range(2):
-            app.processEvents()
+        it, instead of the scrollbar's rect overlapping that row. Forces a
+        larger app-wide font first (see wide_content_is_reachable... above
+        for why) - the real Windows "Segoe UI" metrics this test box never
+        renders with pack the 12 ResizeToContents columns narrower than the
+        table's own width on a real Windows CI runner, so the scrollbar
+        never turned on there and the test failed on its own precondition
+        instead of testing anything."""
+        from PyQt6.QtGui import QFont
+        original_font = app.font()
+        big_font = QFont(original_font)
+        big_font.setPointSize(original_font.pointSize() + 6)
+        try:
+            app.setFont(big_font)
+            goto("hr")
+            hr = window.hr
+            for i in range(4):
+                hr.name_input.setText(f"موظف اختبار {i + 1}")
+                hr.job_input.setText("عامل")
+                hr.salary_input.setText("5000")
+                hr.allowance_input.setText("500")
+                hr.save_employee()
+            for _ in range(2):
+                app.processEvents()
 
-        from PyQt6.QtWidgets import QTabWidget
-        tabs = window.hr.findChild(QTabWidget)
-        for i in range(tabs.count()):
-            if tabs.tabText(i) == "قائمة العاملين":
-                tabs.setCurrentIndex(i)
-        for _ in range(2):
-            app.processEvents()
+            from PyQt6.QtWidgets import QTabWidget
+            tabs = window.hr.findChild(QTabWidget)
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == "قائمة العاملين":
+                    tabs.setCurrentIndex(i)
+            for _ in range(2):
+                app.processEvents()
 
-        table = hr.table
-        hbar = table.horizontalScrollBar()
-        assert hbar.isVisible(), \
-            "test setup did not force the horizontal scrollbar on - cannot check the overlap"
-        last_row = table.rowCount() - 1
-        row_bottom = table.rowViewportPosition(last_row) + table.rowHeight(last_row)
-        assert row_bottom <= table.viewport().height(), (
-            f"the horizontal scrollbar overlaps the last row: row bottom at "
-            f"{row_bottom}px but the viewport is only {table.viewport().height()}px tall")
+            table = hr.table
+            hbar = table.horizontalScrollBar()
+            assert hbar.isVisible(), \
+                "test setup did not force the horizontal scrollbar on - cannot check the overlap"
+            last_row = table.rowCount() - 1
+            row_bottom = table.rowViewportPosition(last_row) + table.rowHeight(last_row)
+            assert row_bottom <= table.viewport().height(), (
+                f"the horizontal scrollbar overlaps the last row: row bottom at "
+                f"{row_bottom}px but the viewport is only {table.viewport().height()}px tall")
+        finally:
+            app.setFont(original_font)
+            for _ in range(2):
+                app.processEvents()
     check("the employee-list table leaves room below its last row for its own horizontal scrollbar",
           employee_table_reserves_room_for_its_own_horizontal_scrollbar)
 
@@ -3147,6 +3493,31 @@ def main():
             dialog.close()
     check("the login dialog has a clean white background and a properly styled button",
           login_dialog_has_a_clean_white_background_and_a_working_button)
+
+    def login_dialog_has_a_branded_header_not_a_flat_page():
+        """The whole dialog sitting on one flat white background with no
+        visual anchor read as "بدائية" (basic/unfinished) - reported live.
+        Checked for a dark header band behind the title, distinct from the
+        white form card below it, and that it still holds the app's own
+        logo rather than an empty space where one should be."""
+        from ui.login_dialog import LoginDialog
+        dialog = LoginDialog(db)
+        dialog.show()
+        for _ in range(2):
+            app.processEvents()
+        try:
+            title = next(l for l in dialog.findChildren(QLabel) if l.text() == "نظام إدارة المطعم")
+            header = title.parentWidget()
+            image = render(header)
+            colour = image.pixelColor(4, 4)
+            assert not is_near_white(colour.name()), \
+                f"the login header has no distinct background - corner pixel is {colour.name()}"
+            assert any(not l.pixmap().isNull() for l in header.findChildren(QLabel) if l.pixmap()), \
+                "the login header has no logo"
+        finally:
+            dialog.close()
+    check("the login dialog has a branded header with a logo, not a flat page",
+          login_dialog_has_a_branded_header_not_a_flat_page)
 
     print("\n" + "=" * 52)
     if failures:

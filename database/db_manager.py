@@ -17,6 +17,16 @@ class DBManager:
         # that was never created. Both are quiet corruption that nothing in
         # the app would ever notice, because nothing was ever checking.
         conn.execute("PRAGMA foreign_keys = ON")
+        # Every method below already opens and closes its own connection
+        # around one short statement (or one transaction), so two writes can
+        # only ever overlap by a hair. Python's sqlite3 module already
+        # defaults new connections to a 5-second busy timeout on its own
+        # (sqlite3.connect()'s own `timeout` parameter, separate from and
+        # easy to confuse with SQLite's C-level default of 0) - explicit
+        # here so that stays true regardless of what Python's own default
+        # happens to be on a given version, rather than depending on it
+        # silently.
+        conn.execute("PRAGMA busy_timeout = 5000")
         return conn
 
     def init_db(self):
@@ -206,6 +216,43 @@ class DBManager:
                 # message asked for. Existing rows are assumed paid, which is
                 # what every run before this column existed actually did.
                 cursor.execute("ALTER TABLE payroll_runs ADD COLUMN paid_now INTEGER DEFAULT 1")
+
+        # كاشير is a fourth role - day-to-day sales entry only, no purchasing,
+        # HR, suppliers, loans, reports, accounting or Settings access - but
+        # a CHECK constraint's allowed list cannot be altered in place, only
+        # rebuilt. Recreated with every column it already has, all existing
+        # accounts carried over untouched.
+        if self.table_exists(cursor, 'users') and not self._table_check_allows(cursor, 'users', 'cashier'):
+            cursor.execute("ALTER TABLE users RENAME TO users_pre_cashier")
+            cursor.execute("""
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    password_salt TEXT NOT NULL,
+                    role TEXT CHECK(role IN ('admin', 'manager', 'cashier', 'viewer')) NOT NULL,
+                    branch_id INTEGER REFERENCES branches(id),
+                    display_name TEXT,
+                    must_change_password INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO users (id, username, password_hash, password_salt, role,
+                                    display_name, must_change_password, is_active, created_at)
+                SELECT id, username, password_hash, password_salt, role,
+                       display_name, must_change_password, is_active, created_at
+                FROM users_pre_cashier
+            """)
+            cursor.execute("DROP TABLE users_pre_cashier")
+
+        # A cashier is now locked to one branch (see apply_role_restrictions
+        # in main_window.py) - a plain ADD COLUMN, not a CHECK constraint,
+        # so no rebuild needed even for a database that already went
+        # through the rebuild above in an earlier run.
+        if self.table_exists(cursor, 'users') and 'branch_id' not in table_columns('users'):
+            cursor.execute("ALTER TABLE users ADD COLUMN branch_id INTEGER REFERENCES branches(id)")
 
         self.arabise_account_names(cursor)
         self.enforce_uniqueness(cursor)

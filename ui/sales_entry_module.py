@@ -42,11 +42,22 @@ class SalesEntryModule(QWidget):
     """Simple end-of-day sales entry: how much came in as cash / network / transfer.
     No item-level ordering - the totals are entered once and posted automatically."""
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
+        self.current_user = current_user or {}
         self.init_ui()
+
+    def _locked_branch_id(self):
+        """A كاشير is locked to the one branch on their own account (see
+        apply_role_restrictions in main_window.py) - everyone else picks
+        freely. Centralised here since both tabs need the same answer:
+        which branch to select and disable, and which branch to filter
+        every history table down to."""
+        if self.current_user.get("role") == "cashier":
+            return self.current_user.get("branch_id")
+        return None
 
     def init_ui(self):
         layout = QVBoxLayout(self)
@@ -75,6 +86,12 @@ class SalesEntryModule(QWidget):
         self.branch_input = QComboBox()
         for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.branch_input.addItem(branch["name"], branch["id"])
+        locked_branch = self._locked_branch_id()
+        if locked_branch is not None:
+            idx = self.branch_input.findData(locked_branch)
+            if idx >= 0:
+                self.branch_input.setCurrentIndex(idx)
+            self.branch_input.setEnabled(False)
         self.date_input = QDateEdit(QDate.currentDate())
         # A sale cannot happen on a day that has not arrived yet - without
         # this, a mis-set system clock or a stray click on the calendar
@@ -200,6 +217,12 @@ class SalesEntryModule(QWidget):
         self.return_branch_input = QComboBox()
         for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.return_branch_input.addItem(branch["name"], branch["id"])
+        locked_branch = self._locked_branch_id()
+        if locked_branch is not None:
+            idx = self.return_branch_input.findData(locked_branch)
+            if idx >= 0:
+                self.return_branch_input.setCurrentIndex(idx)
+            self.return_branch_input.setEnabled(False)
         self.return_date_input = QDateEdit(QDate.currentDate())
         self.return_date_input.setMaximumDate(QDate.currentDate())
         self.return_amount_input = self._amount_input()
@@ -335,13 +358,20 @@ class SalesEntryModule(QWidget):
         self.load_sales_returns()
 
     def load_sales_returns(self):
-        rows = self.db.fetch_all("""
+        query = """
             SELECT sr.id, sr.date, b.name as branch_name, sr.amount, sr.vat_amount,
                    sr.refund_method, sr.notes, sr.journal_entry_id
             FROM sales_returns sr
             JOIN branches b ON sr.branch_id = b.id
+            {branch_filter}
             ORDER BY sr.date DESC, sr.id DESC
-        """)
+        """
+        locked_branch = self._locked_branch_id()
+        if locked_branch is not None:
+            rows = self.db.fetch_all(
+                query.format(branch_filter="WHERE sr.branch_id = ?"), (locked_branch,))
+        else:
+            rows = self.db.fetch_all(query.format(branch_filter=""))
         if not fill_table(self.returns_table, len(rows), "لا يوجد مرتجعات مبيعات مسجلة"):
             fit_table_height(self.returns_table)
             return
@@ -525,10 +555,21 @@ class SalesEntryModule(QWidget):
                 MAX(s.cashier_number) as cashier_number
             FROM sales s
             JOIN branches b ON s.branch_id = b.id
+            {branch_filter}
             GROUP BY date(s.date), s.branch_id
             ORDER BY day DESC
         """
-        rows = self.db.fetch_all(query)
+        locked_branch = self._locked_branch_id()
+        # A كاشير locked to one branch (see apply_role_restrictions in
+        # main_window.py) must not see the other branch's totals here
+        # either - the entry form only stops them from *typing* a
+        # different branch's sales, this is what stops them *reading* it.
+        if locked_branch is not None:
+            query = query.format(branch_filter="WHERE s.branch_id = ?")
+            rows = self.db.fetch_all(query, (locked_branch,))
+        else:
+            query = query.format(branch_filter="")
+            rows = self.db.fetch_all(query)
         if not fill_table(self.table, len(rows), "لم تُسجَّل مبيعات بعد — اكتب مبالغ اليوم بالأعلى واضغط حفظ"):
             fit_table_height(self.table)
             return

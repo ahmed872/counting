@@ -13,16 +13,19 @@ CREATE TABLE IF NOT EXISTS app_settings (
 );
 
 -- Who can open the program and what they can do once inside - see
--- logic/auth.py. Three roles: admin (everything, including managing other
--- users), manager (day-to-day operations, no settings or user management),
--- viewer (read-only everywhere). Passwords are never stored in the clear -
--- only a salted PBKDF2 hash.
+-- logic/auth.py. Four roles: admin (everything, including managing other
+-- users), manager (day-to-day operations, no settings or user management,
+-- every branch), cashier (just daily sales entry - المبيعات اليومية,
+-- لوحة التحكم, العملاء - locked to the one branch_id below), viewer
+-- (read-only everywhere). Passwords are never stored in the clear - only a
+-- salted PBKDF2 hash.
 CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
     password_salt TEXT NOT NULL,
-    role TEXT CHECK(role IN ('admin', 'manager', 'viewer')) NOT NULL,
+    role TEXT CHECK(role IN ('admin', 'manager', 'cashier', 'viewer')) NOT NULL,
+    branch_id INTEGER REFERENCES branches(id),
     display_name TEXT,
     must_change_password INTEGER DEFAULT 0,
     is_active INTEGER DEFAULT 1,
