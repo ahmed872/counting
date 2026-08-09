@@ -3527,6 +3527,29 @@ def main():
     check("the login dialog has a branded header with a logo, not a flat page",
           login_dialog_has_a_branded_header_not_a_flat_page)
 
+    def login_dialog_shows_the_developers_contact_signature():
+        """Requested live: a small permanent credit line with the
+        developer's own phone number, so the client always has a support
+        contact on the very first screen the program shows - not buried
+        somewhere it could be missed. Checked for the exact phone number,
+        present and visible (not just existing off-screen) on both the
+        login page and the forced-password-change page, since either can
+        be the first thing shown."""
+        from ui.login_dialog import LoginDialog
+        dialog = LoginDialog(db)
+        dialog.show()
+        for _ in range(2):
+            app.processEvents()
+        try:
+            signatures = [l for l in dialog.findChildren(QLabel) if "01093033884" in l.text()]
+            assert signatures, "no developer contact signature found on the login dialog"
+            assert all(l.isVisible() for l in signatures), \
+                "the developer contact signature exists but is not visible"
+        finally:
+            dialog.close()
+    check("the login dialog carries the developer's contact signature",
+          login_dialog_shows_the_developers_contact_signature)
+
     print("\n" + "=" * 52)
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")

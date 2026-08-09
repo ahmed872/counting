@@ -96,6 +96,11 @@ class LoginDialog(QDialog):
         self.stack.addWidget(self._build_login_page())
         self.stack.addWidget(self._build_change_password_page())
 
+        signature = QLabel("تطوير: أحمد  •  01093033884")
+        signature.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        signature.setStyleSheet("color:#b6c0cc; font-size:11px; margin-top:6px;")
+        body_layout.addWidget(signature)
+
         outer.addWidget(body)
 
     def _field_label(self, text):
