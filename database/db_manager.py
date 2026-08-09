@@ -207,6 +207,35 @@ class DBManager:
                 # what every run before this column existed actually did.
                 cursor.execute("ALTER TABLE payroll_runs ADD COLUMN paid_now INTEGER DEFAULT 1")
 
+        # كاشير is a fourth role - day-to-day sales entry only, no purchasing,
+        # HR, suppliers, loans, reports, accounting or Settings access - but
+        # a CHECK constraint's allowed list cannot be altered in place, only
+        # rebuilt. Recreated with every column it already has, all existing
+        # accounts carried over untouched.
+        if self.table_exists(cursor, 'users') and not self._table_check_allows(cursor, 'users', 'cashier'):
+            cursor.execute("ALTER TABLE users RENAME TO users_pre_cashier")
+            cursor.execute("""
+                CREATE TABLE users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    password_salt TEXT NOT NULL,
+                    role TEXT CHECK(role IN ('admin', 'manager', 'cashier', 'viewer')) NOT NULL,
+                    display_name TEXT,
+                    must_change_password INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cursor.execute("""
+                INSERT INTO users (id, username, password_hash, password_salt, role,
+                                    display_name, must_change_password, is_active, created_at)
+                SELECT id, username, password_hash, password_salt, role,
+                       display_name, must_change_password, is_active, created_at
+                FROM users_pre_cashier
+            """)
+            cursor.execute("DROP TABLE users_pre_cashier")
+
         self.arabise_account_names(cursor)
         self.enforce_uniqueness(cursor)
 

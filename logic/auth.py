@@ -1,11 +1,13 @@
 """Login and per-role permissions.
 
-Three roles: admin (everything, including managing other users), manager
+Four roles: admin (everything, including managing other users), manager
 (day-to-day operations - sales, purchases, HR, customers, suppliers,
-accounting, reports - but no settings or user management), viewer
-(read-only everywhere). Stored in English for the same reason every other
-status code in this app is - see ui/labels.py - only ever translated where
-it is actually shown to someone.
+accounting, reports - but no settings or user management), cashier (just
+the daily sales-entry work - المبيعات اليومية, لوحة التحكم, العملاء - for
+someone who should not see payroll, purchasing, or the books at all), and
+viewer (read-only everywhere). Stored in English for the same reason every
+other status code in this app is - see ui/labels.py - only ever translated
+where it is actually shown to someone.
 
 Passwords are never stored in the clear, only a salted PBKDF2 hash - the
 same standard library primitives already used for the activation key in
@@ -19,18 +21,20 @@ import os
 
 ROLE_ADMIN = "admin"
 ROLE_MANAGER = "manager"
+ROLE_CASHIER = "cashier"
 ROLE_VIEWER = "viewer"
 
 ROLE_LABELS = {
     ROLE_ADMIN: "أدمن",
     ROLE_MANAGER: "مسئول",
+    ROLE_CASHIER: "كاشير",
     ROLE_VIEWER: "مراقب",
 }
 
 # Roles a person can be given from inside the app. Not admin - that would let
 # any manager mint themselves a second admin account; the two admin seats are
 # fixed at setup time (see ensure_default_admins) and stay that way.
-ASSIGNABLE_ROLES = (ROLE_MANAGER, ROLE_VIEWER)
+ASSIGNABLE_ROLES = (ROLE_MANAGER, ROLE_CASHIER, ROLE_VIEWER)
 
 _ITERATIONS = 200_000
 
@@ -96,7 +100,7 @@ class AuthLogic:
             raise ValueError("اسم المستخدم مطلوب")
         if not password:
             raise ValueError("كلمة المرور مطلوبة")
-        if role not in (ROLE_ADMIN, ROLE_MANAGER, ROLE_VIEWER):
+        if role not in (ROLE_ADMIN, ROLE_MANAGER, ROLE_CASHIER, ROLE_VIEWER):
             raise ValueError("صلاحية غير معروفة")
         if self.db.fetch_one("SELECT id FROM users WHERE username = ?", (username,)):
             raise ValueError(f"اسم المستخدم «{username}» مستخدم بالفعل")

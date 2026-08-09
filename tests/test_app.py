@@ -1781,6 +1781,54 @@ def main():
     check("an existing database from before this feature shipped still gets both admin seats",
           an_existing_pre_login_database_gets_the_seed_admins_too)
 
+    def existing_database_with_the_old_users_check_constraint_accepts_cashier():
+        """Every users table created before the كاشير role shipped has a
+        CHECK(role IN ('admin', 'manager', 'viewer')) baked into it -
+        SQLite has no ALTER to widen a CHECK constraint in place, only a
+        rebuild (see the same pattern for sales.payment_method's 'Delivery'
+        value in db_manager.py). Checked against a real old-shaped table,
+        not just schema.sql, with an existing account carried over to make
+        sure the rebuild does not silently drop anyone."""
+        from logic.auth import AuthLogic
+        temp_path = DB_PATH + ".cashier_migration_test"
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        import sqlite3
+        conn = sqlite3.connect(temp_path)
+        conn.execute("""
+            CREATE TABLE users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL UNIQUE,
+                password_hash TEXT NOT NULL,
+                password_salt TEXT NOT NULL,
+                role TEXT CHECK(role IN ('admin', 'manager', 'viewer')) NOT NULL,
+                display_name TEXT,
+                must_change_password INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "INSERT INTO users (username, password_hash, password_salt, role, display_name) "
+            "VALUES ('old_admin', 'x', 'y', 'admin', 'صاحب المطعم')")
+        conn.commit()
+        conn.close()
+        try:
+            upgraded_db = DBManager(temp_path)
+            auth = AuthLogic(upgraded_db)
+            usernames = {u["username"] for u in auth.list_users()}
+            assert "old_admin" in usernames, \
+                "the existing account did not survive the CHECK-constraint rebuild"
+            auth.create_user("cashier_migration_test", "pass123456", "cashier")
+            cashier = next(u for u in auth.list_users() if u["username"] == "cashier_migration_test")
+            assert cashier["role"] == "cashier", \
+                "an old-shaped users table still rejects the cashier role"
+        finally:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+    check("an old-shaped users table (pre-كاشير) is upgraded to accept the cashier role",
+          existing_database_with_the_old_users_check_constraint_accepts_cashier)
+
     def admin_can_create_a_manager_or_viewer_who_can_then_log_in():
         from logic.auth import AuthLogic
         auth = AuthLogic(db)
@@ -1888,6 +1936,46 @@ def main():
             db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
     check("a manager keeps full operational access but never sees Settings",
           manager_role_has_full_operational_access_but_no_settings)
+
+    def cashier_role_only_reaches_sales_customers_and_dashboard():
+        """كاشير is for someone whose whole job is day-to-day sales entry -
+        دخول المبيعات, requested live - not full manager-style access to
+        purchasing, HR, suppliers, loans, reports, or the books, and
+        obviously never Settings or the user list. Rather than every page
+        staying reachable with its widgets disabled (the viewer treatment),
+        the pages outside CASHIER_PAGES do not even appear in the sidebar -
+        the same treatment Settings already gets for every non-admin. The
+        allowed pages (dashboard, sales, customers) stay fully usable, not
+        locked down like a viewer's."""
+        from logic.auth import AuthLogic
+        from PyQt6.QtWidgets import QPushButton
+        auth = AuthLogic(db)
+        uid = auth.create_user("cashier_role_test", "cashierpass1", "cashier")
+        cashier_user = auth.authenticate("cashier_role_test", "cashierpass1")
+        cashier_window = MainWindow(db, current_user=cashier_user)
+        cashier_window.show()
+        app.processEvents()
+        app.processEvents()
+        try:
+            assert not cashier_window.btn_settings.isVisible(), \
+                "a cashier can still see the Settings nav button"
+
+            visible_labels = {e["label"] for e in cashier_window.nav_entries
+                               if e["button"].isVisible()}
+            assert visible_labels == {"dashboard", "sales", "customers"}, (
+                f"a cashier sees {visible_labels} in the sidebar - expected only "
+                f"dashboard, sales and customers")
+
+            save_btn = next(b for b in cashier_window.sales.findChildren(QPushButton)
+                            if b.text() == "حفظ مبيعات اليوم")
+            assert save_btn.isEnabled(), "a cashier's save button on Sales is disabled"
+            assert cashier_window.sales.cash_input.isEnabled(), \
+                "a cashier's amount field on Sales is disabled"
+        finally:
+            cashier_window.close()
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("a cashier only reaches dashboard/sales/customers, fully usable there",
+          cashier_role_only_reaches_sales_customers_and_dashboard)
 
     def admin_sees_settings_and_the_user_list_inside_it():
         from logic.auth import AuthLogic

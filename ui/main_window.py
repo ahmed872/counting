@@ -368,9 +368,17 @@ class MainWindow(QMainWindow):
         self.add_page("other_balances", self.other_balances)
         self.add_page("settings", self.settings)
 
+    # Pages a cashier's whole job is limited to: the daily numbers
+    # (dashboard, read-only by nature already) and the two screens that
+    # job actually needs to work in - daily sales, and customers for a
+    # credit sale or a collection. Everything else - purchasing, HR,
+    # suppliers, loans, reports, accounting, and Settings - is a step
+    # beyond what someone doing day-to-day sales entry should reach.
+    CASHIER_PAGES = ("dashboard", "sales", "customers")
+
     def apply_role_restrictions(self):
         """Settings - company info, backup, the licence, and the user list
-        itself - is an admin-only area: a manager or viewer never sees the
+        itself - is an admin-only area: nobody but an admin ever sees the
         nav button at all, let alone what is behind it. A viewer additionally
         cannot change anything anywhere else either - every button, text
         field, dropdown and date picker on every other page is disabled,
@@ -378,7 +386,10 @@ class MainWindow(QMainWindow):
         and reports are exempt: neither has anything that mutates data in
         the first place - a dropdown that only changes what a filter shows,
         or a report/print button, are not something a viewer needs blocked
-        from using."""
+        from using. A cashier is narrower still: rather than every page
+        with its mutating widgets disabled, only CASHIER_PAGES are reachable
+        at all - the rest do not even appear in the sidebar, the same
+        treatment Settings already gets for every non-admin."""
         role = self.current_user.get("role")
         if role != "admin":
             self.btn_settings.setVisible(False)
@@ -387,6 +398,11 @@ class MainWindow(QMainWindow):
                 if entry["label"] in ("dashboard", "reports"):
                     continue
                 self._lock_page_for_viewing(entry["page"])
+        elif role == "cashier":
+            for entry in self.nav_entries:
+                if entry["label"] not in self.CASHIER_PAGES:
+                    entry["button"].setVisible(False)
+
 
     def _lock_page_for_viewing(self, page):
         # A handful of verbs that only ever look at data, never change it -
