@@ -7,7 +7,6 @@ from PyQt6.QtWidgets import (
     QTableWidget,
     QTableWidgetItem,
     QPushButton,
-    QFormLayout,
     QLineEdit,
     QComboBox,
     QDateEdit,
@@ -59,7 +58,6 @@ class PurchaseModule(QWidget):
         layout = QVBoxLayout(widget)
         layout.setSpacing(12)
 
-        form_layout = QFormLayout()
         self.branch_input = QComboBox()
         self.load_branches()
 

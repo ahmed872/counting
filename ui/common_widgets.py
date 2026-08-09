@@ -52,9 +52,20 @@ def compact_form(pairs, columns=2, field_min_width=200):
         cell.setSpacing(8)
         if caption:
             label = QLabel(caption)
-            label.setMinimumWidth(92)
+            # A flat 92px minimum, with no wrapping, silently clipped any
+            # caption longer than a short word or two - "رصيد افتتاحي (مستحق
+            # له علينا)" rendered as a few letters with the rest invisible,
+            # not even an ellipsis to hint more was there. Sized to what the
+            # text actually needs (capped so one very long caption cannot
+            # push the field off to the side), and left free to wrap onto a
+            # second line for whatever still does not fit.
+            from PyQt6.QtGui import QFontMetrics
+            natural_width = QFontMetrics(label.font()).horizontalAdvance(caption)
+            label.setMinimumWidth(min(max(natural_width + 4, 92), 170))
+            label.setWordWrap(True)
             label.setStyleSheet("color:#334155; font-weight:600;")
             cell.addWidget(label)
+            cell.setAlignment(label, Qt.AlignmentFlag.AlignTop)
         field.setMinimumWidth(field_min_width)
         cell.addWidget(field, 1)
         holder = QWidget()

@@ -2086,6 +2086,87 @@ def main():
     check("every top-level window sets its own taskbar icon, not just the application default",
           every_top_level_window_sets_its_own_taskbar_icon)
 
+    def sidebar_nav_never_overlaps_the_trial_banner():
+        """The nav list grew to 9 buttons plus 3 group labels with no scroll
+        of its own, so on a normal-height window the trial countdown ended
+        up overlapping the last nav button instead of either being fully
+        visible - Qt does not show an overflowing QVBoxLayout, it silently
+        compresses it. Reproduced at the app's own documented minimum size."""
+        window.resize(1280, 640)
+        window.set_trial_banner(15)
+        for _ in range(4):
+            app.processEvents()
+        try:
+            banner = window.trial_banner.geometry()
+            settings_btn = window.btn_settings.geometry()
+            overlap = not (banner.bottom() <= settings_btn.top() or settings_btn.bottom() <= banner.top())
+            assert not overlap, (banner, settings_btn)
+            assert window.trial_banner.isVisible() and window.trial_banner.text(), \
+                "the trial banner has no text/is hidden at the minimum window size"
+
+            scroll = None
+            node = window.btn_other_balances.parentWidget()
+            while node is not None:
+                if isinstance(node, QScrollArea):
+                    scroll = node
+                    break
+                node = node.parentWidget()
+            assert scroll is not None, "the nav list has no scroll area of its own"
+        finally:
+            window.resize(1440, 900)
+            window.set_trial_banner(None)
+            for _ in range(4):
+                app.processEvents()
+    check("the sidebar nav list never overlaps the trial banner, even on a short window",
+          sidebar_nav_never_overlaps_the_trial_banner)
+
+    def compact_form_labels_never_get_clipped_illegibly():
+        """compact_form()'s caption used a flat 92px minimum with no
+        wrapping, sized for short labels like "اسم المورد" - a longer one
+        like "رصيد افتتاحي (مستحق له علينا)" rendered as a few letters with
+        the rest simply gone, not even an ellipsis. Every label must either
+        fit on one line or wrap, never lose text outright."""
+        goto("customers")
+        long_labels = [lbl for lbl in window.customers.findChildren(QLabel)
+                       if "افتتاحي" in lbl.text()]
+        assert long_labels, "the opening-balance label is missing entirely"
+        for lbl in long_labels:
+            assert lbl.wordWrap(), f"label does not wrap and can be clipped: {lbl.text()!r}"
+
+        goto("purchases")
+        return_labels = [lbl for lbl in window.purchases.findChildren(QLabel)
+                         if "الأصل" in lbl.text()]
+        assert return_labels, "the purchase-return category label is missing entirely"
+        for lbl in return_labels:
+            assert lbl.wordWrap(), f"label does not wrap and can be clipped: {lbl.text()!r}"
+    check("compact_form labels wrap instead of being clipped illegibly",
+          compact_form_labels_never_get_clipped_illegibly)
+
+    def payroll_month_and_year_do_not_crowd_each_other():
+        """Four QFormLayouts in the payroll tab (attendance, deductions,
+        payroll, accrued wages) never called setSpacing(), unlike every other
+        form in the same file - left at whatever the platform's default
+        happens to be (6px, measured). On the owner's machine "الشهر" and
+        "السنة" read as sitting right on top of each other. Checks the
+        actual gap between the two fields, not just whether setSpacing() was
+        called somewhere - QFormLayout.spacing() returns a real number
+        either way, so a test on the getter alone could never fail.
+        setSpacing(16) measured a 17px gap here versus 7px unset, so the
+        assertion sits between the two and catches a regression to either."""
+        from PyQt6.QtWidgets import QTabWidget
+        goto("hr")
+        hr = window.hr
+        tabs = hr.findChild(QTabWidget)
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == "الرواتب":
+                tabs.setCurrentIndex(i)
+        for _ in range(3):
+            app.processEvents()
+        gap = hr.payroll_year.geometry().top() - hr.payroll_month.geometry().bottom()
+        assert gap >= 12, f"month/year fields are only {gap}px apart - looks crowded"
+    check("the payroll month and year fields have a comfortable gap, not crowded together",
+          payroll_month_and_year_do_not_crowd_each_other)
+
     print("\n" + "=" * 52)
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")

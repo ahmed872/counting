@@ -64,24 +64,46 @@ class MainWindow(QMainWindow):
         self.btn_hr = self.create_nav_btn("الموارد البشرية")
         self.btn_reports = self.create_nav_btn("التقارير")
         self.btn_accounting = self.create_nav_btn("المحاسبة")
-        self.btn_other_balances = self.create_nav_btn("القروض والمصروفات المقدمة")
+        self.btn_other_balances = self.create_nav_btn("القروض والمقدّمة")
         self.btn_settings = self.create_nav_btn("الإعدادات")
+
+        # The nav list kept growing (8 buttons, now 9, plus group labels) with
+        # no scroll of its own - on a normal-height window it simply ran out
+        # of room, and Qt does not show an overflowing QVBoxLayout, it
+        # compresses it: the trial countdown ended up overlapping the last
+        # nav button instead of either being visible. The nav list scrolls
+        # internally now; the trial banner and Settings stay pinned outside
+        # it, since those two must always be reachable regardless of how
+        # many pages get added later.
+        nav_scroll = QScrollArea()
+        nav_scroll.setWidgetResizable(True)
+        nav_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        nav_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        nav_scroll.setStyleSheet("QScrollArea { background: transparent; }")
+        nav_list_widget = QWidget()
+        nav_list_widget.setStyleSheet("background: transparent;")
+        nav_list = QVBoxLayout(nav_list_widget)
+        nav_list.setContentsMargins(0, 0, 0, 0)
+        nav_list.setSpacing(10)
 
         # Grouped by what the owner is doing, with the daily work first: the flat
         # list of eight gave no clue which page he needs at the end of a shift.
-        sidebar_layout.addWidget(self.btn_dashboard)
-        sidebar_layout.addWidget(self.nav_group_label("العمل اليومي"))
-        sidebar_layout.addWidget(self.btn_sales)
-        sidebar_layout.addWidget(self.btn_customers)
-        sidebar_layout.addWidget(self.btn_purchases)
-        sidebar_layout.addWidget(self.btn_suppliers)
-        sidebar_layout.addWidget(self.nav_group_label("الموظفون"))
-        sidebar_layout.addWidget(self.btn_hr)
-        sidebar_layout.addWidget(self.nav_group_label("التقارير والحسابات"))
-        sidebar_layout.addWidget(self.btn_reports)
-        sidebar_layout.addWidget(self.btn_accounting)
-        sidebar_layout.addWidget(self.btn_other_balances)
-        sidebar_layout.addStretch()
+        nav_list.addWidget(self.btn_dashboard)
+        nav_list.addWidget(self.nav_group_label("العمل اليومي"))
+        nav_list.addWidget(self.btn_sales)
+        nav_list.addWidget(self.btn_customers)
+        nav_list.addWidget(self.btn_purchases)
+        nav_list.addWidget(self.btn_suppliers)
+        nav_list.addWidget(self.nav_group_label("الموظفون"))
+        nav_list.addWidget(self.btn_hr)
+        nav_list.addWidget(self.nav_group_label("التقارير والحسابات"))
+        nav_list.addWidget(self.btn_reports)
+        nav_list.addWidget(self.btn_accounting)
+        nav_list.addWidget(self.btn_other_balances)
+        nav_list.addStretch()
+        nav_scroll.setWidget(nav_list_widget)
+        sidebar_layout.addWidget(nav_scroll, 1)
+
         self.trial_banner = QLabel()
         self.trial_banner.setWordWrap(True)
         self.trial_banner.setAlignment(Qt.AlignmentFlag.AlignCenter)
