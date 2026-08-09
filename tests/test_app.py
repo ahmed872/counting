@@ -3238,19 +3238,26 @@ def main():
         Checked by adding enough employees/columns of real width to force
         the scrollbar on, then confirming the table's own height leaves
         room below the last row's bottom edge for the scrollbar on top of
-        it, instead of the scrollbar's rect overlapping that row. Forces a
-        larger app-wide font first (see wide_content_is_reachable... above
-        for why) - the real Windows "Segoe UI" metrics this test box never
-        renders with pack the 12 ResizeToContents columns narrower than the
-        table's own width on a real Windows CI runner, so the scrollbar
-        never turned on there and the test failed on its own precondition
-        instead of testing anything."""
+        it, instead of the scrollbar's rect overlapping that row. Forces
+        both a larger app-wide font AND the app's own minimum window width
+        (see wide_content_is_reachable... and customers_page_needs_no...
+        above) - real Windows "Segoe UI" metrics pack the 12
+        ResizeToContents columns narrower than DejaVu Sans does on this
+        test box, and a font size bump alone was not enough margin to
+        force the overflow on a real Windows CI runner either (still
+        failed there once already) - so this also shrinks the window down
+        to MainWindow's documented floor, where 12 real columns of content
+        cannot fit regardless of which font renders them."""
         from PyQt6.QtGui import QFont
         original_font = app.font()
         big_font = QFont(original_font)
         big_font.setPointSize(original_font.pointSize() + 6)
+        before_size = window.size()
         try:
             app.setFont(big_font)
+            window.resize(1040, 640)
+            for _ in range(2):
+                app.processEvents()
             goto("hr")
             hr = window.hr
             for i in range(4):
@@ -3281,6 +3288,7 @@ def main():
                 f"{row_bottom}px but the viewport is only {table.viewport().height()}px tall")
         finally:
             app.setFont(original_font)
+            window.resize(before_size)
             for _ in range(2):
                 app.processEvents()
     check("the employee-list table leaves room below its last row for its own horizontal scrollbar",
