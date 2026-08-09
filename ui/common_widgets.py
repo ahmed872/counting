@@ -133,6 +133,8 @@ def fit_table_height(table: QTableWidget, minimum=90):
     rows_height = table.verticalHeader().length()
     frame = table.frameWidth() * 2
     total = header_height + rows_height + frame + 2
+    if table.horizontalScrollBarPolicy() != Qt.ScrollBarPolicy.ScrollBarAlwaysOff:
+        total += table.horizontalScrollBar().sizeHint().height()
     table.setFixedHeight(max(total, minimum))
     _forward_wheel_to_page_scroll(table)
 

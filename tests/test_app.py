@@ -2896,6 +2896,49 @@ def main():
     check("the HR employee-list and payroll-summary boxes hug their table, no stretched dead gap",
           hr_table_boxes_do_not_stretch_into_a_dead_gap)
 
+    def employee_table_reserves_room_for_its_own_horizontal_scrollbar():
+        """"قائمة العاملين" is the one table in the app that keeps its
+        horizontal scrollbar switched on (ResizeToContents across 12
+        columns, so dates are not truncated) instead of banning it like
+        every other table. fit_table_height sized the table to header +
+        rows only, so the scrollbar painted itself over the bottom of the
+        last row instead of below it - reported live as employees "missing"
+        from a list that in fact had all of them, just partly hidden.
+        Checked by adding enough employees/columns of real width to force
+        the scrollbar on, then confirming the table's own height leaves
+        room below the last row's bottom edge for the scrollbar on top of
+        it, instead of the scrollbar's rect overlapping that row."""
+        goto("hr")
+        hr = window.hr
+        for i in range(4):
+            hr.name_input.setText(f"موظف اختبار {i + 1}")
+            hr.job_input.setText("عامل")
+            hr.salary_input.setText("5000")
+            hr.allowance_input.setText("500")
+            hr.save_employee()
+        for _ in range(2):
+            app.processEvents()
+
+        from PyQt6.QtWidgets import QTabWidget
+        tabs = window.hr.findChild(QTabWidget)
+        for i in range(tabs.count()):
+            if tabs.tabText(i) == "قائمة العاملين":
+                tabs.setCurrentIndex(i)
+        for _ in range(2):
+            app.processEvents()
+
+        table = hr.table
+        hbar = table.horizontalScrollBar()
+        assert hbar.isVisible(), \
+            "test setup did not force the horizontal scrollbar on - cannot check the overlap"
+        last_row = table.rowCount() - 1
+        row_bottom = table.rowViewportPosition(last_row) + table.rowHeight(last_row)
+        assert row_bottom <= table.viewport().height(), (
+            f"the horizontal scrollbar overlaps the last row: row bottom at "
+            f"{row_bottom}px but the viewport is only {table.viewport().height()}px tall")
+    check("the employee-list table leaves room below its last row for its own horizontal scrollbar",
+          employee_table_reserves_room_for_its_own_horizontal_scrollbar)
+
     def login_dialog_has_a_clean_white_background_and_a_working_button():
         """A plain QDialog paints the palette's grey Window colour by
         default, which read as an unfinished box floating on the desktop
