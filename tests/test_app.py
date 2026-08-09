@@ -3238,35 +3238,51 @@ def main():
         Checked by adding enough employees/columns of real width to force
         the scrollbar on, then confirming the table's own height leaves
         room below the last row's bottom edge for the scrollbar on top of
-        it, instead of the scrollbar's rect overlapping that row."""
-        goto("hr")
-        hr = window.hr
-        for i in range(4):
-            hr.name_input.setText(f"موظف اختبار {i + 1}")
-            hr.job_input.setText("عامل")
-            hr.salary_input.setText("5000")
-            hr.allowance_input.setText("500")
-            hr.save_employee()
-        for _ in range(2):
-            app.processEvents()
+        it, instead of the scrollbar's rect overlapping that row. Forces a
+        larger app-wide font first (see wide_content_is_reachable... above
+        for why) - the real Windows "Segoe UI" metrics this test box never
+        renders with pack the 12 ResizeToContents columns narrower than the
+        table's own width on a real Windows CI runner, so the scrollbar
+        never turned on there and the test failed on its own precondition
+        instead of testing anything."""
+        from PyQt6.QtGui import QFont
+        original_font = app.font()
+        big_font = QFont(original_font)
+        big_font.setPointSize(original_font.pointSize() + 6)
+        try:
+            app.setFont(big_font)
+            goto("hr")
+            hr = window.hr
+            for i in range(4):
+                hr.name_input.setText(f"موظف اختبار {i + 1}")
+                hr.job_input.setText("عامل")
+                hr.salary_input.setText("5000")
+                hr.allowance_input.setText("500")
+                hr.save_employee()
+            for _ in range(2):
+                app.processEvents()
 
-        from PyQt6.QtWidgets import QTabWidget
-        tabs = window.hr.findChild(QTabWidget)
-        for i in range(tabs.count()):
-            if tabs.tabText(i) == "قائمة العاملين":
-                tabs.setCurrentIndex(i)
-        for _ in range(2):
-            app.processEvents()
+            from PyQt6.QtWidgets import QTabWidget
+            tabs = window.hr.findChild(QTabWidget)
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == "قائمة العاملين":
+                    tabs.setCurrentIndex(i)
+            for _ in range(2):
+                app.processEvents()
 
-        table = hr.table
-        hbar = table.horizontalScrollBar()
-        assert hbar.isVisible(), \
-            "test setup did not force the horizontal scrollbar on - cannot check the overlap"
-        last_row = table.rowCount() - 1
-        row_bottom = table.rowViewportPosition(last_row) + table.rowHeight(last_row)
-        assert row_bottom <= table.viewport().height(), (
-            f"the horizontal scrollbar overlaps the last row: row bottom at "
-            f"{row_bottom}px but the viewport is only {table.viewport().height()}px tall")
+            table = hr.table
+            hbar = table.horizontalScrollBar()
+            assert hbar.isVisible(), \
+                "test setup did not force the horizontal scrollbar on - cannot check the overlap"
+            last_row = table.rowCount() - 1
+            row_bottom = table.rowViewportPosition(last_row) + table.rowHeight(last_row)
+            assert row_bottom <= table.viewport().height(), (
+                f"the horizontal scrollbar overlaps the last row: row bottom at "
+                f"{row_bottom}px but the viewport is only {table.viewport().height()}px tall")
+        finally:
+            app.setFont(original_font)
+            for _ in range(2):
+                app.processEvents()
     check("the employee-list table leaves room below its last row for its own horizontal scrollbar",
           employee_table_reserves_room_for_its_own_horizontal_scrollbar)
 
