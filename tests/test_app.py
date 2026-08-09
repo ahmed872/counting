@@ -2801,6 +2801,128 @@ def main():
     check("no page nests a second scroll area inside the page-level one",
           no_page_nests_a_second_scroll_area_inside_the_page_level_one)
 
+    def wide_content_is_reachable_by_horizontal_scroll_not_silently_clipped():
+        """Horizontal scrolling used to be banned outright on every page, on
+        the theory that content was always narrow enough not to need it.
+        Real screenshots proved otherwise - a long QGroupBox title, or just
+        the wider glyph metrics of the real "Segoe UI" font on a customer's
+        Windows machine (this test box only ever renders with whatever
+        fallback font Linux substitutes, so the bug never reproduced there),
+        needed more width than the window provided, and with nowhere for
+        the overflow to go it was clipped off the left edge under RTL,
+        gone, unreachable. Forces the exact same shape of overflow
+        deterministically - a much larger app-wide font - and checks the
+        label that used to vanish is reachable by actually scrolling to it,
+        not just that a scrollbar exists."""
+        from PyQt6.QtGui import QFont
+        from PyQt6.QtWidgets import QTabWidget, QLabel
+        original_font = app.font()
+        big_font = QFont(original_font)
+        big_font.setPointSize(original_font.pointSize() + 6)
+        try:
+            app.setFont(big_font)
+            before = window.size()
+            window.resize(1280, 800)
+            for _ in range(3):
+                app.processEvents()
+            goto("customers")
+            window.customers.findChild(QTabWidget).setCurrentIndex(1)
+            for _ in range(3):
+                app.processEvents()
+
+            container = window.content_stack.currentWidget()
+            hbar = container.horizontalScrollBar()
+            assert hbar.maximum() > 0, \
+                "the stress font did not force any page wider than the window - test setup is not exercising the bug"
+            # A user cannot drag a scrollbar they cannot see - reachable only
+            # by code (hbar.setValue) is not the same as reachable by a
+            # person using the actual window, and ScrollBarAlwaysOff would
+            # still let the assertions below pass with nothing on screen for
+            # anyone to actually grab.
+            assert hbar.isVisible(), \
+                "content overflows the window but the horizontal scrollbar is not visible to reach it"
+
+            target = next(l for l in window.customers.findChildren(QLabel)
+                          if "لا يوجد عملاء" in l.text())
+            hbar.setValue(0)
+            for _ in range(2):
+                app.processEvents()
+            before_visible = 0 <= target.mapTo(window, target.rect().topLeft()).x() < window.width()
+
+            hbar.setValue(hbar.maximum())
+            for _ in range(2):
+                app.processEvents()
+            after_x = target.mapTo(window, target.rect().topLeft()).x()
+            after_visible = 0 <= after_x < window.width()
+            assert after_visible, \
+                f"scrolling all the way did not bring the clipped label into view (x={after_x})"
+        finally:
+            app.setFont(original_font)
+            window.resize(before)
+            for _ in range(3):
+                app.processEvents()
+    check("content wider than the window is reachable by horizontal scroll, not silently clipped",
+          wide_content_is_reachable_by_horizontal_scroll_not_silently_clipped)
+
+    def hr_table_boxes_do_not_stretch_into_a_dead_gap():
+        """"قائمة العاملين والوثائق" and "ملخص الرواتب" each used to give
+        their own QGroupBox a layout stretch factor of 1 - a leftover from
+        before the whole HR page scrolled as one unit, when the box needed
+        to claim all the window's spare height itself so the table inside
+        was not squeezed down to a couple of rows. The table inside is now
+        sized to fit only its own rows (fit_table_height), so stretching the
+        box around it to fill the page's full viewport height just left a
+        tall, empty gap between the box's title and the table - reported
+        live as "this page looks suspicious." Checked by comparing the
+        box's own height to the table's - they should be close, not the box
+        dwarfing a small table inside it."""
+        from PyQt6.QtWidgets import QTabWidget, QGroupBox
+        goto("hr")
+        tabs = window.hr.findChild(QTabWidget)
+        for label, table in (("قائمة العاملين", window.hr.table),
+                             ("الرواتب", window.hr.payroll_table)):
+            for i in range(tabs.count()):
+                if tabs.tabText(i) == label:
+                    tabs.setCurrentIndex(i)
+            for _ in range(2):
+                app.processEvents()
+            box = table.parentWidget()
+            while box is not None and not isinstance(box, QGroupBox):
+                box = box.parentWidget()
+            assert box is not None, f"{label}: table is not inside a QGroupBox anymore"
+            slack = box.height() - table.height()
+            assert slack < 120, \
+                f"{label}: the box is {slack}px taller than its table - stretched into a dead gap again"
+    check("the HR employee-list and payroll-summary boxes hug their table, no stretched dead gap",
+          hr_table_boxes_do_not_stretch_into_a_dead_gap)
+
+    def login_dialog_has_a_clean_white_background_and_a_working_button():
+        """A plain QDialog paints the palette's grey Window colour by
+        default, which read as an unfinished box floating on the desktop
+        rather than part of the app - reported live. Given a QSS
+        stylesheet on any *container* widget (a page's QScrollArea/
+        viewport - see add_page) is what stopped the app-wide QSS from
+        reaching buttons inside it earlier this session, this checks the
+        dialog's own "دخول" button still renders with its real blue fill
+        after giving the dialog itself a background stylesheet - proving
+        that specific failure mode does not apply here."""
+        from ui.login_dialog import LoginDialog
+        from PyQt6.QtWidgets import QPushButton
+        dialog = LoginDialog(db)
+        dialog.show()
+        for _ in range(2):
+            app.processEvents()
+        try:
+            login_btn = next(b for b in dialog.findChildren(QPushButton) if b.text() == "دخول")
+            image = render(login_btn)
+            colour = image.pixelColor(login_btn.width() // 2, login_btn.height() // 2)
+            near_white = colour.red() > 230 and colour.green() > 230 and colour.blue() > 230
+            assert not near_white, f"the login button lost its background fill - now {colour.name()}"
+        finally:
+            dialog.close()
+    check("the login dialog has a clean white background and a properly styled button",
+          login_dialog_has_a_clean_white_background_and_a_working_button)
+
     print("\n" + "=" * 52)
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")

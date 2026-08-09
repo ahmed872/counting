@@ -22,7 +22,10 @@ class ChangePasswordDialog(QDialog):
         from logic.paths import set_window_icon
         set_window_icon(self)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(420)
+        # See the same fix in login_dialog.py - a QDialog otherwise paints
+        # the palette's plain grey Window colour instead of a clean card.
+        self.setStyleSheet("QDialog { background-color: #ffffff; }")
         self.build()
 
     def _field_label(self, text):

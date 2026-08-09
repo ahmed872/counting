@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
                              QGroupBox, QTabWidget)
 from PyQt6.QtCore import QDate, Qt
-from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height
+from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height
 from ui.formatting import money_item, money
 from logic.money import parse_money
 from logic.accounting import AccountingLogic
@@ -265,7 +265,14 @@ class HRModule(QWidget):
         payroll_box = QGroupBox("ملخص الرواتب")
         payroll_box_layout = QVBoxLayout(payroll_box)
         payroll_box_layout.addWidget(self.payroll_table)
-        payroll_tab_layout.addWidget(payroll_box, 1)
+        # pin_height, not a bare addWidget - a leftover stretch factor here
+        # (and a bare addWidget without it) both let the box - a QTabWidget
+        # page is handed the tab bar's own full available height regardless
+        # of what its own layout asks for - grow well past what its table
+        # (sized to fit only its own rows) actually needs, leaving a tall
+        # dead gap below it. pin_height is the same fix already used on
+        # every other QGroupBox in this app that must not stretch.
+        payroll_tab_layout.addWidget(pin_height(payroll_box))
 
         # Settles account 2200 (رواتب مستحقة الدفع) built up by runs posted
         # with "لا" above - a lump-sum payment against the accrued balance,
@@ -322,7 +329,14 @@ class HRModule(QWidget):
         employees_box = QGroupBox("قائمة العاملين والوثائق")
         employees_box_layout = QVBoxLayout(employees_box)
         employees_box_layout.addWidget(self.table)
-        tables_layout.addWidget(employees_box, 1)
+        # pin_height - see the note on payroll_box above for why a bare
+        # addWidget (with or without a layout stretch factor) was not
+        # enough: a QTabWidget page gets handed the tab bar's own full
+        # available height regardless of what its own layout asks for.
+        # Reported live as "this page looks suspicious" - a tall dead gap
+        # below a table sized to fit only its own row.
+        tables_layout.addWidget(pin_height(employees_box))
+        tables_layout.addStretch()
 
         tabs.addTab(tables_widget, "قائمة العاملين")
 

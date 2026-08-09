@@ -35,6 +35,9 @@ class ActivationDialog(QDialog):
         set_window_icon(self)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         self.setMinimumWidth(560)
+        # See the same fix in login_dialog.py - a QDialog otherwise paints
+        # the palette's plain grey Window colour instead of a clean card.
+        self.setStyleSheet("QDialog { background-color: #ffffff; }")
         self.build(message)
 
     def build(self, message):
