@@ -4047,6 +4047,34 @@ def main():
     check("the login dialog carries the developer's contact signature",
           login_dialog_shows_the_developers_contact_signature)
 
+    def login_dialog_groups_each_label_tightly_with_its_own_field():
+        """Requested live: the login screen "looked بدائي" (amateurish) -
+        traced to every gap on the form being the same size regardless of
+        what it separated, so "اسم المستخدم" read no more attached to its
+        own field than to the field above it. A field must now sit
+        noticeably closer to its own label than to the next label down -
+        the actual, measurable thing that makes two rows read as two
+        distinct grouped pairs instead of one undifferentiated stack of
+        lines."""
+        from ui.login_dialog import LoginDialog
+        dialog = LoginDialog(db)
+        dialog.show()
+        for _ in range(2):
+            app.processEvents()
+        try:
+            password_label = next(
+                l for l in dialog.findChildren(QLabel) if l.text() == "كلمة المرور")
+            gap_to_own_field = dialog.password_field.geometry().top() - password_label.geometry().bottom()
+            gap_from_field_above = password_label.geometry().top() - dialog.username_field.geometry().bottom()
+            assert gap_to_own_field < gap_from_field_above, (
+                f"كلمة المرور is not grouped with its own field - gap to its field "
+                f"({gap_to_own_field}px) is not tighter than the gap above it "
+                f"({gap_from_field_above}px)")
+        finally:
+            dialog.close()
+    check("the login dialog groups each field tightly with its own label, not evenly spaced",
+          login_dialog_groups_each_label_tightly_with_its_own_field)
+
     print("\n" + "=" * 52)
     if failures:
         print(f"FAILED ({len(failures)}): {failures}")
