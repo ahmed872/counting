@@ -103,7 +103,7 @@ class PurchaseModule(QWidget):
             ("المبلغ", self.amount_input),
             ("حالة الدفع", self.payment_status),
             (None, save_btn),
-        ], columns=3, field_min_width=150))
+        ], columns=2, field_min_width=130))
 
         layout.addWidget(pin_height(form_box))
 
@@ -212,7 +212,7 @@ class PurchaseModule(QWidget):
             ("طريقة الاسترداد", self.return_method_input),
             ("ملاحظات", self.return_notes_input),
             (None, save_return_btn),
-        ], columns=3, field_min_width=150))
+        ], columns=2, field_min_width=130))
         layout.addWidget(pin_height(return_box))
 
         returns_header = QHBoxLayout()

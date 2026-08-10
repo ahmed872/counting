@@ -88,7 +88,7 @@ class OtherBalancesModule(QWidget):
             ("طريقة الاستلام", self.loan_method_input),
             ("ملاحظات", self.loan_notes_input),
             (None, new_loan_btn),
-        ], columns=3, field_min_width=150))
+        ], columns=2, field_min_width=130))
         layout.addWidget(pin_height(new_loan_box))
 
         loans_label = QLabel("القروض المسجّلة")
@@ -123,7 +123,7 @@ class OtherBalancesModule(QWidget):
             ("المبلغ", self.loan_payment_amount),
             ("طريقة السداد", self.loan_payment_method),
             (None, pay_loan_btn),
-        ], columns=3, field_min_width=150))
+        ], columns=2, field_min_width=130))
         layout.addWidget(pin_height(pay_loan_box))
         layout.addStretch()
 
@@ -254,7 +254,7 @@ class OtherBalancesModule(QWidget):
             ("طريقة الدفع", self.prepaid_method_input),
             ("نوع المصروف عند التوزيع", self.prepaid_target_input),
             (None, new_prepaid_btn),
-        ], columns=3, field_min_width=160))
+        ], columns=2, field_min_width=140))
         layout.addWidget(pin_height(new_prepaid_box))
 
         prepaid_label = QLabel("المصروفات المقدمة المسجّلة")

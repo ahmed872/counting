@@ -69,7 +69,7 @@ class SuppliersModule(QWidget):
             ("رقم الجوال", self.phone_input),
             ("رصيد افتتاحي", self.opening_balance_input),
             (None, add_btn),
-        ], columns=3, field_min_width=150))
+        ], columns=2, field_min_width=130))
         list_layout.addWidget(pin_height(form_box))
 
         list_header_row = QHBoxLayout()
@@ -154,7 +154,7 @@ class SuppliersModule(QWidget):
             ("طريقة السداد", self.payment_method),
             ("ملاحظات", self.payment_notes),
             (None, pay_btn),
-        ], columns=4, field_min_width=130))
+        ], columns=2, field_min_width=150))
         pay_layout.addWidget(pin_height(payment_box))
 
         statement_label = QLabel("كشف حساب المورد")

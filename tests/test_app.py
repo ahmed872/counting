@@ -3500,40 +3500,44 @@ def main():
         the theory that content was always narrow enough not to need it.
         Real screenshots proved otherwise - a long QGroupBox title, or just
         the wider glyph metrics of the real "Segoe UI" font on a customer's
-        Windows machine (this test box only ever renders with whatever
-        fallback font Linux substitutes, so the bug never reproduced there),
-        needed more width than the window provided, and with nowhere for
-        the overflow to go it was clipped off the left edge under RTL,
-        gone, unreachable. Forces the exact same shape of overflow
-        deterministically - a much larger app-wide font - and checks the
-        label that used to vanish is reachable by actually scrolling to it,
-        not just that a scrollbar exists."""
-        from PyQt6.QtGui import QFont
-        original_font = app.font()
-        big_font = QFont(original_font)
-        big_font.setPointSize(original_font.pointSize() + 6)
+        Windows machine, needed more width than the window provided, and
+        with nowhere for the overflow to go it was clipped off the left
+        edge under RTL, gone, unreachable.
+
+        This used to force the overflow indirectly - a big app-wide font,
+        relying on whichever page happened to still be packed tightly
+        enough to outgrow the window under it. That kept breaking as a
+        test: every page this session (customers, suppliers, purchases,
+        other_balances, accounting, sales) got fixed to no longer overflow
+        under a merely bigger font, in turn, each time leaving this check
+        with no page left to reliably reproduce the bug on - which meant
+        the check itself, not the app, decided whether the mechanism still
+        worked. Forces the overflow directly instead: a real widget on the
+        dashboard, given a huge minimum width for the duration of the
+        check - deterministic regardless of which pages the rest of the
+        app happens to have fixed by now - and checks that the label next
+        to it is reachable by actually scrolling to it, not just that a
+        scrollbar exists."""
+        goto("dashboard")
+        for _ in range(3):
+            app.processEvents()
+        before = window.size()
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+
+        target = window.dashboard.sales_card.value_label
+        forced_widget = window.dashboard.sales_card
+        original_min_width = forced_widget.minimumWidth()
         try:
-            app.setFont(big_font)
-            before = window.size()
-            window.resize(1280, 800)
-            for _ in range(3):
-                app.processEvents()
-            # Suppliers' "الموردون والأرصدة" tab still packs enough fields
-            # into one compact_form row to reliably outgrow the window under
-            # the stress font. Customers used to be the reliable case here,
-            # but its own compact_form rows were split across more rows to
-            # stop it overflowing at all under normal use (reported live -
-            # a scrollbar was showing up on an ordinary window), so it no
-            # longer overflows even under this much stress - which is the
-            # point of that fix, not a reason to drop this check.
-            goto("suppliers")
+            forced_widget.setMinimumWidth(2200)
             for _ in range(3):
                 app.processEvents()
 
             container = window.content_stack.currentWidget()
             hbar = container.horizontalScrollBar()
             assert hbar.maximum() > 0, \
-                "the stress font did not force any page wider than the window - test setup is not exercising the bug"
+                "forcing a 2200px minimum width did not force the page wider than the window - test setup is not exercising the bug"
             # A user cannot drag a scrollbar they cannot see - reachable only
             # by code (hbar.setValue) is not the same as reachable by a
             # person using the actual window, and ScrollBarAlwaysOff would
@@ -3541,15 +3545,6 @@ def main():
             # anyone to actually grab.
             assert hbar.isVisible(), \
                 "content overflows the window but the horizontal scrollbar is not visible to reach it"
-
-            # total_balance_label's text is entirely data-dependent (empty,
-            # "المستحق للموردين", "مدفوع بالزيادة"...), so target the widget
-            # itself rather than search for text that may not be showing.
-            target = window.suppliers.total_balance_label
-            hbar.setValue(0)
-            for _ in range(2):
-                app.processEvents()
-            before_visible = 0 <= target.mapTo(window, target.rect().topLeft()).x() < window.width()
 
             hbar.setValue(hbar.maximum())
             for _ in range(2):
@@ -3559,7 +3554,7 @@ def main():
             assert after_visible, \
                 f"scrolling all the way did not bring the clipped label into view (x={after_x})"
         finally:
-            app.setFont(original_font)
+            forced_widget.setMinimumWidth(original_min_width)
             window.resize(before)
             for _ in range(3):
                 app.processEvents()
@@ -3596,6 +3591,106 @@ def main():
             app.processEvents()
     check("the customers page fits without horizontal scroll at the app's minimum window size",
           customers_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
+
+    def suppliers_page_needs_no_horizontal_scroll_at_the_app_minimum_size():
+        """The mirror-image bug to the customers-page one above, on the
+        sibling module - reported live via screenshot (the "إضافة مورد
+        جديد" form and the toggle-active button both clipped off the left
+        edge, a horizontal scrollbar sitting at the bottom of an otherwise
+        ordinary-looking window). SuppliersModule's own "إضافة مورد جديد"
+        (5 fields in one columns=3 row) and "تسجيل سداد" (4 fields in one
+        columns=4 row) forms were never given the same columns=2 treatment
+        CustomersModule's equivalent forms already got earlier - same
+        class of bug, same fix, just never applied to this module's own
+        copy of the same layout. Checked at the app's own documented
+        minimum window size (1040x640) with the normal font, same as the
+        customers-page check."""
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+        goto("suppliers")
+        for _ in range(3):
+            app.processEvents()
+        container = window.content_stack.currentWidget()
+        hbar = container.horizontalScrollBar()
+        assert not hbar.isVisible(), (
+            f"الموردون still needs horizontal scroll at the app's own minimum "
+            f"window size (hbar max={hbar.maximum()})")
+        window.resize(1526, 900)
+        for _ in range(3):
+            app.processEvents()
+    check("the suppliers page fits without horizontal scroll at the app's minimum window size",
+          suppliers_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
+
+    def purchases_page_needs_no_horizontal_scroll_at_the_app_minimum_size():
+        """Found while auditing every page for the same class of bug as the
+        customers/suppliers fixes above: the "تسجيل فاتورة شراء" and
+        "تسجيل مرتجع مشتريات" forms each packed 7-8 fields into one
+        columns=3 row - a real 204px overflow at the app's own documented
+        minimum window size, even at the normal (non-stressed) font, not a
+        marginal edge case."""
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+        goto("purchases")
+        for _ in range(3):
+            app.processEvents()
+        container = window.content_stack.currentWidget()
+        hbar = container.horizontalScrollBar()
+        assert not hbar.isVisible(), (
+            f"المشتريات still needs horizontal scroll at the app's own minimum "
+            f"window size (hbar max={hbar.maximum()})")
+        window.resize(1526, 900)
+        for _ in range(3):
+            app.processEvents()
+    check("the purchases page fits without horizontal scroll at the app's minimum window size",
+          purchases_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
+
+    def other_balances_page_needs_no_horizontal_scroll_at_the_app_minimum_size():
+        """Same audit, same class of bug: القروض والمصروفات المقدمة's
+        "قرض جديد" and "مصروف مقدم جديد" forms each packed too many fields
+        into one columns=3 row - a real 247px overflow at the app's own
+        documented minimum window size, even at the normal font."""
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+        goto("other_balances")
+        for _ in range(3):
+            app.processEvents()
+        container = window.content_stack.currentWidget()
+        hbar = container.horizontalScrollBar()
+        assert not hbar.isVisible(), (
+            f"القروض والمصروفات المقدمة still needs horizontal scroll at the app's "
+            f"own minimum window size (hbar max={hbar.maximum()})")
+        window.resize(1526, 900)
+        for _ in range(3):
+            app.processEvents()
+    check("the loans/prepaid page fits without horizontal scroll at the app's minimum window size",
+          other_balances_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
+
+    def accounting_page_needs_no_horizontal_scroll_at_the_app_minimum_size():
+        """Same audit, different shape of the same root cause: not a
+        compact_form this time, but a bespoke QGridLayout ("تحديد الفترة"
+        and "أرصدة المخزون") that crammed every label+field pair plus a
+        button into one unbroken row with nowhere to wrap to - a real 57px
+        overflow at the app's own documented minimum window size, even at
+        the normal font."""
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+        goto("accounting")
+        for _ in range(3):
+            app.processEvents()
+        container = window.content_stack.currentWidget()
+        hbar = container.horizontalScrollBar()
+        assert not hbar.isVisible(), (
+            f"المحاسبة still needs horizontal scroll at the app's own minimum "
+            f"window size (hbar max={hbar.maximum()})")
+        window.resize(1526, 900)
+        for _ in range(3):
+            app.processEvents()
+    check("the accounting page fits without horizontal scroll at the app's minimum window size",
+          accounting_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
 
     def hr_table_boxes_do_not_stretch_into_a_dead_gap():
         """"قائمة العاملين والوثائق" and "ملخص الرواتب" each used to give
@@ -3951,6 +4046,34 @@ def main():
             dialog.close()
     check("the login dialog carries the developer's contact signature",
           login_dialog_shows_the_developers_contact_signature)
+
+    def login_dialog_groups_each_label_tightly_with_its_own_field():
+        """Requested live: the login screen "looked بدائي" (amateurish) -
+        traced to every gap on the form being the same size regardless of
+        what it separated, so "اسم المستخدم" read no more attached to its
+        own field than to the field above it. A field must now sit
+        noticeably closer to its own label than to the next label down -
+        the actual, measurable thing that makes two rows read as two
+        distinct grouped pairs instead of one undifferentiated stack of
+        lines."""
+        from ui.login_dialog import LoginDialog
+        dialog = LoginDialog(db)
+        dialog.show()
+        for _ in range(2):
+            app.processEvents()
+        try:
+            password_label = next(
+                l for l in dialog.findChildren(QLabel) if l.text() == "كلمة المرور")
+            gap_to_own_field = dialog.password_field.geometry().top() - password_label.geometry().bottom()
+            gap_from_field_above = password_label.geometry().top() - dialog.username_field.geometry().bottom()
+            assert gap_to_own_field < gap_from_field_above, (
+                f"كلمة المرور is not grouped with its own field - gap to its field "
+                f"({gap_to_own_field}px) is not tighter than the gap above it "
+                f"({gap_from_field_above}px)")
+        finally:
+            dialog.close()
+    check("the login dialog groups each field tightly with its own label, not evenly spaced",
+          login_dialog_groups_each_label_tightly_with_its_own_field)
 
     print("\n" + "=" * 52)
     if failures:

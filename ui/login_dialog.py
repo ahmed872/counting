@@ -24,6 +24,14 @@ from PyQt6.QtWidgets import (
 
 from logic.auth import AuthLogic
 
+# One spacing scale, used everywhere below instead of ad-hoc numbers -
+# a login screen assembled from whatever margin "looked about right" in
+# each spot is exactly what read as "بدائي" (amateurish): the gap under
+# the header, the gap between a label and its field, and the gap between
+# one field group and the next were all different sizes with no reason
+# for any of them to differ.
+_XS, _SM, _MD, _LG, _XL = 4, 8, 16, 24, 36
+
 
 class LoginDialog(QDialog):
     def __init__(self, db, parent=None):
@@ -37,23 +45,26 @@ class LoginDialog(QDialog):
         from logic.paths import set_window_icon
         set_window_icon(self)
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
-        self.setMinimumWidth(500)
-        # An explicit white background - a QDialog otherwise paints the
-        # palette's plain grey Window colour, which read as unfinished
-        # sitting on top of the desktop rather than a proper card.
-        self.setStyleSheet("QDialog { background-color: #ffffff; }")
+        self.setMinimumWidth(440)
+        self.setFixedWidth(440)
+        # A soft off-white, not stark white - the input fields below stay
+        # pure white on top of it, which is what actually gives the form
+        # its own sense of depth (a card sitting on a surface) instead of
+        # everything - dialog, fields, background - being the identical
+        # shade of white with only thin borders to tell them apart.
+        self.setStyleSheet("QDialog { background-color: #eef1f6; }")
         self.build()
 
     def build(self):
-        # A dark header band (logo, title, subtitle) over a plain white
-        # form card, instead of everything sitting flat on one white
-        # background - reported live as looking too basic. Only the header
-        # gets its own background colour: it holds nothing but labels
-        # (styled explicitly below, not relying on the app-wide QSS), so it
-        # cannot be the container that stops that QSS from cascading down
-        # to a button - see the dialog-stylesheet test this file ships
-        # with, and the QScrollArea case in add_page (main_window.py) that
-        # test guards against.
+        # A dark header band (logo, title, subtitle) over the body, instead
+        # of everything sitting flat on one plain background - reported
+        # live as looking too basic. Only the header gets its own
+        # background colour: it holds nothing but labels (styled
+        # explicitly below, not relying on the app-wide QSS), so it cannot
+        # be the container that stops that QSS from cascading down to a
+        # button - see the dialog-stylesheet test this file ships with,
+        # and the QScrollArea case in add_page (main_window.py) that test
+        # guards against.
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
@@ -61,35 +72,39 @@ class LoginDialog(QDialog):
         header = QWidget()
         header.setStyleSheet("background-color: #1f3b57;")
         header_layout = QVBoxLayout(header)
-        header_layout.setContentsMargins(36, 34, 36, 28)
-        header_layout.setSpacing(8)
+        header_layout.setContentsMargins(_XL, _LG + _XS, _XL, _LG)
+        header_layout.setSpacing(_SM)
 
         from logic.paths import icon_path
-        logo = QLabel()
-        logo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_frame = QLabel()
+        logo_frame.setFixedSize(64, 64)
+        logo_frame.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        logo_frame.setStyleSheet(
+            "background: transparent;")
         pixmap = QPixmap(icon_path())
         if not pixmap.isNull():
-            logo.setPixmap(pixmap.scaled(
-                56, 56, Qt.AspectRatioMode.KeepAspectRatio,
+            logo_frame.setPixmap(pixmap.scaled(
+                36, 36, Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation))
-            header_layout.addWidget(logo)
+        header_layout.addWidget(logo_frame, 0, Qt.AlignmentFlag.AlignHCenter)
+        header_layout.addSpacing(_XS)
 
         title = QLabel("نظام إدارة المطعم")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        title.setStyleSheet("font-size: 21px; font-weight: 800; color: #ffffff;")
+        title.setStyleSheet("font-size: 20px; font-weight: 800; color: #ffffff;")
         header_layout.addWidget(title)
 
         subtitle = QLabel("سجّل دخولك للمتابعة")
         subtitle.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        subtitle.setStyleSheet("color:#b9c8db; font-size:13px;")
+        subtitle.setStyleSheet("color:#a9bcd0; font-size:13px;")
         header_layout.addWidget(subtitle)
 
         outer.addWidget(header)
 
         body = QWidget()
         body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(36, 30, 36, 30)
-        body_layout.setSpacing(18)
+        body_layout.setContentsMargins(_XL, _LG, _XL, _MD)
+        body_layout.setSpacing(0)
 
         self.stack = QStackedWidget()
         body_layout.addWidget(self.stack)
@@ -98,50 +113,82 @@ class LoginDialog(QDialog):
 
         signature = QLabel("تطوير: أحمد  •  01093033884")
         signature.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        signature.setStyleSheet("color:#b6c0cc; font-size:11px; margin-top:6px;")
+        signature.setStyleSheet(
+            f"color:#9aa7b8; font-size:11px; margin-top:{_MD}px;")
         body_layout.addWidget(signature)
 
         outer.addWidget(body)
 
-    def _field_label(self, text):
-        label = QLabel(text)
-        label.setStyleSheet("font-weight:700; color:#334155;")
-        return label
+    def _field(self, layout, caption, placeholder, password=False, on_enter=None):
+        """One label+input pair, spaced as a single tight unit (the label
+        sits right against its own field) with a uniform gap before the
+        next pair - the two different jobs a gap can do here (inside a
+        pair vs between pairs) had the same size before, which is what
+        made the form read as an undifferentiated stack of lines instead
+        of grouped fields."""
+        label = QLabel(caption)
+        label.setStyleSheet(
+            f"font-weight:600; color:#475569; font-size:12.5px; "
+            f"margin-bottom:{_XS}px;")
+        layout.addWidget(label)
+
+        field = QLineEdit()
+        field.setPlaceholderText(placeholder)
+        field.setMinimumHeight(44)
+        field.setStyleSheet(
+            "QLineEdit {"
+            "  border: 1.5px solid #dbe2ea; border-radius: 10px;"
+            "  padding: 0 14px; font-size: 14px; background: #ffffff;"
+            "}"
+            "QLineEdit:focus { border: 1.5px solid #2c5a82; }")
+        if password:
+            field.setEchoMode(QLineEdit.EchoMode.Password)
+        if on_enter:
+            field.returnPressed.connect(on_enter)
+        layout.addWidget(field)
+        layout.addSpacing(_MD)
+        return field
+
+    def _primary_button(self, layout, text, on_click):
+        btn = QPushButton(text)
+        btn.setMinimumHeight(46)
+        btn.setStyleSheet(
+            "QPushButton {"
+            "  background-color: #1f3b57; color: #ffffff; border: none;"
+            "  border-radius: 10px; font-size: 14px; font-weight: 700;"
+            "}"
+            "QPushButton:hover { background-color: #2c4d6d; }"
+            "QPushButton:pressed { background-color: #17293c; }")
+        btn.clicked.connect(on_click)
+        layout.addWidget(btn)
+        return btn
 
     def _build_login_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
-        layout.addWidget(self._field_label("اسم المستخدم"))
-        self.username_field = QLineEdit()
-        self.username_field.setPlaceholderText("اكتب اسم المستخدم")
-        self.username_field.returnPressed.connect(self.try_login)
-        layout.addWidget(self.username_field)
-
-        layout.addWidget(self._field_label("كلمة المرور"))
-        self.password_field = QLineEdit()
-        self.password_field.setPlaceholderText("اكتب كلمة المرور")
-        self.password_field.setEchoMode(QLineEdit.EchoMode.Password)
-        self.password_field.returnPressed.connect(self.try_login)
-        layout.addWidget(self.password_field)
+        self.username_field = self._field(
+            layout, "اسم المستخدم", "اكتب اسم المستخدم", on_enter=self.try_login)
+        self.password_field = self._field(
+            layout, "كلمة المرور", "اكتب كلمة المرور", password=True, on_enter=self.try_login)
 
         self.login_status = QLabel()
         self.login_status.setWordWrap(True)
         self.login_status.setVisible(False)
         layout.addWidget(self.login_status)
 
-        login_btn = QPushButton("دخول")
-        login_btn.setMinimumHeight(44)
-        login_btn.clicked.connect(self.try_login)
-        layout.addWidget(login_btn)
+        layout.addSpacing(_XS)
+        self._primary_button(layout, "دخول", self.try_login)
 
         return page
 
     def _build_change_password_page(self):
         page = QWidget()
         layout = QVBoxLayout(page)
-        layout.setSpacing(14)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
 
         notice = QLabel(
             "هذه كلمة مرور مؤقتة - اختر كلمة مرور جديدة خاصة بك لإكمال الدخول."
@@ -149,29 +196,24 @@ class LoginDialog(QDialog):
         notice.setWordWrap(True)
         notice.setStyleSheet(
             "color:#9a5a06; background:#fdf3e2; border:1px solid #f0d4a3;"
-            "border-radius:8px; padding:10px 12px; font-weight:700;")
+            f"border-radius:10px; padding:{_SM+2}px {_MD}px; font-weight:600;"
+            f"font-size:12.5px;")
         layout.addWidget(notice)
+        layout.addSpacing(_MD)
 
-        layout.addWidget(self._field_label("كلمة المرور الجديدة"))
-        self.new_password_field = QLineEdit()
-        self.new_password_field.setEchoMode(QLineEdit.EchoMode.Password)
-        layout.addWidget(self.new_password_field)
-
-        layout.addWidget(self._field_label("تأكيد كلمة المرور الجديدة"))
-        self.confirm_password_field = QLineEdit()
-        self.confirm_password_field.setEchoMode(QLineEdit.EchoMode.Password)
-        self.confirm_password_field.returnPressed.connect(self.try_change_password)
-        layout.addWidget(self.confirm_password_field)
+        self.new_password_field = self._field(
+            layout, "كلمة المرور الجديدة", "6 خانات على الأقل", password=True)
+        self.confirm_password_field = self._field(
+            layout, "تأكيد كلمة المرور الجديدة", "اكتبها مرة أخرى",
+            password=True, on_enter=self.try_change_password)
 
         self.change_status = QLabel()
         self.change_status.setWordWrap(True)
         self.change_status.setVisible(False)
         layout.addWidget(self.change_status)
 
-        confirm_btn = QPushButton("حفظ كلمة المرور والدخول")
-        confirm_btn.setMinimumHeight(44)
-        confirm_btn.clicked.connect(self.try_change_password)
-        layout.addWidget(confirm_btn)
+        layout.addSpacing(_XS)
+        self._primary_button(layout, "حفظ كلمة المرور والدخول", self.try_change_password)
 
         return page
 
