@@ -405,22 +405,27 @@ class DBManager:
             (key, str(value)),
         )
 
+    def delete_journal_entry_on_cursor(self, cursor, entry_id):
+        """Same two deletes as delete_journal_entry() below, against a
+        cursor the caller already holds - so removing a business row and
+        reversing the journal entry it produced can be combined into one
+        transaction with whatever else the caller is doing (see clear_day()
+        in sales_entry_module.py). Mirrors insert_journal_entry() /
+        add_journal_entry() below: this is the cursor-sharing half, and
+        delete_journal_entry() is the standalone convenience wrapper for
+        callers that only need to reverse a journal entry on its own."""
+        if not entry_id:
+            return
+        cursor.execute("DELETE FROM journal_items WHERE entry_id = ?", (entry_id,))
+        cursor.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
+
     def delete_journal_entry(self, entry_id):
         """Removes a journal entry and its lines together, so the ledger can
         never be left holding half of a reversed transaction."""
         if not entry_id:
             return
-        conn = self.get_connection()
-        cursor = conn.cursor()
-        try:
-            cursor.execute("DELETE FROM journal_items WHERE entry_id = ?", (entry_id,))
-            cursor.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
+        with self.transaction() as cursor:
+            self.delete_journal_entry_on_cursor(cursor, entry_id)
 
     @contextmanager
     def transaction(self):

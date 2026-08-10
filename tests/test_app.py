@@ -553,6 +553,55 @@ def main():
         assert abs(balance - 600) < 0.01, balance
     check("supplier opening balance minus payment", supplier_ledger)
 
+    def creating_a_supplier_with_an_opening_balance_rolls_back_on_a_failure():
+        """add_supplier() used to insert the supplier row and post its
+        opening-balance journal entry as two separate commits - a failure
+        between them could leave a supplier whose own statement (which
+        reads opening_balance straight off this row, see
+        get_supplier_statement) shows a balance the trial balance never
+        received. Forces the failure right before the journal write and
+        confirms the supplier row itself never survives either - a
+        half-created supplier with no accounting behind it is not a safe
+        thing to leave lying around."""
+        journal_before = newest_journal_entry_id()
+        goto("suppliers")
+        s = window.suppliers
+        s.name_input.setText("مورد اختبار التراجع")
+        s.opening_balance_input.setText("1000")
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure right before the journal entry")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                s.add_supplier()
+                raise AssertionError("add_supplier did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        assert db.fetch_one(
+            "SELECT COUNT(*) c FROM suppliers WHERE name='مورد اختبار التراجع'")["c"] == 0, \
+            "an orphan supplier row survived the rollback with no opening-balance journal behind it"
+        assert newest_journal_entry_id() == journal_before, \
+            "a journal entry was created despite the simulated failure"
+
+        # The real path must still work afterwards.
+        s.name_input.setText("مورد اختبار التراجع")
+        s.opening_balance_input.setText("1000")
+        s.add_supplier()
+        sid = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد اختبار التراجع'")["id"]
+        balance = window.accounting.accounting.get_supplier_statement(sid)["balance"]
+        assert abs(balance - 1000) < 0.01, balance
+
+        db.execute_query("DELETE FROM suppliers WHERE id = ?", (sid,))
+        delete_journal_entries_created_after(journal_before)
+    check("a failure right before the journal entry rolls back a new supplier's opening balance completely",
+          creating_a_supplier_with_an_opening_balance_rolls_back_on_a_failure)
+
     def paying_a_supplier_needs_no_other_screen():
         """Choosing who is being paid belongs on the screen where the payment
         is entered. It used to be a read-only label that only filled in after
@@ -691,6 +740,51 @@ def main():
         delete_journal_entries_created_after(journal_marker)
     check("a credit sale to a customer creates a receivable that collection reduces",
           customer_credit_sale_and_collection)
+
+    def creating_a_customer_with_an_opening_balance_rolls_back_on_a_failure():
+        """Mirrors the supplier check above - add_customer() used to
+        insert the customer row and post its opening-balance journal
+        entry as two separate commits, with the same risk: a customer
+        whose own statement shows a balance the general ledger never
+        actually received."""
+        journal_before = newest_journal_entry_id()
+        goto("customers")
+        c = window.customers
+        c.name_input.setText("عميل اختبار التراجع")
+        c.opening_balance_input.setText("1000")
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure right before the journal entry")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                c.add_customer()
+                raise AssertionError("add_customer did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        assert db.fetch_one(
+            "SELECT COUNT(*) c FROM customers WHERE name='عميل اختبار التراجع'")["c"] == 0, \
+            "an orphan customer row survived the rollback with no opening-balance journal behind it"
+        assert newest_journal_entry_id() == journal_before, \
+            "a journal entry was created despite the simulated failure"
+
+        # The real path must still work afterwards.
+        c.name_input.setText("عميل اختبار التراجع")
+        c.opening_balance_input.setText("1000")
+        c.add_customer()
+        cid = db.fetch_one("SELECT id FROM customers WHERE name='عميل اختبار التراجع'")["id"]
+        balance = window.accounting.accounting.get_customer_statement(cid)["balance"]
+        assert abs(balance - 1000) < 0.01, balance
+
+        db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+        delete_journal_entries_created_after(journal_before)
+    check("a failure right before the journal entry rolls back a new customer's opening balance completely",
+          creating_a_customer_with_an_opening_balance_rolls_back_on_a_failure)
 
     def overcollecting_a_customer_asks_first():
         """Same guard as overpaying a supplier, mirrored: collecting more
@@ -1019,6 +1113,87 @@ def main():
         assert abs(after_total - 1150) < 0.01, f"{before_total} -> {after_total}"
         assert after_entries == before_entries, "replacing a day left a stale journal entry"
     check("re-saving a day replaces it instead of doubling it", saving_the_same_day_twice_replaces_it)
+
+    def deleting_a_sales_day_rolls_back_completely_on_a_failure():
+        """clear_day() used to delete a day's sales rows and reverse the
+        journal entry they produced as two separate commits - a failure
+        between them could leave the day gone from the sales history
+        while its revenue and VAT stayed sitting untouched in the trial
+        balance, or leave the journal entry gone while the sales row
+        (and whatever the dashboard shows from it) stayed behind. Forces
+        the failure while reversing the journal entry - after the sales
+        rows are already deleted inside the same transaction - and
+        confirms the whole delete rolls back: the sales row and its
+        journal entry either both survive or neither does."""
+        journal_before = newest_journal_entry_id()
+        test_branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)",
+            ("فرع اختبار تراجع الحذف", ""))
+        goto("sales")
+        s = window.sales
+        original_date = s.date_input.date()
+        s.date_input.setDate(QDate.currentDate())
+        try:
+            idx = s.branch_input.findData(test_branch_id)
+            assert idx >= 0, "the new test branch did not appear in the sales branch picker"
+            s.branch_input.setCurrentIndex(idx)
+            s.cash_input.setText("1150")
+            s.network_input.setText("0")
+            s.transfer_input.setText("0")
+            s.delivery_input.setText("0")
+            s.save_daily_sales()
+
+            today = QDate.currentDate().toString("yyyy-MM-dd")
+            sale_row = db.fetch_one(
+                "SELECT id, journal_entry_id FROM sales WHERE branch_id = ? AND date = ?",
+                (test_branch_id, today))
+            assert sale_row is not None, "test setup did not save the sale to roll back"
+            entry_id = sale_row["journal_entry_id"]
+
+            def boom(*a, **k):
+                raise RuntimeError("simulated failure while reversing the journal entry")
+
+            original = db.delete_journal_entry_on_cursor
+            db.delete_journal_entry_on_cursor = boom
+            try:
+                try:
+                    s.clear_day(test_branch_id, today)
+                    raise AssertionError("clear_day did not propagate the simulated failure")
+                except RuntimeError:
+                    pass
+            finally:
+                db.delete_journal_entry_on_cursor = original
+
+            # Both halves must still be exactly as they were before the
+            # delete was attempted - not the sales row gone with the
+            # journal entry left behind explaining nothing, or vice versa.
+            assert db.fetch_one(
+                "SELECT COUNT(*) c FROM sales WHERE branch_id = ? AND date = ?",
+                (test_branch_id, today))["c"] == 1, \
+                "the sales row was removed despite the journal-reversal failure"
+            assert db.fetch_one(
+                "SELECT COUNT(*) c FROM journal_entries WHERE id = ?", (entry_id,))["c"] == 1, \
+                "the journal entry was removed despite the simulated failure - it should not have been touched"
+
+            # The real path must still work afterwards.
+            s.clear_day(test_branch_id, today)
+            assert db.fetch_one(
+                "SELECT COUNT(*) c FROM sales WHERE branch_id = ? AND date = ?",
+                (test_branch_id, today))["c"] == 0, \
+                "a legitimate clear_day call failed to remove the sale after the failure-injection test"
+            assert db.fetch_one(
+                "SELECT COUNT(*) c FROM journal_entries WHERE id = ?", (entry_id,))["c"] == 0
+        finally:
+            db.execute_query(
+                "DELETE FROM sales WHERE branch_id = ? AND date(date) = date('now')",
+                (test_branch_id,))
+            delete_journal_entries_created_after(journal_before)
+            db.execute_query("DELETE FROM branches WHERE id = ?", (test_branch_id,))
+            goto("sales")
+            window.sales.date_input.setDate(original_date)
+            window.sales.load_history()
+    check("a failure while reversing the journal entry rolls back deleting a sales day completely",
+          deleting_a_sales_day_rolls_back_completely_on_a_failure)
 
     def cashier_number_is_saved_and_shown():
         """A reference field only - which register the day's total came off

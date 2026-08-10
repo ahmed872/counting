@@ -430,14 +430,20 @@ class SalesEntryModule(QWidget):
 
     def clear_day(self, branch_id, date_str):
         """Removes a day's sales rows together with the journal entry they
-        produced, so replacing a day cannot leave a stale entry in the ledger."""
+        produced, so replacing or deleting a day cannot leave a stale entry
+        in the ledger. Both halves now share one transaction - deleting the
+        sales rows and reversing the journal entry used to be two separate
+        commits, so a failure between them could leave the day gone from
+        the dashboard while its revenue and VAT stayed sitting in the
+        trial balance, or the other way around."""
         rows = self.existing_day(branch_id, date_str)
         entry_ids = {r["journal_entry_id"] for r in rows if r["journal_entry_id"]}
-        self.db.execute_query(
-            "DELETE FROM sales WHERE branch_id = ? AND date = ?", (branch_id, date_str)
-        )
-        for entry_id in entry_ids:
-            self.db.delete_journal_entry(entry_id)
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                "DELETE FROM sales WHERE branch_id = ? AND date = ?", (branch_id, date_str)
+            )
+            for entry_id in entry_ids:
+                self.db.delete_journal_entry_on_cursor(cursor, entry_id)
 
     def save_daily_sales(self):
         try:

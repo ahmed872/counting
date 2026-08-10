@@ -204,18 +204,24 @@ class CustomersModule(QWidget):
             QMessageBox.warning(self, "تنبيه", str(exc))
             return
 
-        customer_id = self.db.insert_and_return_id(
-            "INSERT INTO customers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
-            (name, tax_id, opening_balance, phone),
-        )
-
-        if opening_balance:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            items = [
-                {'account_code': '1400', 'debit': opening_balance, 'credit': 0},
-                {'account_code': '3900', 'debit': 0, 'credit': opening_balance},
-            ]
-            self.db.add_journal_entry(timestamp, f"رصيد افتتاحي لعميل - {name}", None, items)
+        # One transaction: the customer row and its opening-balance journal
+        # entry used to be two separate commits. A failure between them
+        # could leave a customer whose own statement (which reads
+        # opening_balance straight off this row) shows a balance the
+        # general ledger and trial balance never received.
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO customers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
+                (name, tax_id, opening_balance, phone),
+            )
+            if opening_balance:
+                items = [
+                    {'account_code': '1400', 'debit': opening_balance, 'credit': 0},
+                    {'account_code': '3900', 'debit': 0, 'credit': opening_balance},
+                ]
+                self.db.insert_journal_entry(
+                    cursor, timestamp, f"رصيد افتتاحي لعميل - {name}", None, items)
 
         QMessageBox.information(self, "نجاح", "تم إضافة العميل بنجاح")
         self.name_input.clear()
