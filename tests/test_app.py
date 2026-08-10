@@ -3515,18 +3515,25 @@ def main():
         try:
             app.setFont(big_font)
             before = window.size()
-            window.resize(1280, 800)
+            # Shrunk to the app's own documented minimum, not just the
+            # font stress alone - with a lot of real purchase rows already
+            # sitting in this shared test database by the time this check
+            # runs (every purchase-related test before it), the font bump
+            # alone was no longer reliably enough to outgrow a merely
+            # smallish window the way it still is on a fresh database.
+            window.resize(1040, 640)
             for _ in range(3):
                 app.processEvents()
-            # Suppliers' "الموردون والأرصدة" tab still packs enough fields
-            # into one compact_form row to reliably outgrow the window under
-            # the stress font. Customers used to be the reliable case here,
-            # but its own compact_form rows were split across more rows to
-            # stop it overflowing at all under normal use (reported live -
-            # a scrollbar was showing up on an ordinary window), so it no
-            # longer overflows even under this much stress - which is the
-            # point of that fix, not a reason to drop this check.
-            goto("suppliers")
+            # Purchases' invoice-entry form still packs enough fields into
+            # one compact_form row to reliably outgrow the window under the
+            # stress font. Both customers and suppliers used to be the
+            # reliable case here, but their own compact_form rows were each
+            # split across more, narrower rows to stop them overflowing at
+            # all under normal use (reported live - a scrollbar was showing
+            # up on an ordinary window for both), so neither overflows even
+            # under this much stress anymore - which is the point of those
+            # fixes, not a reason to drop this check.
+            goto("purchases")
             for _ in range(3):
                 app.processEvents()
 
@@ -3542,10 +3549,10 @@ def main():
             assert hbar.isVisible(), \
                 "content overflows the window but the horizontal scrollbar is not visible to reach it"
 
-            # total_balance_label's text is entirely data-dependent (empty,
-            # "المستحق للموردين", "مدفوع بالزيادة"...), so target the widget
-            # itself rather than search for text that may not be showing.
-            target = window.suppliers.total_balance_label
+            # purchases_total_label's text is entirely data-dependent (empty
+            # until a purchase exists), so target the widget itself rather
+            # than search for text that may not be showing.
+            target = window.purchases.purchases_total_label
             hbar.setValue(0)
             for _ in range(2):
                 app.processEvents()
@@ -3596,6 +3603,36 @@ def main():
             app.processEvents()
     check("the customers page fits without horizontal scroll at the app's minimum window size",
           customers_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
+
+    def suppliers_page_needs_no_horizontal_scroll_at_the_app_minimum_size():
+        """The mirror-image bug to the customers-page one above, on the
+        sibling module - reported live via screenshot (the "إضافة مورد
+        جديد" form and the toggle-active button both clipped off the left
+        edge, a horizontal scrollbar sitting at the bottom of an otherwise
+        ordinary-looking window). SuppliersModule's own "إضافة مورد جديد"
+        (5 fields in one columns=3 row) and "تسجيل سداد" (4 fields in one
+        columns=4 row) forms were never given the same columns=2 treatment
+        CustomersModule's equivalent forms already got earlier - same
+        class of bug, same fix, just never applied to this module's own
+        copy of the same layout. Checked at the app's own documented
+        minimum window size (1040x640) with the normal font, same as the
+        customers-page check."""
+        window.resize(1040, 640)
+        for _ in range(3):
+            app.processEvents()
+        goto("suppliers")
+        for _ in range(3):
+            app.processEvents()
+        container = window.content_stack.currentWidget()
+        hbar = container.horizontalScrollBar()
+        assert not hbar.isVisible(), (
+            f"الموردون still needs horizontal scroll at the app's own minimum "
+            f"window size (hbar max={hbar.maximum()})")
+        window.resize(1526, 900)
+        for _ in range(3):
+            app.processEvents()
+    check("the suppliers page fits without horizontal scroll at the app's minimum window size",
+          suppliers_page_needs_no_horizontal_scroll_at_the_app_minimum_size)
 
     def hr_table_boxes_do_not_stretch_into_a_dead_gap():
         """"قائمة العاملين والوثائق" and "ملخص الرواتب" each used to give
