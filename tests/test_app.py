@@ -215,6 +215,112 @@ def main():
         for row in db.fetch_all("SELECT id FROM journal_entries WHERE id > ?", (marker,)):
             db.delete_journal_entry(row["id"])
 
+    def payroll_posting_rolls_back_completely_on_a_failure_before_the_journal():
+        """post_payroll() used to be several independent commits - the
+        payroll_runs header, one payroll_run_items row per employee, any
+        advance settlements it triggered, then a separate journal entry -
+        each opening and committing its own connection. A crash or error
+        anywhere in that sequence (the exact failure this class of bug
+        causes on a machine switched on and off many times a day) could
+        leave a payroll_runs row with only some employees' items and no
+        journal behind it, or an advance marked settled against a run
+        that never actually finished posting. Checked by forcing a
+        failure at exactly the point the confirmed report called out -
+        immediately before the journal write, after every
+        payroll_run_items row and every advance settlement already
+        exists inside the transaction - and confirming everything written
+        inside that same transaction is rolled back together, not left
+        half-committed."""
+        month, year = 6, 2031   # a month nothing else in this suite posts to
+        assert not window.hr_logic.is_payroll_posted(month, year), \
+            "test setup collision - this month/year is already posted by another test"
+
+        runs_before = db.fetch_one("SELECT COUNT(*) c FROM payroll_runs")["c"]
+        items_before = db.fetch_one("SELECT COUNT(*) c FROM payroll_run_items")["c"]
+        journal_before = newest_journal_entry_id()
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure right before the journal entry")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                window.hr_logic.post_payroll(month, year)
+                raise AssertionError("post_payroll did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        assert not window.hr_logic.is_payroll_posted(month, year), \
+            "a failed post still left the month marked as posted"
+        assert db.fetch_one("SELECT COUNT(*) c FROM payroll_runs")["c"] == runs_before, \
+            "an orphan payroll_runs row survived the rollback"
+        assert db.fetch_one("SELECT COUNT(*) c FROM payroll_run_items")["c"] == items_before, \
+            "orphan payroll_run_items rows survived the rollback"
+        assert newest_journal_entry_id() == journal_before, \
+            "a journal entry was created despite the simulated failure"
+
+        # The real path must still work cleanly afterwards - the
+        # monkeypatch must not have left the connection or the shared
+        # transaction helper broken for the next real call.
+        window.hr_logic.post_payroll(month, year)
+        assert window.hr_logic.is_payroll_posted(month, year), \
+            "a legitimate post_payroll call failed after the failure-injection test"
+    check("a failure right before the journal entry rolls back the entire payroll post, not just part of it",
+          payroll_posting_rolls_back_completely_on_a_failure_before_the_journal)
+
+    def granting_an_advance_rolls_back_completely_on_a_failure():
+        """grant_advance() used to insert the employee_deductions row and
+        post the journal entry as two separate commits - a failure
+        between them could leave cash gone from the accounts with no
+        advance on record to explain it, or an advance on the books that
+        no journal entry ever backed. Checked the same way as the payroll
+        failure-injection above: force the failure right before the
+        journal write and confirm the deduction row it would have
+        explained never survives either."""
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("اختبار تراجع السلفة", "عامل", 1, 3000, 0))
+        journal_before = newest_journal_entry_id()
+        deductions_before = db.fetch_one(
+            "SELECT COUNT(*) c FROM employee_deductions WHERE employee_id = ?", (emp_id,))["c"]
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure right before the journal entry")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                window.hr_logic.grant_advance(emp_id, "2026-08-10", 500, "سلفة تجريبية")
+                raise AssertionError("grant_advance did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        deductions_after = db.fetch_one(
+            "SELECT COUNT(*) c FROM employee_deductions WHERE employee_id = ?", (emp_id,))["c"]
+        assert deductions_after == deductions_before, \
+            "an orphan advance row survived the rollback with no journal entry behind it"
+        assert newest_journal_entry_id() == journal_before, \
+            "a journal entry was created despite the simulated failure"
+
+        # The real path must still work afterwards.
+        window.hr_logic.grant_advance(emp_id, "2026-08-10", 500, "سلفة تجريبية")
+        assert db.fetch_one(
+            "SELECT COUNT(*) c FROM employee_deductions WHERE employee_id = ?",
+            (emp_id,))["c"] == deductions_before + 1, \
+            "a legitimate grant_advance call failed after the failure-injection test"
+
+        db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_before)
+    check("a failure right before the journal entry rolls back a granted advance completely, not just part of it",
+          granting_an_advance_rolls_back_completely_on_a_failure)
+
     def future_advance_does_not_leak_into_an_earlier_month():
         """An advance had no date filter at all on it - one granted in August
         was recoverable out of July's payroll, a month before it existed."""
@@ -447,6 +553,55 @@ def main():
         assert abs(balance - 600) < 0.01, balance
     check("supplier opening balance minus payment", supplier_ledger)
 
+    def creating_a_supplier_with_an_opening_balance_rolls_back_on_a_failure():
+        """add_supplier() used to insert the supplier row and post its
+        opening-balance journal entry as two separate commits - a failure
+        between them could leave a supplier whose own statement (which
+        reads opening_balance straight off this row, see
+        get_supplier_statement) shows a balance the trial balance never
+        received. Forces the failure right before the journal write and
+        confirms the supplier row itself never survives either - a
+        half-created supplier with no accounting behind it is not a safe
+        thing to leave lying around."""
+        journal_before = newest_journal_entry_id()
+        goto("suppliers")
+        s = window.suppliers
+        s.name_input.setText("مورد اختبار التراجع")
+        s.opening_balance_input.setText("1000")
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure right before the journal entry")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                s.add_supplier()
+                raise AssertionError("add_supplier did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        assert db.fetch_one(
+            "SELECT COUNT(*) c FROM suppliers WHERE name='مورد اختبار التراجع'")["c"] == 0, \
+            "an orphan supplier row survived the rollback with no opening-balance journal behind it"
+        assert newest_journal_entry_id() == journal_before, \
+            "a journal entry was created despite the simulated failure"
+
+        # The real path must still work afterwards.
+        s.name_input.setText("مورد اختبار التراجع")
+        s.opening_balance_input.setText("1000")
+        s.add_supplier()
+        sid = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد اختبار التراجع'")["id"]
+        balance = window.accounting.accounting.get_supplier_statement(sid)["balance"]
+        assert abs(balance - 1000) < 0.01, balance
+
+        db.execute_query("DELETE FROM suppliers WHERE id = ?", (sid,))
+        delete_journal_entries_created_after(journal_before)
+    check("a failure right before the journal entry rolls back a new supplier's opening balance completely",
+          creating_a_supplier_with_an_opening_balance_rolls_back_on_a_failure)
+
     def paying_a_supplier_needs_no_other_screen():
         """Choosing who is being paid belongs on the screen where the payment
         is entered. It used to be a read-only label that only filled in after
@@ -585,6 +740,51 @@ def main():
         delete_journal_entries_created_after(journal_marker)
     check("a credit sale to a customer creates a receivable that collection reduces",
           customer_credit_sale_and_collection)
+
+    def creating_a_customer_with_an_opening_balance_rolls_back_on_a_failure():
+        """Mirrors the supplier check above - add_customer() used to
+        insert the customer row and post its opening-balance journal
+        entry as two separate commits, with the same risk: a customer
+        whose own statement shows a balance the general ledger never
+        actually received."""
+        journal_before = newest_journal_entry_id()
+        goto("customers")
+        c = window.customers
+        c.name_input.setText("عميل اختبار التراجع")
+        c.opening_balance_input.setText("1000")
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure right before the journal entry")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                c.add_customer()
+                raise AssertionError("add_customer did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        assert db.fetch_one(
+            "SELECT COUNT(*) c FROM customers WHERE name='عميل اختبار التراجع'")["c"] == 0, \
+            "an orphan customer row survived the rollback with no opening-balance journal behind it"
+        assert newest_journal_entry_id() == journal_before, \
+            "a journal entry was created despite the simulated failure"
+
+        # The real path must still work afterwards.
+        c.name_input.setText("عميل اختبار التراجع")
+        c.opening_balance_input.setText("1000")
+        c.add_customer()
+        cid = db.fetch_one("SELECT id FROM customers WHERE name='عميل اختبار التراجع'")["id"]
+        balance = window.accounting.accounting.get_customer_statement(cid)["balance"]
+        assert abs(balance - 1000) < 0.01, balance
+
+        db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+        delete_journal_entries_created_after(journal_before)
+    check("a failure right before the journal entry rolls back a new customer's opening balance completely",
+          creating_a_customer_with_an_opening_balance_rolls_back_on_a_failure)
 
     def overcollecting_a_customer_asks_first():
         """Same guard as overpaying a supplier, mirrored: collecting more
@@ -913,6 +1113,87 @@ def main():
         assert abs(after_total - 1150) < 0.01, f"{before_total} -> {after_total}"
         assert after_entries == before_entries, "replacing a day left a stale journal entry"
     check("re-saving a day replaces it instead of doubling it", saving_the_same_day_twice_replaces_it)
+
+    def deleting_a_sales_day_rolls_back_completely_on_a_failure():
+        """clear_day() used to delete a day's sales rows and reverse the
+        journal entry they produced as two separate commits - a failure
+        between them could leave the day gone from the sales history
+        while its revenue and VAT stayed sitting untouched in the trial
+        balance, or leave the journal entry gone while the sales row
+        (and whatever the dashboard shows from it) stayed behind. Forces
+        the failure while reversing the journal entry - after the sales
+        rows are already deleted inside the same transaction - and
+        confirms the whole delete rolls back: the sales row and its
+        journal entry either both survive or neither does."""
+        journal_before = newest_journal_entry_id()
+        test_branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)",
+            ("فرع اختبار تراجع الحذف", ""))
+        goto("sales")
+        s = window.sales
+        original_date = s.date_input.date()
+        s.date_input.setDate(QDate.currentDate())
+        try:
+            idx = s.branch_input.findData(test_branch_id)
+            assert idx >= 0, "the new test branch did not appear in the sales branch picker"
+            s.branch_input.setCurrentIndex(idx)
+            s.cash_input.setText("1150")
+            s.network_input.setText("0")
+            s.transfer_input.setText("0")
+            s.delivery_input.setText("0")
+            s.save_daily_sales()
+
+            today = QDate.currentDate().toString("yyyy-MM-dd")
+            sale_row = db.fetch_one(
+                "SELECT id, journal_entry_id FROM sales WHERE branch_id = ? AND date = ?",
+                (test_branch_id, today))
+            assert sale_row is not None, "test setup did not save the sale to roll back"
+            entry_id = sale_row["journal_entry_id"]
+
+            def boom(*a, **k):
+                raise RuntimeError("simulated failure while reversing the journal entry")
+
+            original = db.delete_journal_entry_on_cursor
+            db.delete_journal_entry_on_cursor = boom
+            try:
+                try:
+                    s.clear_day(test_branch_id, today)
+                    raise AssertionError("clear_day did not propagate the simulated failure")
+                except RuntimeError:
+                    pass
+            finally:
+                db.delete_journal_entry_on_cursor = original
+
+            # Both halves must still be exactly as they were before the
+            # delete was attempted - not the sales row gone with the
+            # journal entry left behind explaining nothing, or vice versa.
+            assert db.fetch_one(
+                "SELECT COUNT(*) c FROM sales WHERE branch_id = ? AND date = ?",
+                (test_branch_id, today))["c"] == 1, \
+                "the sales row was removed despite the journal-reversal failure"
+            assert db.fetch_one(
+                "SELECT COUNT(*) c FROM journal_entries WHERE id = ?", (entry_id,))["c"] == 1, \
+                "the journal entry was removed despite the simulated failure - it should not have been touched"
+
+            # The real path must still work afterwards.
+            s.clear_day(test_branch_id, today)
+            assert db.fetch_one(
+                "SELECT COUNT(*) c FROM sales WHERE branch_id = ? AND date = ?",
+                (test_branch_id, today))["c"] == 0, \
+                "a legitimate clear_day call failed to remove the sale after the failure-injection test"
+            assert db.fetch_one(
+                "SELECT COUNT(*) c FROM journal_entries WHERE id = ?", (entry_id,))["c"] == 0
+        finally:
+            db.execute_query(
+                "DELETE FROM sales WHERE branch_id = ? AND date(date) = date('now')",
+                (test_branch_id,))
+            delete_journal_entries_created_after(journal_before)
+            db.execute_query("DELETE FROM branches WHERE id = ?", (test_branch_id,))
+            goto("sales")
+            window.sales.date_input.setDate(original_date)
+            window.sales.load_history()
+    check("a failure while reversing the journal entry rolls back deleting a sales day completely",
+          deleting_a_sales_day_rolls_back_completely_on_a_failure)
 
     def cashier_number_is_saved_and_shown():
         """A reference field only - which register the day's total came off
@@ -1349,6 +1630,127 @@ def main():
         assert "الرواتب والأجور" in html, "the printed report does not show the salaries line it subtracts"
     check("the printed report's own numbers add up to the profit it shows",
           printed_report_shows_the_arithmetic_it_uses)
+
+    def credit_sales_are_included_in_every_period_report_and_dashboard_figure():
+        """get_period_report()/get_financial_summary() - which feed the
+        dashboard, the accounting tab's income statement, and this printed
+        report - used to compute revenue from the `sales` table alone. A
+        credit sale posts correctly to the ledger (account 4000/2100, see
+        customer_credit_sale_and_collection above) the moment it is
+        invoiced, but was invisible to every one of those reports: the
+        trial balance and the period report silently disagreed about the
+        same period's revenue by however much was sold on credit that
+        period. Checked with a real cash sale on a fresh, otherwise-empty
+        branch (so a single-branch report has exactly one known figure to
+        compare against) and a real credit sale (which has no branch - see
+        get_credit_sales_summary) - confirming the company-wide report
+        includes both, a branch-filtered report only ever includes the
+        branch-attributable cash sale (never silently attributes a
+        company-wide credit sale to one branch), the general ledger
+        (account 4000/2100, read independently of get_period_report
+        entirely) matches the company-wide report to the riyal, and that
+        collecting the receivable afterwards does not get counted as a
+        second helping of revenue."""
+        from datetime import datetime
+        acc = window.accounting.accounting
+        today = datetime.now().strftime("%Y-%m-%d")
+        journal_marker = newest_journal_entry_id()
+        cid = None
+        original_date = None
+
+        test_branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)",
+            ("فرع مطابقة التقارير", ""))
+
+        before_all = acc.get_period_report(today, today, None)
+        revenue_before = acc.get_account_balance('4000')
+        vat_before = acc.get_account_balance('2100')
+
+        try:
+            goto("sales")
+            s = window.sales
+            # Earlier tests in this same suite leave the date field pointed
+            # at whatever past date they themselves needed (e.g. the
+            # delivery-apps check above uses 1997-06-15) - this cannot
+            # assume it is still "today" just because nothing in this test
+            # touched it itself.
+            original_date = s.date_input.date()
+            s.date_input.setDate(QDate.currentDate())
+            idx = s.branch_input.findData(test_branch_id)
+            assert idx >= 0, "the new test branch did not appear in the sales branch picker"
+            s.branch_input.setCurrentIndex(idx)
+            s.cash_input.setText("1150")   # net 1000 + VAT 150
+            s.network_input.setText("0")
+            s.transfer_input.setText("0")
+            s.delivery_input.setText("0")
+            s.save_daily_sales()
+
+            goto("customers")
+            c = window.customers
+            c.name_input.setText("عميل مطابقة التقارير")
+            c.opening_balance_input.setText("0")
+            c.add_customer()
+            cid = db.fetch_one(
+                "SELECT id FROM customers WHERE name='عميل مطابقة التقارير'")["id"]
+            c.selected_customer_id = cid
+            c.sale_amount.setText("2300")  # net 2000 + VAT 300
+            c.record_credit_sale()
+
+            # Company-wide: both the cash and the credit sale must show up.
+            after_all = acc.get_period_report(today, today, None)
+            assert abs((after_all["net_sales"] - before_all["net_sales"]) - 3000) < 0.01, \
+                "company-wide net sales did not pick up the credit sale"
+            assert abs((after_all["output_vat"] - before_all["output_vat"]) - 450) < 0.01, \
+                "company-wide output VAT did not pick up the credit sale's VAT"
+            assert abs(after_all["credit_sales"] - before_all.get("credit_sales", 0) - 2000) < 0.01, \
+                "get_period_report does not expose the credit-sales figure separately"
+
+            # Branch-filtered: only the cash sale is attributable to a
+            # branch - the credit sale must NOT silently appear here too,
+            # that would be double-attribution, not a fix.
+            branch_report = acc.get_period_report(today, today, test_branch_id)
+            assert abs(branch_report["net_sales"] - 1000) < 0.01, (
+                f"a fresh branch's own report should show only its own cash "
+                f"sale, got {branch_report['net_sales']}")
+            assert branch_report["credit_sales"] == 0, \
+                "a branch-filtered report attributed a company-wide credit sale to one branch"
+
+            # The general ledger, read independently of get_period_report
+            # entirely, must match the same company-wide total - proving
+            # the report and the ledger are not two different numbers again.
+            revenue_after = acc.get_account_balance('4000')
+            vat_after = acc.get_account_balance('2100')
+            assert abs((revenue_after - revenue_before) - 3000) < 0.01, \
+                "ledger account 4000 does not match what the report now shows"
+            assert abs((vat_after - vat_before) - 450) < 0.01, \
+                "ledger account 2100 does not match what the report now shows"
+
+            # A collection against the receivable must not be double-counted
+            # as more revenue - record_collection never touches account 4000.
+            c.collect_amount.setText("500")
+            c.record_collection()
+            after_collection = acc.get_period_report(today, today, None)
+            assert abs(after_collection["net_sales"] - after_all["net_sales"]) < 0.01, \
+                "collecting from a customer changed reported revenue - a collection is not new revenue"
+        finally:
+            db.execute_query(
+                "DELETE FROM sales WHERE branch_id = ? AND date(date) = date(?) AND payment_method = 'Cash'",
+                (test_branch_id, today))
+            if cid is not None:
+                db.execute_query("DELETE FROM customer_payments WHERE customer_id = ?", (cid,))
+                db.execute_query("DELETE FROM customer_sales WHERE customer_id = ?", (cid,))
+                db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+            # Journal entries (some carrying this branch_id) must go before
+            # the branch itself, or the FK the branch is referenced by
+            # refuses the delete.
+            delete_journal_entries_created_after(journal_marker)
+            db.execute_query("DELETE FROM branches WHERE id = ?", (test_branch_id,))
+            goto("sales")
+            if original_date is not None:
+                window.sales.date_input.setDate(original_date)
+            window.sales.load_history()
+    check("credit sales to customers are included in every period report, the dashboard, and the printed report - not just the ledger",
+          credit_sales_are_included_in_every_period_report_and_dashboard_figure)
 
     def printed_report_covers_every_module():
         """The report used to cover only sales/purchases/profit/VAT for the
@@ -3526,6 +3928,29 @@ def main():
             dialog.close()
     check("the login dialog has a branded header with a logo, not a flat page",
           login_dialog_has_a_branded_header_not_a_flat_page)
+
+    def login_dialog_shows_the_developers_contact_signature():
+        """Requested live: a small permanent credit line with the
+        developer's own phone number, so the client always has a support
+        contact on the very first screen the program shows - not buried
+        somewhere it could be missed. Checked for the exact phone number,
+        present and visible (not just existing off-screen) on both the
+        login page and the forced-password-change page, since either can
+        be the first thing shown."""
+        from ui.login_dialog import LoginDialog
+        dialog = LoginDialog(db)
+        dialog.show()
+        for _ in range(2):
+            app.processEvents()
+        try:
+            signatures = [l for l in dialog.findChildren(QLabel) if "01093033884" in l.text()]
+            assert signatures, "no developer contact signature found on the login dialog"
+            assert all(l.isVisible() for l in signatures), \
+                "the developer contact signature exists but is not visible"
+        finally:
+            dialog.close()
+    check("the login dialog carries the developer's contact signature",
+          login_dialog_shows_the_developers_contact_signature)
 
     print("\n" + "=" * 52)
     if failures:

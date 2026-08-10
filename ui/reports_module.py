@@ -236,6 +236,15 @@ class ReportsModule(QWidget):
             purchases_daily_rows = ("<tr><td colspan='3' style='padding:12px;text-align:center;color:#64748b'>"
                                     "لا توجد مشتريات في هذه الفترة</td></tr>")
 
+        # Only shown when there is something to show - it is always 0 on a
+        # branch-filtered report (a credit sale is never attributed to one
+        # branch, see get_credit_sales_summary), and an always-zero row on
+        # every single-branch report would just be clutter.
+        credit_sales_row = (
+            row("مبيعات آجلة للعملاء (شاملة الضريبة)", d['credit_sales'] + d['credit_sales_vat'])
+            if d['credit_sales'] else ""
+        )
+
         profit_color = "#16a34a" if d['net_profit'] >= 0 else "#dc2626"
 
         # Everything from here down is "where the business stands right now"
@@ -312,6 +321,7 @@ class ReportsModule(QWidget):
             {row("تحويل بنكي", sales['Transfer']['total'])}
             {row("تطبيقات التوصيل", sales['Delivery']['total'])}
             {row("إجمالي التحصيل", sales['grand_total'], bold=True)}
+            {credit_sales_row}
             {row("مرتجعات مبيعات", returns['sales_returns'])}
             {row("صافي المبيعات (بدون ضريبة)", d['net_sales'], bold=True)}
           </table>

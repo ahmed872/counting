@@ -190,18 +190,24 @@ class SuppliersModule(QWidget):
             QMessageBox.warning(self, "تنبيه", str(exc))
             return
 
-        supplier_id = self.db.insert_and_return_id(
-            "INSERT INTO suppliers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
-            (name, tax_id, opening_balance, phone),
-        )
-
-        if opening_balance:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            items = [
-                {'account_code': '3900', 'debit': opening_balance, 'credit': 0},
-                {'account_code': '2000', 'debit': 0, 'credit': opening_balance},
-            ]
-            self.db.add_journal_entry(timestamp, f"رصيد افتتاحي لمورد - {name}", None, items)
+        # One transaction: the supplier row and its opening-balance journal
+        # entry used to be two separate commits. A failure between them
+        # could leave a supplier whose own statement (which reads
+        # opening_balance straight off this row) shows a balance the
+        # general ledger and trial balance never received.
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO suppliers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
+                (name, tax_id, opening_balance, phone),
+            )
+            if opening_balance:
+                items = [
+                    {'account_code': '3900', 'debit': opening_balance, 'credit': 0},
+                    {'account_code': '2000', 'debit': 0, 'credit': opening_balance},
+                ]
+                self.db.insert_journal_entry(
+                    cursor, timestamp, f"رصيد افتتاحي لمورد - {name}", None, items)
 
         QMessageBox.information(self, "نجاح", "تم إضافة المورد بنجاح")
         self.name_input.clear()

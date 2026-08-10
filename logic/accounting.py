@@ -472,6 +472,32 @@ class AccountingLogic:
             'purchase_returns_vat': purchase_returns['vat'] or 0,
         }
 
+    def get_credit_sales_summary(self, start_date, end_date, branch_id=None):
+        """Credit sales to customers (customer_sales) are revenue exactly like
+        a cash sale - they hit account 4000/2100 the moment they're invoiced,
+        not when they're eventually collected (record_collection never
+        touches 4000, so a collection can never double-count as new revenue
+        here). They used to be invisible to every report built from this
+        method's sibling get_sales_by_method(), which only ever queried the
+        `sales` table - the dashboard, the period report and the printed
+        report all silently under-stated revenue by however much was sold on
+        credit that period, while the trial balance (which reads the journal
+        directly) was correct the whole time. Two different numbers for the
+        same period was the actual, confirmed bug.
+
+        customer_sales carries no branch_id (see get_customer_statement) -
+        a credit sale is never attributed to one branch in this app's data
+        model - so a branch-filtered report honestly has nothing to add
+        here rather than guessing which branch it belonged to."""
+        if branch_id is not None:
+            return {'net': 0.0, 'vat': 0.0}
+        row = self.db.fetch_one(
+            """SELECT COALESCE(SUM(amount), 0) as net, COALESCE(SUM(vat_amount), 0) as vat
+               FROM customer_sales WHERE date(date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )
+        return {'net': row['net'] or 0, 'vat': row['vat'] or 0}
+
     def get_daily_breakdown(self, start_date, end_date, branch_id=None):
         """Day-by-day sales / purchases / VAT, used for the period report table."""
         sales_clause, sales_params = self._branch_clause(branch_id, "s")
@@ -531,9 +557,15 @@ class AccountingLogic:
         sales = self.get_sales_by_method(start_date, end_date, branch_id)
         purchases = self.get_purchases_by_category(start_date, end_date, branch_id)
         returns = self.get_returns_summary(start_date, end_date, branch_id)
+        # Kept as its own figure rather than folded into `sales` - a credit
+        # sale is revenue but is not money collected, and sales['grand_total']
+        # is read elsewhere as "total actually taken in this period" (the
+        # printed report's own "إجمالي التحصيل" label). Only net_sales/
+        # output_vat below - the actual revenue and tax figures - need it.
+        credit = self.get_credit_sales_summary(start_date, end_date, branch_id)
 
-        net_sales = sales['net_sales'] - returns['sales_returns']
-        output_vat = sales['grand_vat'] - returns['sales_returns_vat']
+        net_sales = sales['net_sales'] - returns['sales_returns'] + credit['net']
+        output_vat = sales['grand_vat'] - returns['sales_returns_vat'] + credit['vat']
         input_vat = purchases['grand_vat'] - returns['purchase_returns_vat']
 
         cost_of_sales = purchases['raw_material']['net'] + purchases['purchase_expense']['net'] \
@@ -554,6 +586,8 @@ class AccountingLogic:
             'sales': sales,
             'purchases': purchases,
             'returns': returns,
+            'credit_sales': credit['net'],
+            'credit_sales_vat': credit['vat'],
             'net_sales': net_sales,
             'cost_of_sales': cost_of_sales,
             'operating_expenses': operating_expenses,
