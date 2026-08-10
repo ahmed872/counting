@@ -1350,6 +1350,127 @@ def main():
     check("the printed report's own numbers add up to the profit it shows",
           printed_report_shows_the_arithmetic_it_uses)
 
+    def credit_sales_are_included_in_every_period_report_and_dashboard_figure():
+        """get_period_report()/get_financial_summary() - which feed the
+        dashboard, the accounting tab's income statement, and this printed
+        report - used to compute revenue from the `sales` table alone. A
+        credit sale posts correctly to the ledger (account 4000/2100, see
+        customer_credit_sale_and_collection above) the moment it is
+        invoiced, but was invisible to every one of those reports: the
+        trial balance and the period report silently disagreed about the
+        same period's revenue by however much was sold on credit that
+        period. Checked with a real cash sale on a fresh, otherwise-empty
+        branch (so a single-branch report has exactly one known figure to
+        compare against) and a real credit sale (which has no branch - see
+        get_credit_sales_summary) - confirming the company-wide report
+        includes both, a branch-filtered report only ever includes the
+        branch-attributable cash sale (never silently attributes a
+        company-wide credit sale to one branch), the general ledger
+        (account 4000/2100, read independently of get_period_report
+        entirely) matches the company-wide report to the riyal, and that
+        collecting the receivable afterwards does not get counted as a
+        second helping of revenue."""
+        from datetime import datetime
+        acc = window.accounting.accounting
+        today = datetime.now().strftime("%Y-%m-%d")
+        journal_marker = newest_journal_entry_id()
+        cid = None
+        original_date = None
+
+        test_branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)",
+            ("فرع مطابقة التقارير", ""))
+
+        before_all = acc.get_period_report(today, today, None)
+        revenue_before = acc.get_account_balance('4000')
+        vat_before = acc.get_account_balance('2100')
+
+        try:
+            goto("sales")
+            s = window.sales
+            # Earlier tests in this same suite leave the date field pointed
+            # at whatever past date they themselves needed (e.g. the
+            # delivery-apps check above uses 1997-06-15) - this cannot
+            # assume it is still "today" just because nothing in this test
+            # touched it itself.
+            original_date = s.date_input.date()
+            s.date_input.setDate(QDate.currentDate())
+            idx = s.branch_input.findData(test_branch_id)
+            assert idx >= 0, "the new test branch did not appear in the sales branch picker"
+            s.branch_input.setCurrentIndex(idx)
+            s.cash_input.setText("1150")   # net 1000 + VAT 150
+            s.network_input.setText("0")
+            s.transfer_input.setText("0")
+            s.delivery_input.setText("0")
+            s.save_daily_sales()
+
+            goto("customers")
+            c = window.customers
+            c.name_input.setText("عميل مطابقة التقارير")
+            c.opening_balance_input.setText("0")
+            c.add_customer()
+            cid = db.fetch_one(
+                "SELECT id FROM customers WHERE name='عميل مطابقة التقارير'")["id"]
+            c.selected_customer_id = cid
+            c.sale_amount.setText("2300")  # net 2000 + VAT 300
+            c.record_credit_sale()
+
+            # Company-wide: both the cash and the credit sale must show up.
+            after_all = acc.get_period_report(today, today, None)
+            assert abs((after_all["net_sales"] - before_all["net_sales"]) - 3000) < 0.01, \
+                "company-wide net sales did not pick up the credit sale"
+            assert abs((after_all["output_vat"] - before_all["output_vat"]) - 450) < 0.01, \
+                "company-wide output VAT did not pick up the credit sale's VAT"
+            assert abs(after_all["credit_sales"] - before_all.get("credit_sales", 0) - 2000) < 0.01, \
+                "get_period_report does not expose the credit-sales figure separately"
+
+            # Branch-filtered: only the cash sale is attributable to a
+            # branch - the credit sale must NOT silently appear here too,
+            # that would be double-attribution, not a fix.
+            branch_report = acc.get_period_report(today, today, test_branch_id)
+            assert abs(branch_report["net_sales"] - 1000) < 0.01, (
+                f"a fresh branch's own report should show only its own cash "
+                f"sale, got {branch_report['net_sales']}")
+            assert branch_report["credit_sales"] == 0, \
+                "a branch-filtered report attributed a company-wide credit sale to one branch"
+
+            # The general ledger, read independently of get_period_report
+            # entirely, must match the same company-wide total - proving
+            # the report and the ledger are not two different numbers again.
+            revenue_after = acc.get_account_balance('4000')
+            vat_after = acc.get_account_balance('2100')
+            assert abs((revenue_after - revenue_before) - 3000) < 0.01, \
+                "ledger account 4000 does not match what the report now shows"
+            assert abs((vat_after - vat_before) - 450) < 0.01, \
+                "ledger account 2100 does not match what the report now shows"
+
+            # A collection against the receivable must not be double-counted
+            # as more revenue - record_collection never touches account 4000.
+            c.collect_amount.setText("500")
+            c.record_collection()
+            after_collection = acc.get_period_report(today, today, None)
+            assert abs(after_collection["net_sales"] - after_all["net_sales"]) < 0.01, \
+                "collecting from a customer changed reported revenue - a collection is not new revenue"
+        finally:
+            db.execute_query(
+                "DELETE FROM sales WHERE branch_id = ? AND date(date) = date(?) AND payment_method = 'Cash'",
+                (test_branch_id, today))
+            if cid is not None:
+                db.execute_query("DELETE FROM customer_payments WHERE customer_id = ?", (cid,))
+                db.execute_query("DELETE FROM customer_sales WHERE customer_id = ?", (cid,))
+                db.execute_query("DELETE FROM customers WHERE id = ?", (cid,))
+            # Journal entries (some carrying this branch_id) must go before
+            # the branch itself, or the FK the branch is referenced by
+            # refuses the delete.
+            delete_journal_entries_created_after(journal_marker)
+            db.execute_query("DELETE FROM branches WHERE id = ?", (test_branch_id,))
+            goto("sales")
+            if original_date is not None:
+                window.sales.date_input.setDate(original_date)
+            window.sales.load_history()
+    check("credit sales to customers are included in every period report, the dashboard, and the printed report - not just the ledger",
+          credit_sales_are_included_in_every_period_report_and_dashboard_figure)
+
     def printed_report_covers_every_module():
         """The report used to cover only sales/purchases/profit/VAT for the
         chosen period - every other screen (suppliers, customers, loans,
