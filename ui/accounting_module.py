@@ -54,13 +54,19 @@ class AccountingModule(QWidget):
         for field in (self.period_input, self.start_date, self.end_date):
             field.setMinimumWidth(150)
 
+        # Two rows, not one crammed with all three field-pairs plus a
+        # button - a single unbroken row of that many minimum-150px fields
+        # had nowhere to wrap to and forced the whole page wider than the
+        # window at a modest size (reported live via screenshot, and
+        # confirmed by measuring a real 57px overflow at the app's own
+        # documented minimum window size, 1040x640).
         controls.addWidget(QLabel("الفترة:"), 0, 0)
         controls.addWidget(self.period_input, 0, 1)
         controls.addWidget(QLabel("من:"), 0, 2)
         controls.addWidget(self.start_date, 0, 3)
-        controls.addWidget(QLabel("إلى:"), 0, 4)
-        controls.addWidget(self.end_date, 0, 5)
-        controls.addWidget(self.refresh_btn, 0, 6)
+        controls.addWidget(QLabel("إلى:"), 1, 0)
+        controls.addWidget(self.end_date, 1, 1)
+        controls.addWidget(self.refresh_btn, 1, 2, 1, 2)
         layout.addWidget(controls_box)
 
         self.summary_container = QWidget()
@@ -161,13 +167,19 @@ class AccountingModule(QWidget):
         self.closing_inventory_input = QDoubleSpinBox()
         self.closing_inventory_input.setMaximum(999999999)
         self.closing_inventory_input.setDecimals(2)
+        # Two rows, not one - both label+field pairs plus the button used
+        # to sit on a single unbroken row with nowhere to wrap, which made
+        # this the single widest element on the whole page (measured wider
+        # than the page's own container at the app's documented minimum
+        # window size) and forced a horizontal scrollbar the rest of the
+        # page never needed.
         inv_layout.addWidget(QLabel("رصيد أول المدة (المخزون):"), 0, 0)
         inv_layout.addWidget(self.opening_inventory_input, 0, 1)
-        inv_layout.addWidget(QLabel("رصيد آخر المدة (المخزون):"), 0, 2)
-        inv_layout.addWidget(self.closing_inventory_input, 0, 3)
+        inv_layout.addWidget(QLabel("رصيد آخر المدة (المخزون):"), 1, 0)
+        inv_layout.addWidget(self.closing_inventory_input, 1, 1)
         calc_btn = QPushButton("احتساب حساب المتاجرة")
         calc_btn.clicked.connect(self.refresh_trading_account)
-        inv_layout.addWidget(calc_btn, 0, 4)
+        inv_layout.addWidget(calc_btn, 2, 0, 1, 2)
         v.addWidget(inv_box)
 
         self.trading_box = QLabel()

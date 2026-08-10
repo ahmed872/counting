@@ -4,6 +4,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
     QHBoxLayout,
+    QGridLayout,
     QGroupBox,
     QLabel,
     QLineEdit,
@@ -104,17 +105,22 @@ class SalesEntryModule(QWidget):
         self.cashier_input = QLineEdit()
         self.cashier_input.setPlaceholderText("اختياري")
 
-        top_row = QHBoxLayout()
-        top_row.setSpacing(10)
-        top_row.addWidget(self._field_label("الفرع"))
-        top_row.addWidget(self.branch_input, 1)
-        top_row.addSpacing(18)
-        top_row.addWidget(self._field_label("التاريخ"))
-        top_row.addWidget(self.date_input, 1)
-        top_row.addSpacing(18)
-        top_row.addWidget(self._field_label("رقم الكاشير / الجهاز"))
-        top_row.addWidget(self.cashier_input, 1)
-        top_row.addStretch()
+        # Two rows, not three label+field pairs squeezed into one - "رقم
+        # الكاشير / الجهاز" alone is long enough that all three pairs in a
+        # single unbroken row forced the page wider than the window under
+        # real Windows font metrics, at the app's own documented minimum
+        # window size.
+        top_row = QGridLayout()
+        top_row.setHorizontalSpacing(10)
+        top_row.setVerticalSpacing(8)
+        top_row.addWidget(self._field_label("الفرع"), 0, 0)
+        top_row.addWidget(self.branch_input, 0, 1)
+        top_row.addWidget(self._field_label("التاريخ"), 0, 2)
+        top_row.addWidget(self.date_input, 0, 3)
+        top_row.addWidget(self._field_label("رقم الكاشير / الجهاز"), 1, 0)
+        top_row.addWidget(self.cashier_input, 1, 1, 1, 3)
+        top_row.setColumnStretch(1, 1)
+        top_row.setColumnStretch(3, 1)
         form_outer.addLayout(top_row)
 
         # The payment amounts sit side by side, like the end-of-day cash sheet
@@ -131,21 +137,30 @@ class SalesEntryModule(QWidget):
         # revenue comes through delivery apps versus a direct transfer.
         self.delivery_input = self._amount_input()
 
-        amounts_row = QHBoxLayout()
-        amounts_row.setSpacing(14)
-        for caption, field in (
+        # Two columns, not four side by side in one row - "شبكة (مدى /
+        # فيزا)" and "تطبيقات التوصيل" are long enough captions that four
+        # of these in a single unbroken row forced the page wider than the
+        # window under real Windows font metrics, at the app's own
+        # documented minimum window size.
+        amounts_row = QGridLayout()
+        amounts_row.setHorizontalSpacing(14)
+        amounts_row.setVerticalSpacing(10)
+        for index, (caption, field) in enumerate((
             ("كاش", self.cash_input),
             ("شبكة (مدى / فيزا)", self.network_input),
             ("تحويل بنكي", self.transfer_input),
             ("تطبيقات التوصيل", self.delivery_input),
-        ):
+        )):
+            row, column_index = divmod(index, 2)
             column = QVBoxLayout()
             column.setSpacing(4)
             column.addWidget(self._field_label(caption))
             column.addWidget(field)
             wrapper = QWidget()
             wrapper.setLayout(column)
-            amounts_row.addWidget(wrapper, 1)
+            amounts_row.addWidget(wrapper, row, column_index)
+        amounts_row.setColumnStretch(0, 1)
+        amounts_row.setColumnStretch(1, 1)
         form_outer.addLayout(amounts_row)
 
         hint = QLabel("المبالغ المدخلة شاملة ضريبة القيمة المضافة (15%)")
@@ -245,14 +260,22 @@ class SalesEntryModule(QWidget):
         top_row.addWidget(self.return_date_input, 1)
         form_outer.addLayout(top_row)
 
+        # "المبلغ المسترد (شامل الضريبة)" is long enough on its own that
+        # pairing it with a second field in the same row forced this
+        # groupbox wider than the rest of the page - and wider than the
+        # window - under real Windows font metrics, at the app's own
+        # documented minimum window size. Each on its own row instead.
         amount_row = QHBoxLayout()
         amount_row.setSpacing(10)
         amount_row.addWidget(self._field_label("المبلغ المسترد (شامل الضريبة)"))
         amount_row.addWidget(self.return_amount_input, 1)
-        amount_row.addSpacing(18)
-        amount_row.addWidget(self._field_label("طريقة الاسترداد"))
-        amount_row.addWidget(self.return_method_input, 1)
         form_outer.addLayout(amount_row)
+
+        method_row = QHBoxLayout()
+        method_row.setSpacing(10)
+        method_row.addWidget(self._field_label("طريقة الاسترداد"))
+        method_row.addWidget(self.return_method_input, 1)
+        form_outer.addLayout(method_row)
 
         notes_row = QHBoxLayout()
         notes_row.setSpacing(10)
