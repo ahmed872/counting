@@ -215,6 +215,112 @@ def main():
         for row in db.fetch_all("SELECT id FROM journal_entries WHERE id > ?", (marker,)):
             db.delete_journal_entry(row["id"])
 
+    def payroll_posting_rolls_back_completely_on_a_failure_before_the_journal():
+        """post_payroll() used to be several independent commits - the
+        payroll_runs header, one payroll_run_items row per employee, any
+        advance settlements it triggered, then a separate journal entry -
+        each opening and committing its own connection. A crash or error
+        anywhere in that sequence (the exact failure this class of bug
+        causes on a machine switched on and off many times a day) could
+        leave a payroll_runs row with only some employees' items and no
+        journal behind it, or an advance marked settled against a run
+        that never actually finished posting. Checked by forcing a
+        failure at exactly the point the confirmed report called out -
+        immediately before the journal write, after every
+        payroll_run_items row and every advance settlement already
+        exists inside the transaction - and confirming everything written
+        inside that same transaction is rolled back together, not left
+        half-committed."""
+        month, year = 6, 2031   # a month nothing else in this suite posts to
+        assert not window.hr_logic.is_payroll_posted(month, year), \
+            "test setup collision - this month/year is already posted by another test"
+
+        runs_before = db.fetch_one("SELECT COUNT(*) c FROM payroll_runs")["c"]
+        items_before = db.fetch_one("SELECT COUNT(*) c FROM payroll_run_items")["c"]
+        journal_before = newest_journal_entry_id()
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure right before the journal entry")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                window.hr_logic.post_payroll(month, year)
+                raise AssertionError("post_payroll did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        assert not window.hr_logic.is_payroll_posted(month, year), \
+            "a failed post still left the month marked as posted"
+        assert db.fetch_one("SELECT COUNT(*) c FROM payroll_runs")["c"] == runs_before, \
+            "an orphan payroll_runs row survived the rollback"
+        assert db.fetch_one("SELECT COUNT(*) c FROM payroll_run_items")["c"] == items_before, \
+            "orphan payroll_run_items rows survived the rollback"
+        assert newest_journal_entry_id() == journal_before, \
+            "a journal entry was created despite the simulated failure"
+
+        # The real path must still work cleanly afterwards - the
+        # monkeypatch must not have left the connection or the shared
+        # transaction helper broken for the next real call.
+        window.hr_logic.post_payroll(month, year)
+        assert window.hr_logic.is_payroll_posted(month, year), \
+            "a legitimate post_payroll call failed after the failure-injection test"
+    check("a failure right before the journal entry rolls back the entire payroll post, not just part of it",
+          payroll_posting_rolls_back_completely_on_a_failure_before_the_journal)
+
+    def granting_an_advance_rolls_back_completely_on_a_failure():
+        """grant_advance() used to insert the employee_deductions row and
+        post the journal entry as two separate commits - a failure
+        between them could leave cash gone from the accounts with no
+        advance on record to explain it, or an advance on the books that
+        no journal entry ever backed. Checked the same way as the payroll
+        failure-injection above: force the failure right before the
+        journal write and confirm the deduction row it would have
+        explained never survives either."""
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("اختبار تراجع السلفة", "عامل", 1, 3000, 0))
+        journal_before = newest_journal_entry_id()
+        deductions_before = db.fetch_one(
+            "SELECT COUNT(*) c FROM employee_deductions WHERE employee_id = ?", (emp_id,))["c"]
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure right before the journal entry")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                window.hr_logic.grant_advance(emp_id, "2026-08-10", 500, "سلفة تجريبية")
+                raise AssertionError("grant_advance did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        deductions_after = db.fetch_one(
+            "SELECT COUNT(*) c FROM employee_deductions WHERE employee_id = ?", (emp_id,))["c"]
+        assert deductions_after == deductions_before, \
+            "an orphan advance row survived the rollback with no journal entry behind it"
+        assert newest_journal_entry_id() == journal_before, \
+            "a journal entry was created despite the simulated failure"
+
+        # The real path must still work afterwards.
+        window.hr_logic.grant_advance(emp_id, "2026-08-10", 500, "سلفة تجريبية")
+        assert db.fetch_one(
+            "SELECT COUNT(*) c FROM employee_deductions WHERE employee_id = ?",
+            (emp_id,))["c"] == deductions_before + 1, \
+            "a legitimate grant_advance call failed after the failure-injection test"
+
+        db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_before)
+    check("a failure right before the journal entry rolls back a granted advance completely, not just part of it",
+          granting_an_advance_rolls_back_completely_on_a_failure)
+
     def future_advance_does_not_leak_into_an_earlier_month():
         """An advance had no date filter at all on it - one granted in August
         was recoverable out of July's payroll, a month before it existed."""

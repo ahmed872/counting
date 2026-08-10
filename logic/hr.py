@@ -210,7 +210,20 @@ class HRLogic:
         paid_now is False, Credit Accrued Wages Payable (2200) instead,
         because the expense was earned this month but the cash has not
         actually left yet. Marks unsettled advances as settled so they are
-        not deducted twice."""
+        not deducted twice.
+
+        Everything below - the payroll_runs header, every employee's
+        payroll_run_items row, every advance settlement it triggers, and
+        the journal entry that posts the whole month's cost - used to be
+        several independent commits (insert_and_return_id/execute_query
+        each open and commit their own connection; add_journal_entry is a
+        separate transaction again). A crash midway - the program closing,
+        the machine losing power, the exact moment this runs on a
+        computer switched on and off many times a day - could leave a
+        payroll_runs row with only some employees' items and no journal
+        behind it, or an advance marked settled against a run that was
+        never actually posted. All of it now commits together on one
+        cursor, or none of it does."""
         if self.is_payroll_posted(month, year):
             raise ValueError("تم ترحيل رواتب هذا الشهر مسبقاً")
 
@@ -223,67 +236,82 @@ class HRLogic:
             raise ValueError("لا يوجد بيانات رواتب لهذا الشهر")
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        run_id = self.db.insert_and_return_id(
-            """INSERT INTO payroll_runs
-               (month, year, posted_at, total_expense, total_net_paid, total_advances_recovered, paid_now)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (month, year, timestamp, total_expense, total_net_paid, total_advances_recovered, int(paid_now))
-        )
-
-        for p in payroll:
-            self.db.execute_query(
-                """INSERT INTO payroll_run_items
-                   (run_id, employee_id, gross_salary, absence_deduction, other_deductions, bonuses,
-                    advances_recovered, net_salary, absent_days, present_days)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                (run_id, p['id'], p['gross_salary'], p['absence_deduction'], p['other_deductions'],
-                 p['bonuses'], p['advances_recovered'], p['net_salary'], p['absent_days'], p['present_days'])
-            )
-            # Apply the recovered amount to the oldest outstanding advances
-            # first, and only as far as it actually reaches. A row is marked
-            # settled only once it has been recovered in full; a row that is
-            # only partly covered this run keeps its remaining balance
-            # outstanding for the next one, instead of being wiped either way.
-            remaining = p['advances_recovered']
-            if remaining > 0:
-                rows = self.db.fetch_all(
-                    """SELECT id, amount, COALESCE(amount_recovered, 0) as recovered
-                       FROM employee_deductions
-                       WHERE employee_id = ? AND type = 'Advance' AND settled_run_id IS NULL
-                         AND date(date) <= date(?)
-                       ORDER BY date, id""",
-                    (p['id'], f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}")
-                )
-                for adv in rows:
-                    if remaining <= 0.005:
-                        break
-                    owed = adv['amount'] - adv['recovered']
-                    applied = min(owed, remaining)
-                    new_recovered = adv['recovered'] + applied
-                    fully_settled = new_recovered >= adv['amount'] - 0.005
-                    self.db.execute_query(
-                        "UPDATE employee_deductions SET amount_recovered = ?, "
-                        "settled_run_id = ? WHERE id = ?",
-                        (new_recovered, run_id if fully_settled else None, adv['id'])
-                    )
-                    remaining -= applied
 
         journal_items = [{'account_code': '5100', 'debit': total_expense, 'credit': 0}]
         if total_advances_recovered:
             journal_items.append({'account_code': '1300', 'debit': 0, 'credit': total_advances_recovered})
         credit_account = '1000' if paid_now else '2200'
         journal_items.append({'account_code': credit_account, 'debit': 0, 'credit': total_net_paid})
-
         description = (f"صرف رواتب شهر {month:02d}/{year}" if paid_now
                        else f"استحقاق رواتب شهر {month:02d}/{year} (لم تُدفع بعد)")
-        self.db.add_journal_entry(timestamp, description, None, journal_items)
+
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                """INSERT INTO payroll_runs
+                   (month, year, posted_at, total_expense, total_net_paid, total_advances_recovered, paid_now)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (month, year, timestamp, total_expense, total_net_paid, total_advances_recovered, int(paid_now))
+            )
+            run_id = cursor.lastrowid
+
+            for p in payroll:
+                cursor.execute(
+                    """INSERT INTO payroll_run_items
+                       (run_id, employee_id, gross_salary, absence_deduction, other_deductions, bonuses,
+                        advances_recovered, net_salary, absent_days, present_days)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (run_id, p['id'], p['gross_salary'], p['absence_deduction'], p['other_deductions'],
+                     p['bonuses'], p['advances_recovered'], p['net_salary'], p['absent_days'], p['present_days'])
+                )
+                # Apply the recovered amount to the oldest outstanding
+                # advances first, and only as far as it actually reaches. A
+                # row is marked settled only once it has been recovered in
+                # full; a row that is only partly covered this run keeps
+                # its remaining balance outstanding for the next one,
+                # instead of being wiped either way.
+                remaining = p['advances_recovered']
+                if remaining > 0:
+                    cursor.execute(
+                        """SELECT id, amount, COALESCE(amount_recovered, 0) as recovered
+                           FROM employee_deductions
+                           WHERE employee_id = ? AND type = 'Advance' AND settled_run_id IS NULL
+                             AND date(date) <= date(?)
+                           ORDER BY date, id""",
+                        (p['id'], f"{year:04d}-{month:02d}-{calendar.monthrange(year, month)[1]:02d}")
+                    )
+                    for adv in cursor.fetchall():
+                        if remaining <= 0.005:
+                            break
+                        owed = adv['amount'] - adv['recovered']
+                        applied = min(owed, remaining)
+                        new_recovered = adv['recovered'] + applied
+                        fully_settled = new_recovered >= adv['amount'] - 0.005
+                        cursor.execute(
+                            "UPDATE employee_deductions SET amount_recovered = ?, "
+                            "settled_run_id = ? WHERE id = ?",
+                            (new_recovered, run_id if fully_settled else None, adv['id'])
+                        )
+                        remaining -= applied
+
+            self.db.insert_journal_entry(cursor, timestamp, description, None, journal_items)
+
         return run_id
 
     def grant_advance(self, employee_id, date, amount, notes=""):
-        """Cash advance paid out to an employee ahead of payroll; recovered automatically in the next run."""
-        self.add_deduction(employee_id, date, 'Advance', amount, notes)
+        """Cash advance paid out to an employee ahead of payroll;
+        recovered automatically in the next run. The deduction row (what
+        a future payroll run recovers against) and the journal entry (the
+        actual cash leaving today) used to be two separate commits - a
+        crash between them could leave cash gone from the accounts with
+        no advance on record to explain it, or an advance on the books
+        that no journal entry ever backed."""
         journal_items = [
             {'account_code': '1300', 'debit': amount, 'credit': 0},
             {'account_code': '1000', 'debit': 0, 'credit': amount},
         ]
-        self.db.add_journal_entry(date, f"سلفة موظف - {notes or ''}", None, journal_items)
+        with self.db.transaction() as cursor:
+            cursor.execute(
+                "INSERT INTO employee_deductions (employee_id, date, type, amount, notes) VALUES (?, ?, ?, ?, ?)",
+                (employee_id, date, 'Advance', amount, notes)
+            )
+            self.db.insert_journal_entry(cursor, date, f"سلفة موظف - {notes or ''}", None, journal_items)
