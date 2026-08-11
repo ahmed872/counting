@@ -24,7 +24,7 @@ PAYMENT_METHOD_LABELS = {
     'Bank': 'تحويل بنكي',
     'POS': 'شبكة (مدى / فيزا)',
     'Transfer': 'تحويل بنكي',
-    'Delivery': 'تطبيقات التوصيل',
+    'Delivery': 'شركات التوصيل',
 }
 
 ATTENDANCE_STATUS_LABELS = {
@@ -43,7 +43,7 @@ REFUND_METHOD_LABELS = {
     'CreditNote': 'خصم من رصيد المورد',
     'POS': 'شبكة (مدى / فيزا)',
     'Transfer': 'تحويل بنكي',
-    'Delivery': 'تطبيقات التوصيل',
+    'Delivery': 'شركات التوصيل',
 }
 
 

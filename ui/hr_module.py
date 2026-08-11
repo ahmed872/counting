@@ -94,7 +94,7 @@ class HRModule(QWidget):
         employee_form.addRow("رقم الإقامة وتاريخ الانتهاء:", self._document_row(self.iqama_input, self.iqama_expiry))
         employee_form.addRow("رقم الجواز وتاريخ الانتهاء:", self._document_row(self.passport_input, self.passport_expiry))
         employee_form.addRow("رقم تصريح العمل وتاريخ الانتهاء:", self._document_row(self.work_permit_input, self.work_permit_expiry))
-        employee_form.addRow("رقم كرت العمل وتاريخ الانتهاء:", self._document_row(self.work_card_input, self.work_card_expiry))
+        employee_form.addRow("رقم البطاقة الصحية وتاريخ الانتهاء:", self._document_row(self.work_card_input, self.work_card_expiry))
 
         form_outer.addLayout(employee_form)
 
@@ -310,7 +310,7 @@ class HRModule(QWidget):
 
         self.table = QTableWidget()
         self.table.setColumnCount(12)
-        self.table.setHorizontalHeaderLabels(["الاسم", "الوظيفة", "الفرع", "الراتب", "البدلات", "رقم الإقامة", "انتهاء الإقامة", "رقم الجواز", "انتهاء الجواز", "رقم تصريح العمل", "انتهاء تصريح العمل", "رقم كرت العمل/انتهاؤه"])
+        self.table.setHorizontalHeaderLabels(["الاسم", "الوظيفة", "الفرع", "الراتب", "البدلات", "رقم الإقامة", "انتهاء الإقامة", "رقم الجواز", "انتهاء الجواز", "رقم تصريح العمل", "انتهاء تصريح العمل", "رقم البطاقة الصحية/انتهاؤها"])
         # Stretch used to force all 12 columns to squeeze into the visible
         # width no matter how long their content was - dates like
         # "2026-08-08" showed as "2026-0", and because Stretch mode forbids
