@@ -5,7 +5,7 @@ DOC_LABELS = {
     'iqama': 'إقامة',
     'passport': 'جواز سفر',
     'work_permit': 'تصريح عمل',
-    'work_card': 'كرت عمل',
+    'work_card': 'البطاقة الصحية',
 }
 
 
@@ -27,7 +27,7 @@ class HRLogic:
             UNION
             SELECT id, name, 'تصريح عمل' as doc_type, work_permit_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_permit_expiry IS NOT NULL AND work_permit_expiry <= ?
             UNION
-            SELECT id, name, 'كرت عمل' as doc_type, work_card_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_card_expiry IS NOT NULL AND work_card_expiry <= ?
+            SELECT id, name, 'البطاقة الصحية' as doc_type, work_card_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_card_expiry IS NOT NULL AND work_card_expiry <= ?
             ORDER BY expiry_date
         """
         return self.db.fetch_all(query, (alert_date, alert_date, alert_date, alert_date))

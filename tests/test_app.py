@@ -1040,7 +1040,7 @@ def main():
     check("daily sales split VAT out of a tax-inclusive total", daily_sales_vat)
 
     def delivery_app_sales_post_to_the_bank_account_not_cash():
-        """تطبيقات التوصيل (هنقرستيشن / جاهز وغيرها) settle to the bank, never
+        """شركات التوصيل (هنقرستيشن / جاهز وغيرها) settle to the bank, never
         handed over as physical cash - a new payment_method value the sales
         table's own CHECK constraint has to allow (it used to list only Cash/
         POS/Transfer), routed the same way a bank transfer already is. Uses a
@@ -1090,6 +1090,38 @@ def main():
         s.load_history()
     check("delivery-app sales are their own payment channel and post to the bank, not cash",
           delivery_app_sales_post_to_the_bank_account_not_cash)
+
+    def hr_and_sales_labels_use_the_renamed_terms():
+        """Requested live: "كرت العمل" and "تصريح العمل" are the same
+        document under two names, so the كرت العمل slot was renamed to
+        "البطاقة الصحية" (health card) instead of dropping a field or
+        touching a column name - and separately, "تطبيقات التوصيل"
+        (delivery apps) renamed to "شركات التوصيل" (delivery companies).
+        Both are pure display-text renames - work_card_input/expiry and
+        the Delivery payment_method value are untouched - checked here so
+        neither the old label creeps back in nor the field/column
+        actually gets removed by mistake."""
+        goto("hr")
+        hr_labels = {lbl.text() for lbl in window.hr.findChildren(QLabel)}
+        assert any("البطاقة الصحية" in t for t in hr_labels), \
+            "the كرت العمل field was not relabelled to البطاقة الصحية"
+        assert not any("كرت عمل" in t or "كرت العمل" in t for t in hr_labels), \
+            "the old كرت العمل label is still showing somewhere on the HR page"
+        assert any("تصريح العمل" in t for t in hr_labels), \
+            "تصريح العمل should still exist untouched - only كرت العمل was renamed"
+        assert window.hr.work_card_input is not None and window.hr.work_card_expiry is not None, \
+            "the work_card field itself was removed instead of just relabelled"
+
+        goto("sales")
+        sales_labels = {lbl.text() for lbl in window.sales.findChildren(QLabel)}
+        assert any("شركات التوصيل" in t for t in sales_labels), \
+            "تطبيقات التوصيل was not relabelled to شركات التوصيل"
+        assert not any("تطبيقات التوصيل" in t for t in sales_labels), \
+            "the old تطبيقات التوصيل label is still showing somewhere on the sales page"
+        assert window.sales.delivery_input is not None, \
+            "the delivery_input field itself was removed instead of just relabelled"
+    check("the HR كرت العمل/بطاقة صحية and sales تطبيقات/شركات التوصيل renames are applied without touching the underlying fields",
+          hr_and_sales_labels_use_the_renamed_terms)
 
     def saving_the_same_day_twice_replaces_it():
         goto("sales")

@@ -28,14 +28,14 @@ REFUND_METHOD_LABELS = [
     ("Cash", "نقدي"),
     ("POS", "شبكة (مدى / فيزا)"),
     ("Transfer", "تحويل بنكي"),
-    ("Delivery", "تطبيقات التوصيل"),
+    ("Delivery", "شركات التوصيل"),
 ]
 
 PAYMENT_CHANNELS = [
     ("Cash", "cash_input", "كاش"),
     ("POS", "network_input", "شبكة (مدى / فيزا)"),
     ("Transfer", "transfer_input", "تحويل بنكي"),
-    ("Delivery", "delivery_input", "تطبيقات التوصيل"),
+    ("Delivery", "delivery_input", "شركات التوصيل"),
 ]
 
 
@@ -138,7 +138,7 @@ class SalesEntryModule(QWidget):
         self.delivery_input = self._amount_input()
 
         # Two columns, not four side by side in one row - "شبكة (مدى /
-        # فيزا)" and "تطبيقات التوصيل" are long enough captions that four
+        # فيزا)" and "شركات التوصيل" are long enough captions that four
         # of these in a single unbroken row forced the page wider than the
         # window under real Windows font metrics, at the app's own
         # documented minimum window size.
@@ -149,7 +149,7 @@ class SalesEntryModule(QWidget):
             ("كاش", self.cash_input),
             ("شبكة (مدى / فيزا)", self.network_input),
             ("تحويل بنكي", self.transfer_input),
-            ("تطبيقات التوصيل", self.delivery_input),
+            ("شركات التوصيل", self.delivery_input),
         )):
             row, column_index = divmod(index, 2)
             column = QVBoxLayout()
@@ -201,7 +201,7 @@ class SalesEntryModule(QWidget):
         self.table = QTableWidget()
         self.table.setColumnCount(9)
         self.table.setHorizontalHeaderLabels(
-            ["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "تطبيقات التوصيل",
+            ["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "شركات التوصيل",
              "الإجمالي", "الضريبة", "رقم الكاشير"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)

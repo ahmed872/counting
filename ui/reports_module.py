@@ -319,7 +319,7 @@ class ReportsModule(QWidget):
             {row("كاش", sales['Cash']['total'])}
             {row("شبكة (مدى / فيزا)", sales['POS']['total'])}
             {row("تحويل بنكي", sales['Transfer']['total'])}
-            {row("تطبيقات التوصيل", sales['Delivery']['total'])}
+            {row("شركات التوصيل", sales['Delivery']['total'])}
             {row("إجمالي التحصيل", sales['grand_total'], bold=True)}
             {credit_sales_row}
             {row("مرتجعات مبيعات", returns['sales_returns'])}
@@ -359,7 +359,7 @@ class ReportsModule(QWidget):
               <th style="padding:6px 8px;">كاش</th>
               <th style="padding:6px 8px;">شبكة</th>
               <th style="padding:6px 8px;">تحويل</th>
-              <th style="padding:6px 8px;">تطبيقات التوصيل</th>
+              <th style="padding:6px 8px;">شركات التوصيل</th>
               <th style="padding:6px 8px;">إجمالي المبيعات</th>
               <th style="padding:6px 8px;">ضريبة المبيعات</th>
             </tr>
