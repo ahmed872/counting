@@ -1833,6 +1833,173 @@ def main():
         os.remove(out)
     check("report exports a real PDF", pdf_export_works)
 
+    def inventory_period_close_matches_the_expected_accounting_result():
+        """P0-3: account 1100 (المخزون) only ever accumulated every
+        raw-material purchase forever - nothing ever posted Dr COGS / Cr
+        Inventory for what was actually consumed, so the ledger's own
+        Inventory balance was never trustworthy and account 5000 (تكلفة
+        البضاعة المباعة) was always exactly zero (see the long comment on
+        get_financial_summary). close_inventory_period() is a real period
+        close: it reads actual raw-material purchases/returns posted in the
+        window, takes a physical closing count, and posts the difference to
+        the ledger. Uses a private date window far from anything else in
+        this shared test database so its purchase/return totals cannot be
+        polluted by any other test.
+
+        Note: this deliberately excludes purchase_expense (category 5150,
+        e.g. freight-in) from the COGS formula, unlike the generic
+        get_trading_account() report estimate - this app already expenses
+        that category immediately to account 5150 at the moment of
+        purchase rather than capitalising it into 1100/المخزون, so folding
+        it into this posting too would double-count it in the income
+        statement (once in 5150, again in 5000 for the same money)."""
+        acc = window.accounting.accounting
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2031-01-10', 30000, 34500, 4500, 'Cash', 'raw_material', 'test')")
+        db.execute_query(
+            "INSERT INTO purchase_returns (branch_id, date, amount, vat_amount, "
+            "refund_method, category) VALUES "
+            "(NULL, '2031-01-20', 2000, 300, 'Cash', 'raw_material')")
+        # An operating-category purchase inside the same window must never
+        # leak into the raw-material COGS calculation.
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2031-01-12', 9999, 9999, 0, 'Cash', 'operating_expense', 'must not count')")
+
+        cogs_before = acc.get_posted_cogs("2031-01-01", "2031-01-31")
+        assert abs(cogs_before) < 0.01, "no close has happened yet - posted COGS must still be zero"
+
+        result = acc.close_inventory_period(
+            "2031-01-01", "2031-01-31", closing_inventory=12000,
+            opening_inventory_override=10000)
+        # 10,000 opening + 30,000 purchases - 2,000 returns - 12,000 closing
+        assert abs(result["cogs"] - 26000) < 0.01, result
+        assert result["journal_entry_id"], "a non-zero COGS close must post a journal entry"
+
+        inv_1100 = acc.get_account_balance("1100")
+        cogs_1100_side = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items WHERE account_code='1100' "
+            "AND entry_id = ?", (result["journal_entry_id"],))["v"]
+        assert abs(cogs_1100_side - 26000) < 0.01, \
+            "the close must credit (reduce) account 1100 by exactly the posted COGS"
+        cogs_5000_side = db.fetch_one(
+            "SELECT COALESCE(SUM(debit),0) v FROM journal_items WHERE account_code='5000' "
+            "AND entry_id = ?", (result["journal_entry_id"],))["v"]
+        assert abs(cogs_5000_side - 26000) < 0.01, \
+            "the close must debit (increase) account 5000 by exactly the posted COGS"
+
+        posted = acc.get_posted_cogs("2031-01-01", "2031-01-31")
+        assert abs(posted - 26000) < 0.01, posted
+    check("closing an inventory period posts the correct Dr COGS / Cr Inventory journal entry",
+          inventory_period_close_matches_the_expected_accounting_result)
+
+    def a_second_close_derives_its_opening_balance_from_the_first_close():
+        acc = window.accounting.accounting
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2031-02-10', 5000, 5750, 750, 'Cash', 'raw_material', 'test')")
+        result = acc.close_inventory_period("2031-02-01", "2031-02-28", closing_inventory=9000)
+        assert abs(result["opening_inventory"] - 12000) < 0.01, \
+            "opening must be automatically taken from the previous close's closing figure"
+        # 12,000 opening + 5,000 purchases - 0 returns - 9,000 closing
+        assert abs(result["cogs"] - 8000) < 0.01, result
+
+        try:
+            db.execute_query(
+                "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+                "payment_status, category) VALUES (NULL, '2031-03-05', 1, 1, 0, 'Cash', 'raw_material')")
+            acc.close_inventory_period("2031-03-01", "2031-03-31", closing_inventory=0,
+                                        opening_inventory_override=999999)
+            raise AssertionError("a manual opening override must be rejected once a prior close exists")
+        except ValueError:
+            pass
+    check("a later inventory close derives its opening balance from the previous close, not a manual override",
+          a_second_close_derives_its_opening_balance_from_the_first_close)
+
+    def closing_inventory_above_goods_available_is_rejected():
+        acc = window.accounting.accounting
+        try:
+            acc.close_inventory_period("2031-04-01", "2031-04-30", closing_inventory=999999999)
+            raise AssertionError("closing inventory greater than goods available must be rejected")
+        except ValueError:
+            pass
+        try:
+            acc.close_inventory_period("2031-01-15", "2031-01-25", closing_inventory=0)
+            raise AssertionError("an inventory period overlapping an already-closed period must be rejected")
+        except ValueError:
+            pass
+    check("an impossible closing count or an overlapping period is rejected before anything is posted",
+          closing_inventory_above_goods_available_is_rejected)
+
+    def reversing_an_inventory_close_deletes_its_journal_and_allows_a_reclose():
+        acc = window.accounting.accounting
+        periods = {p["start_date"]: p for p in acc.get_inventory_periods()}
+        first = periods["2031-01-01"]
+        second = periods["2031-02-01"]
+
+        try:
+            acc.reverse_inventory_period(first["id"])
+            raise AssertionError("must not allow reversing an earlier close while a later one still stands")
+        except ValueError:
+            pass
+
+        entry_id = second["journal_entry_id"]
+        acc.reverse_inventory_period(second["id"])
+        assert not db.fetch_one("SELECT id FROM journal_entries WHERE id = ?", (entry_id,)), \
+            "reversal must delete the posted journal entry"
+        reopened = db.fetch_one("SELECT reversed_at FROM inventory_periods WHERE id = ?", (second["id"],))
+        assert reopened["reversed_at"], "the period row must be flagged reversed, not deleted"
+
+        # The date range is now free to be re-closed with corrected numbers.
+        redo = acc.close_inventory_period("2031-02-01", "2031-02-28", closing_inventory=11000)
+        assert abs(redo["opening_inventory"] - 12000) < 0.01, redo
+        assert abs(redo["cogs"] - (12000 + 5000 - 11000)) < 0.01, redo
+    check("reversing an inventory close removes its journal entry and allows a corrected re-close",
+          reversing_an_inventory_close_deletes_its_journal_and_allows_a_reclose)
+
+    def inventory_period_close_rolls_back_completely_on_a_failure():
+        """Same failure-injection pattern as payroll/advances/opening
+        balances (P0-2): forces insert_journal_entry to blow up mid-close
+        and asserts the inventory_periods row never lands without its
+        journal, and account 1100/5000 are left exactly as they were."""
+        acc = window.accounting.accounting
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category) VALUES (NULL, '2031-05-10', 4000, 4600, 600, 'Cash', 'raw_material')")
+        before_1100 = acc.get_account_balance("1100")
+        before_5000 = acc.get_account_balance("5000")
+        before_periods = db.fetch_one("SELECT COUNT(*) c FROM inventory_periods")["c"]
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated crash right before the journal is written")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                acc.close_inventory_period("2031-05-01", "2031-05-31", closing_inventory=1000)
+                raise AssertionError("the simulated failure did not propagate")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        assert db.fetch_one("SELECT COUNT(*) c FROM inventory_periods")["c"] == before_periods, \
+            "an orphan inventory_periods row survived the failed close"
+        assert abs(acc.get_account_balance("1100") - before_1100) < 0.01, "account 1100 moved despite the rollback"
+        assert abs(acc.get_account_balance("5000") - before_5000) < 0.01, "account 5000 moved despite the rollback"
+
+        # Prove the connection/transaction helper was not left broken, and
+        # that the date range is still genuinely open (nothing was posted).
+        result = acc.close_inventory_period("2031-05-01", "2031-05-31", closing_inventory=1000)
+        assert result["journal_entry_id"], "the retried close should succeed and post normally"
+    check("an inventory close rolls back completely if it fails right before the journal write",
+          inventory_period_close_rolls_back_completely_on_a_failure)
+
     # ---------------- UI regressions ----------------
     print("\n[ui]")
 
@@ -1979,6 +2146,57 @@ def main():
             "the income statement result has no scroll area of its own"
     check("the trading account result can be scrolled to in full",
           trading_account_result_is_fully_reachable)
+
+    def the_inventory_close_button_actually_posts_through_the_ui():
+        """A backend method with no working button behind it is not a
+        feature. Drives the real page: sets a custom period, types a
+        closing count, clicks إقفال هذه الفترة الآن, and checks the posted
+        journal shows up in the history table and the ledger - then selects
+        that row and clicks عكس الإقفال المحدد and checks it disappears
+        from the posted total and the row now reads تم عكسه."""
+        goto("accounting")
+        acc = window.accounting
+        acc.tabs.setCurrentIndex(2)  # حساب المتاجرة - selection models on an inactive
+                                     # QTabWidget tab do not reliably register a row select
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category) VALUES (NULL, '2032-01-15', 3000, 3450, 450, 'Cash', 'raw_material')")
+        # Whatever earlier tests in this shared suite already closed becomes
+        # this period's own opening balance (auto-derived, by design) - read
+        # it back rather than assuming 0, so this test still holds however
+        # many other closes happened to run before it.
+        prior_periods = [p for p in acc.accounting.get_inventory_periods()
+                          if not p['reversed_at'] and p['end_date'] < '2032-01-01']
+        opening = max(prior_periods, key=lambda p: p['end_date'])['closing_inventory'] if prior_periods else 0
+
+        acc.period_input.setCurrentText("مخصص")
+        acc.start_date.setDate(QDate(2032, 1, 1))
+        acc.end_date.setDate(QDate(2032, 1, 31))
+        acc.closing_inventory_input.setValue(1000)
+        acc.close_period_btn.click()
+        app.processEvents()
+
+        rows = [acc.inventory_periods_table.item(r, 0).text()
+                for r in range(acc.inventory_periods_table.rowCount())]
+        assert "2032-01-01" in rows, "the newly closed period did not appear in the history table"
+        row_idx = rows.index("2032-01-01")
+        assert acc.inventory_periods_table.item(row_idx, 5).text() == "مرحّل"
+        posted = acc.accounting.get_posted_cogs("2032-01-01", "2032-01-31")
+        assert abs(posted - (opening + 3000 - 1000)) < 0.01, (posted, opening)
+
+        # setCurrentCell, not selectRow(): selectRow() left
+        # selectionModel().selectedRows() empty under the offscreen test
+        # platform even after the tab holding the table was made current -
+        # setCurrentCell reliably produces a real row selection here.
+        acc.inventory_periods_table.setCurrentCell(row_idx, 0)
+        app.processEvents()
+        acc.reverse_period_btn.click()
+        app.processEvents()
+        assert acc.inventory_periods_table.item(row_idx, 5).text() == "تم عكسه"
+        assert abs(acc.accounting.get_posted_cogs("2032-01-01", "2032-01-31")) < 0.01, \
+            "the reversed close's journal is still affecting posted COGS"
+    check("the accounting page's إقفال المخزون button posts a real journal entry, and عكس reverses it",
+          the_inventory_close_button_actually_posts_through_the_ui)
 
     def all_expiring_documents_are_reachable():
         """The owner reported (with a screenshot) that one of three duplicate

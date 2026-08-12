@@ -247,6 +247,29 @@ CREATE TABLE IF NOT EXISTS sales_returns (
     FOREIGN KEY (branch_id) REFERENCES branches(id)
 );
 
+-- Inventory period closes (COGS): a physical count posted to the ledger so
+-- account 1100 (المخزون) actually decreases for consumption instead of
+-- accumulating every raw-material purchase forever. See
+-- AccountingLogic.close_inventory_period().
+CREATE TABLE IF NOT EXISTS inventory_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    opening_inventory REAL NOT NULL,
+    raw_material_purchases REAL NOT NULL,
+    raw_material_purchase_returns REAL NOT NULL,
+    closing_inventory REAL NOT NULL,
+    cogs REAL NOT NULL,
+    journal_entry_id INTEGER,
+    reversed_at DATETIME,
+    reversal_journal_entry_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_by INTEGER,
+    FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id),
+    FOREIGN KEY (reversal_journal_entry_id) REFERENCES journal_entries(id),
+    FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 -- Employee Deductions / Advances / Bonuses
 CREATE TABLE IF NOT EXISTS employee_deductions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
