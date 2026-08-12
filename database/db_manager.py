@@ -460,7 +460,46 @@ class DBManager:
         caller already holds - so they can be combined into one transaction
         with whatever operational row (a purchase, a payment, a sale) the
         entry belongs to. add_journal_entry() below is the same two inserts
-        for callers that only need the journal entry on its own."""
+        for callers that only need the journal entry on its own.
+
+        P0-5: every caller ultimately funnels through here, so this is the
+        one place that can actually guarantee a posted journal is valid -
+        a UI screen skipping a check is a bug in one screen; this raising
+        instead is a guarantee for every screen, present and future. Do not
+        depend on UI callers to produce a valid journal on their own."""
+        if not items:
+            raise ValueError(f"لا يمكن إنشاء قيد محاسبي بدون بنود ({description})")
+        if not date:
+            raise ValueError(f"القيد المحاسبي يتطلب تاريخًا ({description})")
+
+        for item in items:
+            debit = item.get('debit') or 0
+            credit = item.get('credit') or 0
+            if debit < 0 or credit < 0:
+                raise ValueError(
+                    f"بند القيد لا يمكن أن يكون بمبلغ سالب: {item.get('account_code')} "
+                    f"مدين {debit:,.2f} دائن {credit:,.2f} ({description})"
+                )
+            if debit > 0 and credit > 0:
+                raise ValueError(
+                    f"بند القيد لا يمكن أن يكون مدينًا ودائنًا في نفس الوقت: "
+                    f"{item.get('account_code')} ({description})"
+                )
+
+        account_codes = {item['account_code'] for item in items}
+        placeholders = ",".join("?" * len(account_codes))
+        cursor.execute(
+            f"SELECT code FROM chart_of_accounts WHERE code IN ({placeholders})",
+            tuple(account_codes),
+        )
+        known_codes = {row[0] for row in cursor.fetchall()}
+        unknown = account_codes - known_codes
+        if unknown:
+            raise ValueError(
+                f"القيد يشير إلى حساب غير موجود في دليل الحسابات: {', '.join(sorted(unknown))} "
+                f"({description})"
+            )
+
         debit = round(sum(item['debit'] for item in items), 2)
         credit = round(sum(item['credit'] for item in items), 2)
         if abs(debit - credit) > 0.01:

@@ -1438,6 +1438,77 @@ def main():
         db.delete_journal_entry(entry_id)
     check("an unbalanced journal entry is refused", unbalanced_journal_entries_are_refused)
 
+    def invalid_journal_entries_are_refused_at_the_one_shared_write_path():
+        """P0-5: insert_journal_entry() is the one function every business
+        flow in the app ultimately posts a journal through - centralising
+        these checks here means no future screen can skip them, rather than
+        depending on each screen to have remembered to validate its own
+        inputs before building an items list by hand."""
+        def try_post(items, date="2026-01-01"):
+            with db.transaction() as cursor:
+                db.insert_journal_entry(cursor, date, "اختبار صحة القيد", None, items)
+
+        try:
+            try_post([])
+            raise AssertionError("an entry with no items was accepted")
+        except ValueError:
+            pass
+
+        try:
+            try_post(None, date=None)
+            raise AssertionError("an entry with no date was accepted")
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            try_post([
+                {"account_code": "1000", "debit": 100, "credit": 0},
+                {"account_code": "9999", "debit": 0, "credit": 100},
+            ])
+            raise AssertionError("an entry referencing a nonexistent account code was accepted")
+        except ValueError:
+            pass
+
+        try:
+            try_post([
+                {"account_code": "1000", "debit": -100, "credit": 0},
+                {"account_code": "4000", "debit": 0, "credit": -100},
+            ])
+            raise AssertionError("an entry with a negative amount was accepted")
+        except ValueError:
+            pass
+
+        try:
+            try_post([
+                {"account_code": "1000", "debit": 100, "credit": 100},
+            ])
+            raise AssertionError("a line item that is both debit and credit at once was accepted")
+        except ValueError:
+            pass
+
+        # None of the rejected attempts above should have left anything behind.
+        assert not db.fetch_one(
+            "SELECT id FROM journal_entries WHERE description = 'اختبار صحة القيد'"
+        ), "a rejected journal entry attempt still left a row behind"
+    check("insert_journal_entry rejects empty items, missing dates, unknown accounts, negative amounts, "
+          "and dual debit/credit lines - not just unbalanced totals",
+          invalid_journal_entries_are_refused_at_the_one_shared_write_path)
+
+    def the_whole_database_has_zero_foreign_key_violations():
+        """A cheap, global correctness check that costs nothing to run after
+        every other test in this file has had a chance to leave something
+        behind: whatever the rest of this suite has done to the shared
+        database by this point, SQLite's own foreign_key_check must still
+        find nothing dangling anywhere in it."""
+        conn = db.get_connection()
+        try:
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            assert not violations, [tuple(v) for v in violations]
+        finally:
+            conn.close()
+    check("PRAGMA foreign_key_check finds zero violations anywhere in the database",
+          the_whole_database_has_zero_foreign_key_violations)
+
     def foreign_keys_are_actually_enforced():
         """SQLite ships FK checking off by default and does not remember the
         setting in the file - every connection has to turn it on itself, or
