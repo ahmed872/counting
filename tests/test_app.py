@@ -370,6 +370,56 @@ def main():
     check("an advance bigger than salary is recovered gradually, never below zero pay",
           advance_bigger_than_salary_never_makes_net_pay_negative)
 
+    def advance_settlement_reconciles_exactly_across_the_runs_that_recover_it():
+        """P0-4 regression: the amount recovered from an advance, summed
+        across however many payroll runs it takes to pay it off, must equal
+        the advance to the riyal - never a fraction left dangling
+        unsettled, never recovered a second time after it is already
+        settled. Uses an advance sized to take exactly two runs to clear."""
+        journal_marker = newest_journal_entry_id()
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("تسوية سلفة", "عامل", 1, 4000, 0))
+        window.hr_logic.grant_advance(emp_id, "2027-01-01", 6000, "سلفة تسوية")
+        adv_id = db.fetch_one(
+            "SELECT id FROM employee_deductions WHERE employee_id = ? AND type='Advance'",
+            (emp_id,))["id"]
+
+        window.hr_logic.post_payroll(1, 2027)
+        run1 = db.fetch_one(
+            "SELECT advances_recovered FROM payroll_run_items WHERE employee_id = ? "
+            "AND run_id = (SELECT id FROM payroll_runs WHERE month=1 AND year=2027)", (emp_id,))
+        mid = db.fetch_one("SELECT amount, amount_recovered, settled_run_id FROM employee_deductions WHERE id = ?",
+                            (adv_id,))
+        assert mid["settled_run_id"] is None, "settled after only a partial recovery"
+        assert abs(mid["amount_recovered"] - run1["advances_recovered"]) < 0.01
+
+        window.hr_logic.post_payroll(2, 2027)
+        run2 = db.fetch_one(
+            "SELECT advances_recovered FROM payroll_run_items WHERE employee_id = ? "
+            "AND run_id = (SELECT id FROM payroll_runs WHERE month=2 AND year=2027)", (emp_id,))
+        done = db.fetch_one("SELECT amount, amount_recovered, settled_run_id FROM employee_deductions WHERE id = ?",
+                             (adv_id,))
+        assert done["settled_run_id"] is not None, "fully recovered but never marked settled"
+        assert abs(done["amount_recovered"] - done["amount"]) < 0.01, \
+            "amount recovered does not equal the original advance"
+        assert abs((run1["advances_recovered"] + run2["advances_recovered"]) - 6000) < 0.01, \
+            "the two runs together did not recover exactly the advance amount"
+
+        october = next(p for p in window.hr_logic.get_monthly_payroll(3, 2027) if p["id"] == emp_id)
+        assert october["advances_recovered"] == 0, \
+            "a fully settled advance is still being deducted the month after it was cleared"
+
+        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
+        db.execute_query(
+            "DELETE FROM payroll_runs WHERE month IN (1,2) AND year=2027 AND "
+            "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+        db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("an advance's settlement across however many payroll runs it takes reconciles exactly to the riyal",
+          advance_settlement_reconciles_exactly_across_the_runs_that_recover_it)
+
     def a_31_day_month_cannot_deduct_more_than_the_salary():
         """A 31-day month allows 31 attendance rows, and 31 x daily_rate is
         more than the whole salary - the deduction used to be able to exceed
