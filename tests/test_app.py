@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QPushButton, QDateEdit, QLabel, QScrollArea,
-    QTableWidget, QFrame,
+    QTableWidget, QFrame, QInputDialog,
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, QDate
@@ -49,6 +49,11 @@ def silence_dialogs():
     for attr in ("information", "warning", "critical"):
         setattr(QMessageBox, attr, staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    # QInputDialog.getText() is what void_selected_purchase/return prompts for
+    # a reason with (P1-2) - a real modal .exec() that never returns in a
+    # headless run, hanging the whole suite at the first test that reaches
+    # it. Auto-answered exactly like every QMessageBox above.
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("سبب اختباري", True))
 
 
 def render(widget):
@@ -1046,6 +1051,101 @@ def main():
             f"an untranslated payment status leaked into a journal description: {descriptions}"
     check("purchase categories hit the right accounts", purchases_route_by_category)
 
+    def void_transaction_rejects_invalid_input_and_double_voiding():
+        """P1-2: db.void_transaction() is the one shared path every void
+        button goes through - a bad table name, a blank reason, an unknown
+        id, or voiding something already voided must all be refused before
+        anything is posted, the same discipline P0-5 already applies to
+        insert_journal_entry itself."""
+        pid = db.insert_and_return_id(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2033-01-01', 200, 200, 0, 'Cash', 'operating_expense', 'اختبار الإلغاء')")
+        try:
+            try:
+                db.void_transaction('employees', pid, None, "سبب")
+                raise AssertionError("an unsupported table was accepted")
+            except ValueError:
+                pass
+            try:
+                db.void_transaction('purchases', pid, None, "   ")
+                raise AssertionError("a blank reason was accepted")
+            except ValueError:
+                pass
+            try:
+                db.void_transaction('purchases', 9999999, None, "سبب")
+                raise AssertionError("a nonexistent record id was accepted")
+            except ValueError:
+                pass
+
+            db.void_transaction('purchases', pid, 1, "خطأ في الإدخال")
+            row = db.fetch_one("SELECT voided_at, voided_by, void_reason FROM purchases WHERE id = ?", (pid,))
+            assert row["voided_at"] and row["voided_by"] == 1 and row["void_reason"] == "خطأ في الإدخال"
+
+            try:
+                db.void_transaction('purchases', pid, 1, "مرة تانية")
+                raise AssertionError("a second void on the same row was accepted")
+            except ValueError:
+                pass
+        finally:
+            db.execute_query("DELETE FROM purchases WHERE id = ?", (pid,))
+    check("void_transaction refuses an unsupported table, a blank reason, an unknown id, and double-voiding",
+          void_transaction_rejects_invalid_input_and_double_voiding)
+
+    def a_voided_purchase_with_no_journal_entry_can_still_be_voided():
+        """Not every voidable row is guaranteed to have a journal_entry_id
+        (a row inserted directly, or from a database that predates this
+        feature) - voiding must still succeed, it simply has nothing to
+        reverse."""
+        pid = db.insert_and_return_id(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description, journal_entry_id) VALUES "
+            "(NULL, '2033-01-02', 50, 50, 0, 'Cash', 'operating_expense', 'بدون قيد', NULL)")
+        try:
+            reversal_id = db.void_transaction('purchases', pid, None, "لا يوجد قيد لعكسه")
+            assert reversal_id is None
+            assert db.fetch_one("SELECT voided_at FROM purchases WHERE id = ?", (pid,))["voided_at"]
+        finally:
+            db.execute_query("DELETE FROM purchases WHERE id = ?", (pid,))
+    check("voiding a row with no journal entry at all still succeeds, with nothing to reverse",
+          a_voided_purchase_with_no_journal_entry_can_still_be_voided)
+
+    def voided_purchases_and_returns_disappear_from_report_totals_but_not_from_the_database():
+        """The whole point of voiding instead of deleting: the row and its
+        original journal entry are permanent history (queryable forever),
+        but every report total built from these tables must read as if it
+        never happened."""
+        acc = window.accounting.accounting
+        marker = newest_journal_entry_id()
+        start, end = "2033-02-01", "2033-02-28"
+        pid = db.insert_and_return_id(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2033-02-15', 4000, 4000, 0, 'Cash', 'raw_material', 'اختبار التقارير')")
+        with db.transaction() as cursor:
+            entry_id = db.insert_journal_entry(cursor, "2033-02-15", "اختبار التقارير", None, [
+                {"account_code": "1100", "debit": 4000, "credit": 0},
+                {"account_code": "1000", "debit": 0, "credit": 4000},
+            ])
+            cursor.execute("UPDATE purchases SET journal_entry_id = ? WHERE id = ?", (entry_id, pid))
+
+        before = acc.get_purchases_by_category(start, end)["raw_material"]["net"]
+        assert abs(before - 4000) < 0.01, before
+
+        db.void_transaction('purchases', pid, None, "اختبار - استبعاد من التقارير")
+        after = acc.get_purchases_by_category(start, end)["raw_material"]["net"]
+        assert abs(after) < 0.01, "a voided purchase still counts toward the report total"
+
+        # Still there, still queryable, still voided - not gone.
+        still_exists = db.fetch_one(
+            "SELECT COUNT(*) c FROM purchases WHERE id = ? AND voided_at IS NOT NULL", (pid,))["c"]
+        assert still_exists == 1
+
+        db.execute_query("DELETE FROM purchases WHERE id = ?", (pid,))
+        delete_journal_entries_created_after(marker)
+    check("a voided purchase disappears from report totals but stays in the database as permanent history",
+          voided_purchases_and_returns_disappear_from_report_totals_but_not_from_the_database)
+
     def general_ledger_tab_shows_every_posting_with_a_running_balance():
         """كشف حساب (per account, not per supplier/customer): the table must
         show exactly the entries and running balance get_account_ledger
@@ -1341,9 +1441,14 @@ def main():
         sales.returns_table.setCurrentCell(0, 0)
         sales.delete_selected_return()
         after_delete = net_revenue()
-        assert abs(after_delete - before) < 0.01, "deleting the return did not restore revenue"
-        assert db.fetch_one("SELECT COUNT(*) c FROM sales_returns")["c"] == 0
-    check("a sales return reduces revenue and deleting it reverses cleanly",
+        assert abs(after_delete - before) < 0.01, "voiding the return did not restore revenue"
+        # P1-2: void, not delete - the row survives as history, flagged voided,
+        # with its own original journal entry also left standing (only a new
+        # reversal entry cancels its effect - see void_transaction()).
+        voided = db.fetch_one(
+            "SELECT COUNT(*) c FROM sales_returns WHERE voided_at IS NOT NULL")["c"]
+        assert voided == 1, "the voided return row is missing or not flagged voided"
+    check("a sales return reduces revenue and voiding it reverses cleanly",
           sales_returns_reduce_revenue_and_reverse_cleanly)
 
     def purchase_return_can_be_deleted_and_reverses_its_entry():
@@ -1375,9 +1480,14 @@ def main():
         after = db.fetch_one(
             "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
             "WHERE account_code='1100'")["c"]
-        assert abs(after - before) < 0.01, "deleting the return did not reverse the inventory account"
-        assert db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"] == returns_before
-    check("a purchase return can be deleted and reverses its own entry",
+        assert abs(after - before) < 0.01, "voiding the return did not reverse the inventory account"
+        # P1-2: void, not delete - the row count grows by one (the voided
+        # row stays), rather than shrinking back to what it was before.
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"] == returns_before + 1
+        assert db.fetch_one(
+            "SELECT COUNT(*) c FROM purchase_returns WHERE id = ? AND voided_at IS NOT NULL",
+            (row["id"],))["c"] == 1
+    check("a purchase return can be voided and reverses its own entry",
           purchase_return_can_be_deleted_and_reverses_its_entry)
 
     def opening_balances_fix_negative_cash():
@@ -1413,7 +1523,12 @@ def main():
         after = db.fetch_one(
             "SELECT COALESCE(SUM(debit)-SUM(credit),0) v FROM journal_items WHERE account_code='5200'")["v"]
         assert abs((before - after) - 999) < 0.01, f"{before} -> {after}"
-    check("deleting a purchase also reverses its journal entry", deleting_a_purchase_reverses_its_entry)
+        assert db.fetch_one(
+            "SELECT voided_at, reversal_journal_entry_id FROM purchases WHERE id = "
+            "(SELECT id FROM purchases ORDER BY id DESC LIMIT 1)")["voided_at"], \
+            "the purchase row was not flagged voided"
+    check("voiding a purchase reverses its journal entry via a new reversal entry, not a delete",
+          deleting_a_purchase_reverses_its_entry)
 
     def unbalanced_journal_entries_are_refused():
         """Nothing previously stopped a caller with a mistake in it from

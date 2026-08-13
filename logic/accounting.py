@@ -212,22 +212,24 @@ class AccountingLogic:
         = cost of goods available for sale; minus closing inventory = cost of goods sold."""
         purchases = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM purchases
-               WHERE category = 'raw_material' AND date(date) BETWEEN date(?) AND date(?)""",
+               WHERE category = 'raw_material' AND voided_at IS NULL
+                 AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
         purchase_related_expenses = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM purchases
-               WHERE category = 'purchase_expense' AND date(date) BETWEEN date(?) AND date(?)""",
+               WHERE category = 'purchase_expense' AND voided_at IS NULL
+                 AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
         purchase_returns = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM purchase_returns
-               WHERE date(date) BETWEEN date(?) AND date(?)""",
+               WHERE voided_at IS NULL AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
         sales_returns = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM sales_returns
-               WHERE date(date) BETWEEN date(?) AND date(?)""",
+               WHERE voided_at IS NULL AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
 
@@ -320,12 +322,14 @@ class AccountingLogic:
 
         purchases = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM purchases
-               WHERE category = 'raw_material' AND date(date) BETWEEN date(?) AND date(?)""",
+               WHERE category = 'raw_material' AND voided_at IS NULL
+                 AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
         returns = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM purchase_returns
-               WHERE category = 'raw_material' AND date(date) BETWEEN date(?) AND date(?)""",
+               WHERE category = 'raw_material' AND voided_at IS NULL
+                 AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
 
@@ -413,7 +417,8 @@ class AccountingLogic:
             entries.append({'date': '', 'type': 'رصيد افتتاحي', 'debit': 0, 'credit': opening_balance})
 
         purchases = self.db.fetch_all(
-            "SELECT date, total_amount FROM purchases WHERE supplier_id = ? AND payment_status = 'Credit' ORDER BY date",
+            "SELECT date, total_amount FROM purchases WHERE supplier_id = ? AND payment_status = 'Credit' "
+            "AND voided_at IS NULL ORDER BY date",
             (supplier_id,),
         )
         for p in purchases:
@@ -428,7 +433,8 @@ class AccountingLogic:
             entries.append({'date': pay['date'], 'type': f"سداد ({method_label})", 'debit': pay['amount'] or 0, 'credit': 0})
 
         returns = self.db.fetch_all(
-            "SELECT date, amount, vat_amount FROM purchase_returns WHERE supplier_id = ? AND refund_method = 'CreditNote' ORDER BY date",
+            "SELECT date, amount, vat_amount FROM purchase_returns WHERE supplier_id = ? "
+            "AND refund_method = 'CreditNote' AND voided_at IS NULL ORDER BY date",
             (supplier_id,),
         )
         for r in returns:
@@ -586,7 +592,7 @@ class AccountingLogic:
                        COALESCE(SUM(p.vat_amount), 0) as vat,
                        COALESCE(SUM(p.total_amount), 0) as total
                 FROM purchases p
-                WHERE date(p.date) BETWEEN date(?) AND date(?){clause}
+                WHERE p.voided_at IS NULL AND date(p.date) BETWEEN date(?) AND date(?){clause}
                 GROUP BY COALESCE(p.category, 'raw_material')""",
             (start_date, end_date) + params,
         )
@@ -606,13 +612,13 @@ class AccountingLogic:
         sales_returns = self.db.fetch_one(
             f"""SELECT COALESCE(SUM(amount), 0) as net, COALESCE(SUM(vat_amount), 0) as vat
                 FROM sales_returns sr
-                WHERE date(sr.date) BETWEEN date(?) AND date(?){sales_clause}""",
+                WHERE sr.voided_at IS NULL AND date(sr.date) BETWEEN date(?) AND date(?){sales_clause}""",
             (start_date, end_date) + sales_params,
         )
         purchase_returns = self.db.fetch_one(
             f"""SELECT COALESCE(SUM(amount), 0) as net, COALESCE(SUM(vat_amount), 0) as vat
                 FROM purchase_returns pr
-                WHERE date(pr.date) BETWEEN date(?) AND date(?){purchase_clause}""",
+                WHERE pr.voided_at IS NULL AND date(pr.date) BETWEEN date(?) AND date(?){purchase_clause}""",
             (start_date, end_date) + purchase_params,
         )
         return {
@@ -671,7 +677,7 @@ class AccountingLogic:
                        COALESCE(SUM(p.amount), 0) as net,
                        COALESCE(SUM(p.vat_amount), 0) as vat
                 FROM purchases p
-                WHERE date(p.date) BETWEEN date(?) AND date(?){purchase_clause}
+                WHERE p.voided_at IS NULL AND date(p.date) BETWEEN date(?) AND date(?){purchase_clause}
                 GROUP BY date(p.date)""",
             (start_date, end_date) + purchase_params,
         )

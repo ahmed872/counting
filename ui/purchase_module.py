@@ -32,9 +32,10 @@ CATEGORY_LABELS = {
 
 
 class PurchaseModule(QWidget):
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
+        self.current_user = current_user or {}
         self.accounting = AccountingLogic(db_manager)
         self.init_ui()
 
@@ -127,7 +128,7 @@ class PurchaseModule(QWidget):
             form_box, "إظهار نموذج الفاتورة", "إخفاء النموذج",
             start_collapsed=self._short_screen())
         table_header.addWidget(self.form_toggle)
-        delete_btn = danger_button("حذف الفاتورة المحددة")
+        delete_btn = danger_button("إلغاء الفاتورة المحددة")
         delete_btn.clicked.connect(self.delete_selected_purchase)
         table_header.addWidget(delete_btn)
         layout.addLayout(table_header)
@@ -154,6 +155,11 @@ class PurchaseModule(QWidget):
         return bool(screen and screen.availableGeometry().height() < 800)
 
     def delete_selected_purchase(self):
+        """P1-2: voids rather than deletes. The invoice row and its
+        original journal entry stay in place as permanent history; a new
+        reversal journal entry cancels its effect, and it stops counting
+        toward any report total from here on - it never disappears from
+        this table or from the ledger it once posted to."""
         row = self.table.currentRow()
         if row < 0:
             QMessageBox.warning(self, "تنبيه", "اختر فاتورة من الجدول أولاً")
@@ -161,15 +167,22 @@ class PurchaseModule(QWidget):
         purchase_id, entry_id = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
         description = self.table.item(row, 3).text() or self.table.item(row, 1).text()
         amount = self.table.item(row, 4).text()
-        answer = QMessageBox.question(
-            self, "حذف فاتورة",
-            f"سيتم حذف الفاتورة «{description}» بمبلغ {amount} وقيدها المحاسبي نهائياً.\n\nمتابعة؟",
+        from PyQt6.QtWidgets import QInputDialog
+        reason, ok = QInputDialog.getText(
+            self, "إلغاء فاتورة",
+            f"سيتم إلغاء الفاتورة «{description}» بمبلغ {amount} - يبقى سجلها كاملاً، "
+            f"ويُعكس أثرها المحاسبي بقيد جديد بدلاً من حذف أي شيء.\n\nسبب الإلغاء:",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if not ok or not reason.strip():
             return
-        self.db.execute_query("DELETE FROM purchases WHERE id = ?", (purchase_id,))
-        self.db.delete_journal_entry(entry_id)
-        QMessageBox.information(self, "تم", "تم حذف الفاتورة وقيدها المحاسبي")
+        try:
+            self.db.void_transaction(
+                'purchases', purchase_id,
+                self.current_user.get("id"), reason.strip())
+        except ValueError as e:
+            QMessageBox.warning(self, "تعذر الإلغاء", str(e))
+            return
+        QMessageBox.information(self, "تم", "تم إلغاء الفاتورة وعكس قيدها المحاسبي")
         self.load_purchases()
 
     def build_returns_tab(self):
@@ -220,7 +233,7 @@ class PurchaseModule(QWidget):
         returns_label.setStyleSheet("font-weight:700; color:#334155;")
         returns_header.addWidget(returns_label)
         returns_header.addStretch()
-        delete_return_btn = danger_button("حذف المرتجع المحدد")
+        delete_return_btn = danger_button("إلغاء المرتجع المحدد")
         delete_return_btn.clicked.connect(self.delete_selected_return)
         returns_header.addWidget(delete_return_btn)
         layout.addLayout(returns_header)
@@ -363,10 +376,21 @@ class PurchaseModule(QWidget):
             self.table.setItem(row, 3, QTableWidgetItem(p['description'] or ""))
             self.table.setItem(row, 4, money_item(p['total_amount']))
             self.table.setItem(row, 5, money_item(p['vat_amount']))
-            self.table.setItem(row, 6, QTableWidgetItem(label_for(PAYMENT_STATUS_LABELS, p['payment_status'])))
+            status_text = label_for(PAYMENT_STATUS_LABELS, p['payment_status'])
+            if p['voided_at']:
+                status_item = QTableWidgetItem(f"ملغاة ⛔ ({status_text})")
+                status_item.setToolTip(p['void_reason'] or "")
+                status_item.setForeground(Qt.GlobalColor.red)
+            else:
+                status_item = QTableWidgetItem(status_text)
+            self.table.setItem(row, 6, status_item)
 
-        total = sum((p['total_amount'] or 0) for p in purchases)
-        vat = sum((p['vat_amount'] or 0) for p in purchases)
+        # A voided invoice stays in the table for its own history, but its
+        # amount must not count toward the total shown here - that total
+        # is exactly what every accounting report reads too, and reports
+        # already exclude voided rows (see logic/accounting.py).
+        total = sum((p['total_amount'] or 0) for p in purchases if not p['voided_at'])
+        vat = sum((p['vat_amount'] or 0) for p in purchases if not p['voided_at'])
         self.purchases_total_label.setText(
             f"عدد الفواتير: {len(purchases)}"
             f"     |     الإجمالي: {money(total)} ريال"
@@ -440,21 +464,28 @@ class PurchaseModule(QWidget):
             QMessageBox.critical(self, "خطأ", str(e))
 
     def delete_selected_return(self):
+        """P1-2: voids rather than deletes - see delete_selected_purchase."""
         row = self.returns_table.currentRow()
         if row < 0:
             QMessageBox.warning(self, "تنبيه", "اختر مرتجعاً من الجدول أولاً")
             return
         return_id, entry_id = self.returns_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        answer = QMessageBox.question(
-            self, "حذف مرتجع",
-            "سيتم حذف هذا المرتجع وقيده المحاسبي نهائياً.\n\nمتابعة؟",
+        from PyQt6.QtWidgets import QInputDialog
+        reason, ok = QInputDialog.getText(
+            self, "إلغاء مرتجع",
+            "سيتم إلغاء هذا المرتجع - يبقى سجله كاملاً، ويُعكس أثره المحاسبي بقيد جديد "
+            "بدلاً من حذف أي شيء.\n\nسبب الإلغاء:",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if not ok or not reason.strip():
             return
-        self.db.execute_query("DELETE FROM purchase_returns WHERE id = ?", (return_id,))
-        if entry_id:
-            self.db.delete_journal_entry(entry_id)
-        QMessageBox.information(self, "تم", "تم حذف المرتجع وقيده المحاسبي")
+        try:
+            self.db.void_transaction(
+                'purchase_returns', return_id,
+                self.current_user.get("id"), reason.strip())
+        except ValueError as e:
+            QMessageBox.warning(self, "تعذر الإلغاء", str(e))
+            return
+        QMessageBox.information(self, "تم", "تم إلغاء المرتجع وعكس قيده المحاسبي")
         self.load_purchase_returns()
 
     def load_purchase_returns(self):
@@ -476,5 +507,11 @@ class PurchaseModule(QWidget):
             self.returns_table.setItem(row, 2, money_item(r['amount']))
             self.returns_table.setItem(row, 3, money_item(r['vat_amount']))
             method_label = label_for(REFUND_METHOD_LABELS, r['refund_method'])
-            self.returns_table.setItem(row, 4, QTableWidgetItem(method_label))
+            if r['voided_at']:
+                method_item = QTableWidgetItem(f"ملغى ⛔ ({method_label})")
+                method_item.setToolTip(r['void_reason'] or "")
+                method_item.setForeground(Qt.GlobalColor.red)
+            else:
+                method_item = QTableWidgetItem(method_label)
+            self.returns_table.setItem(row, 4, method_item)
         fit_table_height(self.returns_table)

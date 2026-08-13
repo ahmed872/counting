@@ -254,6 +254,25 @@ class DBManager:
         if self.table_exists(cursor, 'users') and 'branch_id' not in table_columns('users'):
             cursor.execute("ALTER TABLE users ADD COLUMN branch_id INTEGER REFERENCES branches(id)")
 
+        # P1-2: void/reversal instead of a hard delete for posted purchases,
+        # purchase returns, and sales returns - the row (and its original
+        # journal entry) stay in place as history; voiding posts a new
+        # reversal journal entry rather than deleting anything, and
+        # reporting queries exclude a voided row's amount by filtering on
+        # voided_at, not by the row being gone.
+        for table in ('purchases', 'purchase_returns', 'sales_returns'):
+            if not self.table_exists(cursor, table):
+                continue
+            columns = table_columns(table)
+            if 'voided_at' not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN voided_at DATETIME")
+            if 'voided_by' not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN voided_by INTEGER")
+            if 'void_reason' not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN void_reason TEXT")
+            if 'reversal_journal_entry_id' not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN reversal_journal_entry_id INTEGER")
+
         self.arabise_account_names(cursor)
         self.enforce_uniqueness(cursor)
 
@@ -426,6 +445,59 @@ class DBManager:
             return
         with self.transaction() as cursor:
             self.delete_journal_entry_on_cursor(cursor, entry_id)
+
+    VOIDABLE_TABLES = ('purchases', 'purchase_returns', 'sales_returns')
+
+    def void_transaction(self, table, record_id, user_id, reason):
+        """P1-2: void a posted purchase / purchase return / sales return
+        without touching history. Unlike delete_journal_entry_on_cursor
+        (used elsewhere for a row that is itself being deleted, e.g.
+        clear_day), this keeps both the original row and its original
+        journal entry exactly as they were, and posts a new reversal
+        journal entry - debit and credit swapped - dated today. A voided
+        row is still visible everywhere it always was; only its amount
+        stops counting toward any report total, by filtering on
+        voided_at, never by the row disappearing."""
+        import datetime as _datetime
+
+        if table not in self.VOIDABLE_TABLES:
+            raise ValueError(f"جدول غير مدعوم للإلغاء: {table}")
+        if not reason or not reason.strip():
+            raise ValueError("سبب الإلغاء مطلوب")
+        row = self.fetch_one(f"SELECT * FROM {table} WHERE id = ?", (record_id,))
+        if not row:
+            raise ValueError("لا يوجد سجل بهذا الرقم")
+        if row["voided_at"]:
+            raise ValueError("هذه العملية ملغاة بالفعل")
+
+        entry_id = row["journal_entry_id"]
+        reversal_id = None
+        with self.transaction() as cursor:
+            if entry_id:
+                cursor.execute(
+                    "SELECT account_code, debit, credit FROM journal_items WHERE entry_id = ?",
+                    (entry_id,))
+                items = cursor.fetchall()
+                if items:
+                    cursor.execute(
+                        "SELECT date, description, branch_id FROM journal_entries WHERE id = ?",
+                        (entry_id,))
+                    original = cursor.fetchone()
+                    swapped = [
+                        {"account_code": it["account_code"],
+                         "debit": it["credit"] or 0, "credit": it["debit"] or 0}
+                        for it in items
+                    ]
+                    today = _datetime.datetime.now().strftime("%Y-%m-%d")
+                    reversal_id = self.insert_journal_entry(
+                        cursor, today, f"عكس: {original['description']}",
+                        original["branch_id"], swapped)
+            cursor.execute(
+                f"UPDATE {table} SET voided_at = CURRENT_TIMESTAMP, voided_by = ?, "
+                f"void_reason = ?, reversal_journal_entry_id = ? WHERE id = ?",
+                (user_id, reason.strip(), reversal_id, record_id),
+            )
+        return reversal_id
 
     @contextmanager
     def transaction(self):

@@ -335,7 +335,7 @@ class MainWindow(QMainWindow):
         self.dashboard = DashboardModule(self.db)
         self.sales = SalesEntryModule(self.db, current_user=self.current_user)
         self.hr = HRModule(self.db, self.hr_logic)
-        self.purchases = PurchaseModule(self.db)
+        self.purchases = PurchaseModule(self.db, current_user=self.current_user)
         self.suppliers = SuppliersModule(self.db)
         self.customers = CustomersModule(self.db)
         self.reports = ReportsModule(self.db)

@@ -363,27 +363,36 @@ class SalesEntryModule(QWidget):
         self.load_sales_returns()
 
     def delete_selected_return(self):
+        """P1-2: voids rather than deletes - the row and its original
+        journal entry stay in place as history; a new reversal journal
+        entry cancels its effect."""
         row = self.returns_table.currentRow()
         if row < 0:
             QMessageBox.warning(self, "تنبيه", "اختر مرتجعاً من الجدول أولاً")
             return
         return_id, entry_id = self.returns_table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        answer = QMessageBox.question(
-            self, "حذف مرتجع",
-            "سيتم حذف هذا المرتجع وقيده المحاسبي نهائياً.\n\nمتابعة؟",
+        from PyQt6.QtWidgets import QInputDialog
+        reason, ok = QInputDialog.getText(
+            self, "إلغاء مرتجع",
+            "سيتم إلغاء هذا المرتجع - يبقى سجله كاملاً، ويُعكس أثره المحاسبي بقيد جديد "
+            "بدلاً من حذف أي شيء.\n\nسبب الإلغاء:",
         )
-        if answer != QMessageBox.StandardButton.Yes:
+        if not ok or not reason.strip():
             return
-        self.db.execute_query("DELETE FROM sales_returns WHERE id = ?", (return_id,))
-        if entry_id:
-            self.db.delete_journal_entry(entry_id)
-        QMessageBox.information(self, "تم", "تم حذف المرتجع وقيده المحاسبي")
+        try:
+            self.db.void_transaction(
+                'sales_returns', return_id,
+                self.current_user.get("id"), reason.strip())
+        except ValueError as e:
+            QMessageBox.warning(self, "تعذر الإلغاء", str(e))
+            return
+        QMessageBox.information(self, "تم", "تم إلغاء المرتجع وعكس قيده المحاسبي")
         self.load_sales_returns()
 
     def load_sales_returns(self):
         query = """
             SELECT sr.id, sr.date, b.name as branch_name, sr.amount, sr.vat_amount,
-                   sr.refund_method, sr.notes, sr.journal_entry_id
+                   sr.refund_method, sr.notes, sr.journal_entry_id, sr.voided_at, sr.void_reason
             FROM sales_returns sr
             JOIN branches b ON sr.branch_id = b.id
             {branch_filter}
@@ -406,7 +415,14 @@ class SalesEntryModule(QWidget):
             self.returns_table.setItem(row, 1, QTableWidgetItem(r["branch_name"]))
             self.returns_table.setItem(row, 2, money_item(r["amount"], bold=True))
             self.returns_table.setItem(row, 3, money_item(r["vat_amount"]))
-            self.returns_table.setItem(row, 4, QTableWidgetItem(method_labels.get(r["refund_method"], r["refund_method"])))
+            method_text = method_labels.get(r["refund_method"], r["refund_method"])
+            if r["voided_at"]:
+                method_item = QTableWidgetItem(f"ملغى ⛔ ({method_text})")
+                method_item.setToolTip(r["void_reason"] or "")
+                method_item.setForeground(Qt.GlobalColor.red)
+            else:
+                method_item = QTableWidgetItem(method_text)
+            self.returns_table.setItem(row, 4, method_item)
             self.returns_table.setItem(row, 5, QTableWidgetItem(r["notes"] or ""))
         fit_table_height(self.returns_table)
 
