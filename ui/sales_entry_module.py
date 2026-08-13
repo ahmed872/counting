@@ -374,9 +374,14 @@ class SalesEntryModule(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.db.execute_query("DELETE FROM sales_returns WHERE id = ?", (return_id,))
-        if entry_id:
-            self.db.delete_journal_entry(entry_id)
+        # One transaction: deleting the return row and reversing its journal
+        # entry as two separate commits could leave a crash between them with
+        # the return gone from this list while its debit/credit still sat in
+        # the ledger - the same gap clear_day() below was already fixed for.
+        with self.db.transaction() as cursor:
+            cursor.execute("DELETE FROM sales_returns WHERE id = ?", (return_id,))
+            if entry_id:
+                self.db.delete_journal_entry_on_cursor(cursor, entry_id)
         QMessageBox.information(self, "تم", "تم حذف المرتجع وقيده المحاسبي")
         self.load_sales_returns()
 

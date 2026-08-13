@@ -1296,6 +1296,67 @@ def main():
     check("a sales return reduces revenue and deleting it reverses cleanly",
           sales_returns_reduce_revenue_and_reverse_cleanly)
 
+    def deleting_a_sales_return_rolls_back_completely_on_a_failure():
+        """delete_selected_return() used to delete the sales_returns row and
+        reverse its journal entry as two separate commits - a failure
+        between them could leave the return gone from this screen while its
+        debit/credit stayed sitting in the trial balance. Forces the
+        failure while reversing the journal entry, after the return row is
+        already deleted inside the same transaction, and confirms the whole
+        delete rolls back together."""
+        def net_revenue():
+            return db.fetch_one(
+                "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
+                "WHERE account_code='4000'")["c"]
+
+        goto("sales")
+        sales = window.sales
+        before = net_revenue()
+        sales.return_method_input.setCurrentIndex(sales.return_method_input.findData("Cash"))
+        sales.return_amount_input.setText("115")
+        sales.return_notes_input.setText("اختبار تراجع الحذف")
+        sales.save_sales_return()
+
+        row = db.fetch_one(
+            "SELECT id, journal_entry_id FROM sales_returns ORDER BY id DESC LIMIT 1")
+        return_id, entry_id = row["id"], row["journal_entry_id"]
+        after_return = net_revenue()
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure while reversing the journal entry")
+
+        original = db.delete_journal_entry_on_cursor
+        db.delete_journal_entry_on_cursor = boom
+        try:
+            sales.returns_table.setCurrentCell(0, 0)
+            try:
+                sales.delete_selected_return()
+                raise AssertionError("delete_selected_return did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.delete_journal_entry_on_cursor = original
+
+        assert db.fetch_one("SELECT COUNT(*) c FROM sales_returns WHERE id = ?",
+                             (return_id,))["c"] == 1, \
+            "the sales_returns row was removed despite the journal-reversal failure"
+        assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries WHERE id = ?",
+                             (entry_id,))["c"] == 1, \
+            "the journal entry was removed despite the simulated failure - it should not have been touched"
+        assert abs(net_revenue() - after_return) < 0.01, \
+            "revenue moved even though the failed delete should have changed nothing"
+
+        # The real path must still work afterwards.
+        sales.returns_table.setCurrentCell(0, 0)
+        sales.delete_selected_return()
+        assert db.fetch_one("SELECT COUNT(*) c FROM sales_returns WHERE id = ?",
+                             (return_id,))["c"] == 0
+        assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries WHERE id = ?",
+                             (entry_id,))["c"] == 0
+        assert abs(net_revenue() - before) < 0.01
+    check("a failure while reversing the journal entry rolls back deleting a sales return completely",
+          deleting_a_sales_return_rolls_back_completely_on_a_failure)
+
     def purchase_return_can_be_deleted_and_reverses_its_entry():
         """Purchase returns had no delete at all - the one correction flow
         every other screen in the app already has."""
@@ -1330,6 +1391,64 @@ def main():
     check("a purchase return can be deleted and reverses its own entry",
           purchase_return_can_be_deleted_and_reverses_its_entry)
 
+    def deleting_a_purchase_return_rolls_back_completely_on_a_failure():
+        """Same gap as the sales-return delete above, in purchase_module.py's
+        delete_selected_return(): the purchase_returns row and its journal
+        reversal used to be two separate commits. Forces the failure while
+        reversing the journal entry and confirms both halves survive
+        together."""
+        def inventory_balance():
+            return db.fetch_one(
+                "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
+                "WHERE account_code='1100'")["c"]
+
+        goto("purchases")
+        pur = window.purchases
+        before = inventory_balance()
+        i = pur.return_category_input.findData("raw_material")
+        pur.return_category_input.setCurrentIndex(i)
+        pur.return_amount_input.setText("80")
+        pur.return_method_input.setCurrentIndex(pur.return_method_input.findData("Cash"))
+        pur.save_purchase_return()
+
+        row = db.fetch_one(
+            "SELECT id, journal_entry_id FROM purchase_returns ORDER BY id DESC LIMIT 1")
+        return_id, entry_id = row["id"], row["journal_entry_id"]
+        after_return = inventory_balance()
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure while reversing the journal entry")
+
+        original = db.delete_journal_entry_on_cursor
+        db.delete_journal_entry_on_cursor = boom
+        try:
+            pur.returns_table.setCurrentCell(0, 0)
+            try:
+                pur.delete_selected_return()
+                raise AssertionError("delete_selected_return did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.delete_journal_entry_on_cursor = original
+
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchase_returns WHERE id = ?",
+                             (return_id,))["c"] == 1, \
+            "the purchase_returns row was removed despite the journal-reversal failure"
+        assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries WHERE id = ?",
+                             (entry_id,))["c"] == 1, \
+            "the journal entry was removed despite the simulated failure - it should not have been touched"
+        assert abs(inventory_balance() - after_return) < 0.01
+
+        pur.returns_table.setCurrentCell(0, 0)
+        pur.delete_selected_return()
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchase_returns WHERE id = ?",
+                             (return_id,))["c"] == 0
+        assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries WHERE id = ?",
+                             (entry_id,))["c"] == 0
+        assert abs(inventory_balance() - before) < 0.01
+    check("a failure while reversing the journal entry rolls back deleting a purchase return completely",
+          deleting_a_purchase_return_rolls_back_completely_on_a_failure)
+
     def opening_balances_fix_negative_cash():
         goto("settings")
         st = window.settings
@@ -1346,6 +1465,77 @@ def main():
             "SELECT COALESCE(SUM(credit)-SUM(debit),0) v FROM journal_items WHERE account_code='3000'")["v"]
         assert abs(capital - 70000) < 0.01, capital
     check("opening balances lift assets positive and can be corrected", opening_balances_fix_negative_cash)
+
+    def correcting_opening_balances_rolls_back_completely_on_a_failure():
+        """save_opening_balances() used to reverse the old opening-balance
+        entry and post the new one as two separate commits - a failure
+        between them could leave the old entry gone from the ledger with no
+        new one to replace it, silently unbalancing the balance sheet until
+        someone noticed and re-entered it by hand. Forces the failure while
+        reversing the old entry and confirms nothing changes: the old entry,
+        the settings row pointing at it, and the balance sheet all survive
+        exactly as they were."""
+        goto("settings")
+        st = window.settings
+        before_entry_id = db.get_setting("opening_balance_entry_id")
+        assert before_entry_id, "test setup needs an existing opening-balance entry to fail on"
+        before_capital = db.fetch_one(
+            "SELECT COALESCE(SUM(credit)-SUM(debit),0) v FROM journal_items "
+            "WHERE account_code='3000'")["v"]
+        # Restored at the end so later tests (which depend on the capital
+        # figure set up by opening_balances_fix_negative_cash above) see the
+        # books exactly as this test found them.
+        original_cash, original_bank, original_inventory = (
+            st.opening_cash.text(), st.opening_bank.text(), st.opening_inventory.text())
+
+        st.opening_cash.setText("12345")
+        st.opening_bank.setText("0")
+        st.opening_inventory.setText("0")
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure while reversing the old opening-balance entry")
+
+        original = db.delete_journal_entry_on_cursor
+        db.delete_journal_entry_on_cursor = boom
+        try:
+            try:
+                st.save_opening_balances()
+                raise AssertionError("save_opening_balances did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.delete_journal_entry_on_cursor = original
+
+        assert db.get_setting("opening_balance_entry_id") == before_entry_id, \
+            "the opening-balance setting changed despite the simulated failure"
+        assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries WHERE id = ?",
+                             (before_entry_id,))["c"] == 1, \
+            "the old opening-balance entry was removed despite the simulated failure"
+        after_capital = db.fetch_one(
+            "SELECT COALESCE(SUM(credit)-SUM(debit),0) v FROM journal_items "
+            "WHERE account_code='3000'")["v"]
+        assert abs(after_capital - before_capital) < 0.01, \
+            "capital moved even though the failed correction should have changed nothing"
+
+        try:
+            # The real path must still work afterwards.
+            st.save_opening_balances()
+            new_entry_id = db.get_setting("opening_balance_entry_id")
+            assert new_entry_id != before_entry_id
+            assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries WHERE id = ?",
+                                 (before_entry_id,))["c"] == 0
+        finally:
+            st.opening_cash.setText(original_cash)
+            st.opening_bank.setText(original_bank)
+            st.opening_inventory.setText(original_inventory)
+            st.save_opening_balances()
+            restored_capital = db.fetch_one(
+                "SELECT COALESCE(SUM(credit)-SUM(debit),0) v FROM journal_items "
+                "WHERE account_code='3000'")["v"]
+            assert abs(restored_capital - before_capital) < 0.01, \
+                "failed to restore the opening balance capital for later tests"
+    check("a failure while correcting opening balances rolls back completely, not partially",
+          correcting_opening_balances_rolls_back_completely_on_a_failure)
 
     def deleting_a_purchase_reverses_its_entry():
         goto("purchases")
@@ -1364,6 +1554,60 @@ def main():
             "SELECT COALESCE(SUM(debit)-SUM(credit),0) v FROM journal_items WHERE account_code='5200'")["v"]
         assert abs((before - after) - 999) < 0.01, f"{before} -> {after}"
     check("deleting a purchase also reverses its journal entry", deleting_a_purchase_reverses_its_entry)
+
+    def deleting_a_purchase_rolls_back_completely_on_a_failure():
+        """delete_selected_purchase() used to delete the purchases row and
+        reverse its journal entry as two separate commits - a failure
+        between them could leave the invoice gone from this screen while
+        its debit/credit stayed sitting in the trial balance, explaining
+        money nothing on this screen accounts for. Forces the failure while
+        reversing the journal entry, after the purchase row is already
+        deleted inside the same transaction, and confirms the whole delete
+        rolls back together."""
+        goto("purchases")
+        p = window.purchases
+        p.category_input.setCurrentIndex(p.category_input.findData("operating_expense"))
+        p.supplier_input.setCurrentIndex(0)
+        p.description_input.setText("اختبار تراجع الحذف")
+        p.amount_input.setText("321")
+        p.payment_status.setCurrentIndex(p.payment_status.findData("Cash"))
+        p.save_purchase()
+
+        row = db.fetch_one(
+            "SELECT id, journal_entry_id FROM purchases ORDER BY id DESC LIMIT 1")
+        purchase_id, entry_id = row["id"], row["journal_entry_id"]
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated failure while reversing the journal entry")
+
+        original = db.delete_journal_entry_on_cursor
+        db.delete_journal_entry_on_cursor = boom
+        try:
+            p.table.setCurrentCell(0, 0)
+            try:
+                p.delete_selected_purchase()
+                raise AssertionError("delete_selected_purchase did not propagate the simulated failure")
+            except RuntimeError:
+                pass
+        finally:
+            db.delete_journal_entry_on_cursor = original
+
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchases WHERE id = ?",
+                             (purchase_id,))["c"] == 1, \
+            "the purchase row was removed despite the journal-reversal failure"
+        assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries WHERE id = ?",
+                             (entry_id,))["c"] == 1, \
+            "the journal entry was removed despite the simulated failure - it should not have been touched"
+
+        # The real path must still work afterwards.
+        p.table.setCurrentCell(0, 0)
+        p.delete_selected_purchase()
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchases WHERE id = ?",
+                             (purchase_id,))["c"] == 0
+        assert db.fetch_one("SELECT COUNT(*) c FROM journal_entries WHERE id = ?",
+                             (entry_id,))["c"] == 0
+    check("a failure while reversing the journal entry rolls back deleting a purchase completely",
+          deleting_a_purchase_rolls_back_completely_on_a_failure)
 
     def unbalanced_journal_entries_are_refused():
         """Nothing previously stopped a caller with a mistake in it from

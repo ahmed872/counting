@@ -308,7 +308,6 @@ class SettingsModule(QWidget):
             )
             if answer != QMessageBox.StandardButton.Yes:
                 return
-            self.db.delete_journal_entry(int(existing))
 
         # Assets in, capital as the balancing credit.
         items = []
@@ -321,13 +320,29 @@ class SettingsModule(QWidget):
         items.append({'account_code': '3000', 'debit': 0, 'credit': total})
 
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        entry_id = self.db.add_journal_entry(
-            timestamp, "الأرصدة الافتتاحية للمنشأة", None, items
-        )
-        self.db.set_setting(OPENING_ENTRY_KEY, entry_id)
-        self.db.set_setting("opening_cash", cash)
-        self.db.set_setting("opening_bank", bank)
-        self.db.set_setting("opening_inventory", inventory)
+        # One transaction: reversing the old entry and posting the new one as
+        # two separate commits could leave a crash between them with the old
+        # opening balance gone from the ledger and no new one to replace it -
+        # a balance sheet that silently stops balancing until someone notices
+        # and re-enters it by hand.
+        with self.db.transaction() as cursor:
+            if existing:
+                self.db.delete_journal_entry_on_cursor(cursor, int(existing))
+            entry_id = self.db.insert_journal_entry(
+                cursor, timestamp, "الأرصدة الافتتاحية للمنشأة", None, items
+            )
+            cursor.execute(
+                "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (OPENING_ENTRY_KEY, str(entry_id)),
+            )
+            for key, value in (("opening_cash", cash), ("opening_bank", bank),
+                               ("opening_inventory", inventory)):
+                cursor.execute(
+                    "INSERT INTO app_settings (key, value) VALUES (?, ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, str(value)),
+                )
 
         QMessageBox.information(self, "تم", "تم تسجيل الأرصدة الافتتاحية ورأس المال")
         self.load_opening()

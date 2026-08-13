@@ -167,8 +167,14 @@ class PurchaseModule(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.db.execute_query("DELETE FROM purchases WHERE id = ?", (purchase_id,))
-        self.db.delete_journal_entry(entry_id)
+        # One transaction: deleting the purchase row and reversing its journal
+        # entry as two separate commits could leave a crash between them with
+        # the invoice gone from the list while its debit/credit still sat in
+        # the ledger - the exact failure mode already fixed for clear_day() in
+        # sales_entry_module.py, missed here.
+        with self.db.transaction() as cursor:
+            cursor.execute("DELETE FROM purchases WHERE id = ?", (purchase_id,))
+            self.db.delete_journal_entry_on_cursor(cursor, entry_id)
         QMessageBox.information(self, "تم", "تم حذف الفاتورة وقيدها المحاسبي")
         self.load_purchases()
 
@@ -451,9 +457,14 @@ class PurchaseModule(QWidget):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-        self.db.execute_query("DELETE FROM purchase_returns WHERE id = ?", (return_id,))
-        if entry_id:
-            self.db.delete_journal_entry(entry_id)
+        # Same atomicity gap as delete_selected_purchase above: without one
+        # shared transaction, a crash between the two deletes could leave the
+        # return gone from this list while its journal entry - and the money
+        # it moved - stayed behind in the ledger.
+        with self.db.transaction() as cursor:
+            cursor.execute("DELETE FROM purchase_returns WHERE id = ?", (return_id,))
+            if entry_id:
+                self.db.delete_journal_entry_on_cursor(cursor, entry_id)
         QMessageBox.information(self, "تم", "تم حذف المرتجع وقيده المحاسبي")
         self.load_purchase_returns()
 
