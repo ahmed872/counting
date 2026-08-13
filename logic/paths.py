@@ -54,6 +54,16 @@ def database_path():
     return os.path.join(data_dir(), DB_FILE_NAME)
 
 
+def log_path():
+    """Where crash/error logs are written (P2). Same folder as the
+    database - already proven writable and already the one place the
+    customer is told to look ("افتح المجلد وابعتلي...") when something
+    needs to be sent back to whoever supports the program."""
+    folder = os.path.join(data_dir(), "logs")
+    os.makedirs(folder, exist_ok=True)
+    return os.path.join(folder, "app.log")
+
+
 def manual_path():
     """The manual, at a path that outlives the program.
 

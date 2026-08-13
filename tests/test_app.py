@@ -3978,6 +3978,54 @@ def main():
     check("the manual is readable and the build cannot replace it",
           the_manual_is_readable)
 
+    def uncaught_exceptions_are_logged_with_a_friendly_message_instead_of_vanishing():
+        """P2: before this, an uncaught exception just made the window
+        disappear - nothing for the customer to describe, nothing for
+        whoever supports the program to go on. Now it is written to a
+        real log file with its traceback, and the customer sees a message
+        naming where that file is instead of the program silently dying."""
+        import logging
+        from main import setup_logging
+        from logic.paths import log_path
+
+        logger = setup_logging()
+        # Idempotent: calling it again (as every earlier check in this
+        # file effectively already has, indirectly, by importing main) must
+        # not stack up a second handler and therefore a second copy of
+        # every log line.
+        setup_logging()
+        assert len(logger.handlers) == 1, \
+            f"setup_logging() is not idempotent - {len(logger.handlers)} handlers attached"
+
+        try:
+            raise ValueError("simulated crash for the P2 logging test")
+        except ValueError:
+            exc_info = sys.exc_info()
+
+        original_critical = QMessageBox.critical
+        shown = []
+        QMessageBox.critical = staticmethod(
+            lambda *a, **k: shown.append(a) or QMessageBox.StandardButton.Ok)
+        try:
+            sys.excepthook(*exc_info)
+        finally:
+            QMessageBox.critical = original_critical
+
+        assert shown, "no message box was shown for the uncaught exception"
+        assert "خطأ" in shown[0][2], shown[0]
+
+        for handler in logger.handlers:
+            handler.flush()
+        with open(log_path(), encoding="utf-8") as f:
+            content = f.read()
+        assert "simulated crash for the P2 logging test" in content, \
+            "the exception was not written to the log file"
+        assert "ValueError" in content
+        assert "Traceback" in content, "the log entry has no traceback"
+    check("an uncaught exception is written to the log file with its traceback, "
+          "and shown to the user as a friendly message instead of vanishing",
+          uncaught_exceptions_are_logged_with_a_friendly_message_instead_of_vanishing)
+
     def packaging_bundles_every_data_file():
         """Files loaded through resource_path() are data, not code, so
         PyInstaller cannot discover them by following imports. Anything missing
