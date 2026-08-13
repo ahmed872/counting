@@ -64,6 +64,7 @@ class SettingsModule(QWidget):
         # cover.
         if self.current_user.get("role") == ROLE_ADMIN:
             layout.addWidget(self.build_users_box())
+            layout.addWidget(self.build_audit_log_box())
         layout.addStretch()
 
         self.load_all()
@@ -139,6 +140,56 @@ class SettingsModule(QWidget):
 
         return box
 
+    def build_audit_log_box(self):
+        """P1-1: read-only, admin-only. Not exposed anywhere a row could be
+        edited or deleted from the UI - an audit trail that can be quietly
+        edited from inside the same app it is meant to be watching is not
+        an audit trail."""
+        box = QGroupBox("سجل التدقيق (آخر العمليات الحساسة)")
+        outer = QVBoxLayout(box)
+        note = QLabel(
+            "سجل بمن قام بماذا ومتى - تسجيل الدخول، إدارة المستخدمين، النسخ الاحتياطي "
+            "واستعادته. سجل للقراءة فقط، لا يمكن تعديله من داخل البرنامج."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#64748b;")
+        outer.addWidget(note)
+
+        self.audit_table = QTableWidget()
+        self.audit_table.setColumnCount(4)
+        self.audit_table.setHorizontalHeaderLabels(["الوقت", "المستخدم", "العملية", "التفاصيل"])
+        self.audit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.audit_table.verticalHeader().setVisible(False)
+        self.audit_table.setAlternatingRowColors(True)
+        self.audit_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.audit_table.setMinimumHeight(160)
+        outer.addWidget(self.audit_table)
+        return box
+
+    AUDIT_ACTION_LABELS = {
+        "login_success": "تسجيل دخول ناجح",
+        "login_failed": "محاولة دخول فاشلة",
+        "user_created": "إنشاء مستخدم",
+        "user_activated": "تفعيل مستخدم",
+        "user_deactivated": "تعطيل مستخدم",
+        "password_changed": "تغيير كلمة مرور",
+        "backup_created": "أخذ نسخة احتياطية",
+        "database_restored": "استعادة نسخة احتياطية",
+    }
+
+    def load_audit_log(self):
+        rows = self.auth.audit.recent(300)
+        self.audit_table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.audit_table.setItem(i, 0, QTableWidgetItem(str(r["created_at"] or "")))
+            self.audit_table.setItem(i, 1, QTableWidgetItem(r["username"] or "—"))
+            self.audit_table.setItem(
+                i, 2, QTableWidgetItem(self.AUDIT_ACTION_LABELS.get(r["action"], r["action"])))
+            details = r["entity_type"] or ""
+            if r["entity_id"]:
+                details = f"{details} #{r['entity_id']}".strip()
+            self.audit_table.setItem(i, 3, QTableWidgetItem(details))
+
     def _update_new_branch_visibility(self):
         is_cashier = self.new_role.currentData() == ROLE_CASHIER
         self.new_branch.setVisible(is_cashier)
@@ -154,8 +205,11 @@ class SettingsModule(QWidget):
             # A default account only ever needs to work once - the same
             # forced-change-on-first-login flow the two seed admins get.
             self.auth.create_user(username, password, role, display_name,
-                                   must_change_password=True, branch_id=branch_id)
-        except ValueError as exc:
+                                   must_change_password=True, branch_id=branch_id,
+                                   actor_user_id=self.current_user.get("id"),
+                                   actor_username=self.current_user.get("username"),
+                                   actor_role=self.current_user.get("role"))
+        except (ValueError, PermissionError) as exc:
             QMessageBox.warning(self, "تنبيه", str(exc))
             return
         QMessageBox.information(
@@ -184,7 +238,14 @@ class SettingsModule(QWidget):
             QLineEdit.EchoMode.Password)
         if not ok or not new_password:
             return
-        self.auth.set_password(user_id, new_password, must_change_password=True)
+        try:
+            self.auth.set_password(user_id, new_password, must_change_password=True,
+                                    actor_user_id=self.current_user.get("id"),
+                                    actor_username=self.current_user.get("username"),
+                                    actor_role=self.current_user.get("role"))
+        except PermissionError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
+            return
         QMessageBox.information(self, "تم", "تم إعادة تعيين كلمة المرور.")
 
     def toggle_selected_active(self):
@@ -193,7 +254,14 @@ class SettingsModule(QWidget):
         if user_id is None:
             return
         currently_active = self.users_table.item(row, 4).data(Qt.ItemDataRole.UserRole)
-        self.auth.set_active(user_id, not currently_active)
+        try:
+            self.auth.set_active(user_id, not currently_active,
+                                  actor_user_id=self.current_user.get("id"),
+                                  actor_username=self.current_user.get("username"),
+                                  actor_role=self.current_user.get("role"))
+        except PermissionError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
+            return
         self.load_users()
 
     def load_users(self):
@@ -383,7 +451,9 @@ class SettingsModule(QWidget):
         note = QLabel(
             "كل البيانات موجودة في ملف واحد. خُذ نسخة احتياطية مرة كل شهر على الأقل "
             "(مثلاً أول كل شهر) واحفظها على فلاشة أو على الإيميل، حتى لا تفقد بياناتك "
-            "لو تعطّل الجهاز."
+            "لو تعطّل الجهاز.\n"
+            "تنبيه: هذا الملف يحتوي على كل بياناتك المالية والرواتب - لا يُرسل إلا لجهة "
+            "تثق بها، وبقناة آمنة (لا يُرسل على واتساب أو بالبريد العادي بلا حماية)."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#64748b;")
@@ -473,7 +543,7 @@ class SettingsModule(QWidget):
         key_label = QLabel("مفتاح التفعيل:")
         key_label.setStyleSheet("font-weight:700; color:#334155;")
         self.licence_key_input = QLineEdit()
-        self.licence_key_input.setPlaceholderText("XXXX-XXXX-XXXX-XXXX")
+        self.licence_key_input.setPlaceholderText("الصق مفتاح التفعيل كاملاً هنا")
         self.licence_key_input.returnPressed.connect(self.apply_licence_key)
         self.activate_btn = QPushButton("تفعيل")
         self.activate_btn.clicked.connect(self.apply_licence_key)
@@ -546,6 +616,8 @@ class SettingsModule(QWidget):
                     dest.close()
             finally:
                 source.close()
+            self.auth.audit.log("backup_created", user_id=self.current_user.get("id"),
+                                 username=self.current_user.get("username"))
             QMessageBox.information(self, "تم", f"تم حفظ النسخة الاحتياطية في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
@@ -554,6 +626,17 @@ class SettingsModule(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "اختر نسخة احتياطية", "", "قاعدة بيانات (*.db)")
         if not path:
             return
+
+        # P1-5: a garbage file, an unrelated SQLite database, or a truncated/
+        # corrupt one must never get the chance to touch the live database -
+        # checked and rejected before the confirmation dialog even appears,
+        # let alone before anything is overwritten.
+        from database.db_manager import validate_database_file
+        ok, error = validate_database_file(path)
+        if not ok:
+            QMessageBox.critical(self, "نسخة غير صالحة", error)
+            return
+
         answer = QMessageBox.question(
             self, "تأكيد الاستعادة",
             "سيتم استبدال كل البيانات الحالية ببيانات النسخة المختارة.\n"
@@ -565,7 +648,32 @@ class SettingsModule(QWidget):
             safety = f"{self.db.db_path}.before-restore-{datetime.now().strftime('%Y%m%d%H%M%S')}"
             if os.path.exists(self.db.db_path):
                 shutil.copyfile(self.db.db_path, safety)
-            shutil.copyfile(path, self.db.db_path)
+
+            # Copied to a temporary file next to the live one, then swapped
+            # in with a single atomic rename - a crash or power loss mid-copy
+            # damages only the temporary file, never the live database that
+            # was actually in use a moment ago.
+            tmp_path = self.db.db_path + ".restoring-tmp"
+            shutil.copyfile(path, tmp_path)
+            os.replace(tmp_path, self.db.db_path)
+
+            integrity = self.db.check_integrity()
+            violations = self.db.check_foreign_keys()
+            if integrity != "ok" or violations:
+                QMessageBox.warning(
+                    self, "تحذير",
+                    "تمت الاستعادة، لكن فُحصت القاعدة الجديدة ووُجدت مشاكل فيها "
+                    f"({integrity}, {len(violations)} مخالفة ترابط). "
+                    "النسخة السابقة محفوظة كنسخة أمان بجانب ملف القاعدة.",
+                )
+
+            # Written to the just-restored database, not the one it
+            # replaced - it is the live database going forward, and "this
+            # file was restored from a backup, and when" belongs in its own
+            # history.
+            self.auth.audit.log("database_restored", user_id=self.current_user.get("id"),
+                                 username=self.current_user.get("username"),
+                                 after={"restored_from": path})
             QMessageBox.information(
                 self, "تم",
                 "تمت الاستعادة بنجاح.\nأغلق البرنامج وافتحه من جديد لعرض البيانات المستعادة.",
@@ -601,6 +709,7 @@ class SettingsModule(QWidget):
         self.load_branches()
         if self.current_user.get("role") == ROLE_ADMIN:
             self.load_users()
+            self.load_audit_log()
 
     def refresh_on_show(self):
         self.load_all()

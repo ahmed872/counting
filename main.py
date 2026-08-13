@@ -139,6 +139,56 @@ def show_expiry_notifications(db):
     box.exec()
 
 
+def setup_logging():
+    """P2: a plain, size-capped log file, and a hook that catches whatever
+    Python itself does not - an uncaught exception that would otherwise
+    just make the window disappear with nothing for the customer to
+    describe and nothing for whoever supports the program to go on.
+
+    Deliberately never logs a password, a licence key, or a row of
+    business data - only exception types, tracebacks, and short lifecycle
+    lines ("started", "logged in as <username>", "closed"). A traceback
+    can legitimately contain a value that happened to be in a local
+    variable at the point of failure, so this is a best-effort boundary,
+    not a guarantee for every possible exception message - but nothing
+    here deliberately logs a secret the way the old debug prints this
+    session started from sometimes did.
+    """
+    import logging
+    from logging.handlers import RotatingFileHandler
+    from logic.paths import log_path
+
+    logger = logging.getLogger("restaurant_erp")
+    logger.setLevel(logging.INFO)
+    # Idempotent - main() can safely be called more than once (as the test
+    # suite does, constructing the app repeatedly) without stacking up a
+    # new handler, and therefore a new open file descriptor, on every call.
+    if not logger.handlers:
+        handler = RotatingFileHandler(
+            log_path(), maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+        handler.setFormatter(logging.Formatter(
+            "%(asctime)s %(levelname)s %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+        logger.addHandler(handler)
+
+    def log_uncaught_exception(exc_type, exc_value, exc_traceback):
+        if issubclass(exc_type, KeyboardInterrupt):
+            sys.__excepthook__(exc_type, exc_value, exc_traceback)
+            return
+        logger.error("Uncaught exception", exc_info=(exc_type, exc_value, exc_traceback))
+        try:
+            QMessageBox.critical(
+                None, "حدث خطأ غير متوقع",
+                "حدث خطأ غير متوقع وسيُغلق البرنامج.\n\n"
+                "بياناتك في قاعدة البيانات لم تتأثر. تفاصيل الخطأ محفوظة في ملف "
+                f"سجل يمكن إرساله لمزوّد البرنامج:\n{log_path()}",
+            )
+        except Exception:
+            pass   # the message box itself failing must never hide the original error
+
+    sys.excepthook = log_uncaught_exception
+    return logger
+
+
 def pin_dpi_policy():
     """Makes window and font sizing consistent across different customer
     machines, rather than however each one's Qt build happens to default.
@@ -163,12 +213,15 @@ def pin_dpi_policy():
 
 
 def main():
-    pin_dpi_policy()
+    logger = setup_logging()
 
     # Order matters: the copy is taken before DBManager exists, because
     # constructing one runs the schema migrations, and a backup taken after
     # those have rewritten the file is not a backup of anything.
-    from logic.upgrade import backup_before_upgrade, record_version
+    from logic.upgrade import backup_before_upgrade, record_version, APP_VERSION
+
+    logger.info("Application starting (version %s)", APP_VERSION)
+    pin_dpi_policy()
 
     path = database_path()
     upgrade_backup = backup_before_upgrade(path)
@@ -190,6 +243,8 @@ def main():
     if login.exec() != login.DialogCode.Accepted or login.authenticated_user is None:
         sys.exit(0)
 
+    logger.info("Logged in as role=%s", login.authenticated_user.get("role"))
+
     window = MainWindow(db, current_user=login.authenticated_user)
     window.set_trial_banner(days_left)
     window.show()
@@ -204,7 +259,9 @@ def main():
 
     show_expiry_notifications(db)
 
-    sys.exit(app.exec())
+    exit_code = app.exec()
+    logger.info("Application closing (exit code %s)", exit_code)
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

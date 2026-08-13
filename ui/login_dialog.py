@@ -235,8 +235,19 @@ class LoginDialog(QDialog):
 
         user = self.auth.authenticate(username, password)
         if user is None:
-            self._show_status(
-                self.login_status, "اسم المستخدم أو كلمة المرور غير صحيحة.", ok=False)
+            # A locked account gets a specific, honest message; a plain
+            # wrong password still shows the deliberately generic one (see
+            # AuthLogic.authenticate) so a login attempt cannot be used to
+            # probe which usernames exist.
+            minutes = self.auth.lockout_status(username)
+            if minutes is not None:
+                self._show_status(
+                    self.login_status,
+                    f"محاولات كثيرة خاطئة. حاول مرة أخرى بعد {minutes} دقيقة تقريباً.",
+                    ok=False)
+            else:
+                self._show_status(
+                    self.login_status, "اسم المستخدم أو كلمة المرور غير صحيحة.", ok=False)
             return
 
         if user["must_change_password"]:

@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QGridLayout,
     QTabWidget,
+    QMessageBox,
 )
 from PyQt6.QtCore import QDate, Qt
 from logic.accounting import AccountingLogic
@@ -86,6 +87,7 @@ class AccountingModule(QWidget):
         tabs = QTabWidget()
         tabs.setDocumentMode(True)
         layout.addWidget(tabs, 1)
+        self.tabs = tabs
 
         tabs.addTab(self.build_trial_balance_tab(), "ميزان المراجعة")
         tabs.addTab(self.build_income_tab(), "قائمة الدخل")
@@ -190,7 +192,83 @@ class AccountingModule(QWidget):
         self.trading_box.setWordWrap(True)
         # No scroll area of its own - see the note in build_income_tab above.
         v.addWidget(self.trading_box)
+
+        close_box = QGroupBox("إقفال المخزون (ترحيل فعلي إلى الحسابات)")
+        close_layout = QVBoxLayout(close_box)
+        close_note = QLabel(
+            "الحساب أعلاه تقديري فقط ولا يُسجَّل في الحسابات. زر الإقفال هنا ينشئ قيدًا "
+            "محاسبيًا فعليًا (مدين تكلفة البضاعة المباعة / دائن المخزون) بالفترة المحددة أعلاه "
+            "ورصيد آخر المدة المُدخل، بحيث يقل رصيد حساب المخزون فعلاً بما تم استهلاكه. "
+            "رصيد أول المدة يُؤخذ تلقائيًا من آخر إقفال سابق، ولا يمكن إقفال نفس الفترة مرتين."
+        )
+        close_note.setWordWrap(True)
+        close_note.setStyleSheet("color:#64748b;")
+        close_layout.addWidget(close_note)
+
+        self.close_period_btn = QPushButton("إقفال هذه الفترة الآن")
+        self.close_period_btn.clicked.connect(self.close_inventory_period)
+        close_layout.addWidget(self.close_period_btn)
+
+        self.inventory_periods_table = QTableWidget()
+        self.inventory_periods_table.setColumnCount(6)
+        self.inventory_periods_table.setHorizontalHeaderLabels(
+            ["من", "إلى", "أول المدة", "آخر المدة", "تكلفة البضاعة المباعة", "الحالة"])
+        self.inventory_periods_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.inventory_periods_table.verticalHeader().setVisible(False)
+        self.inventory_periods_table.setAlternatingRowColors(True)
+        self.inventory_periods_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.inventory_periods_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.inventory_periods_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        close_layout.addWidget(self.inventory_periods_table)
+
+        self.reverse_period_btn = QPushButton("عكس الإقفال المحدد (لإعادة فتح الفترة)")
+        self.reverse_period_btn.clicked.connect(self.reverse_selected_inventory_period)
+        close_layout.addWidget(self.reverse_period_btn)
+
+        v.addWidget(close_box)
         return widget
+
+    def close_inventory_period(self):
+        start_date, end_date = self.resolve_period()
+        closing = self.closing_inventory_input.value()
+        try:
+            self.accounting.close_inventory_period(start_date, end_date, closing)
+        except ValueError as e:
+            QMessageBox.warning(self, "تعذر الإقفال", str(e))
+            return
+        QMessageBox.information(self, "تم", "تم إقفال الفترة وترحيل تكلفة البضاعة المباعة إلى الحسابات")
+        self.refresh_inventory_periods()
+        self.refresh_data()
+
+    def reverse_selected_inventory_period(self):
+        rows = self.inventory_periods_table.selectionModel().selectedRows()
+        if not rows:
+            QMessageBox.warning(self, "لم يتم التحديد", "يرجى تحديد إقفال من الجدول أولاً")
+            return
+        period_id = self.inventory_periods_table.item(rows[0].row(), 0).data(Qt.ItemDataRole.UserRole)
+        try:
+            self.accounting.reverse_inventory_period(period_id)
+        except ValueError as e:
+            QMessageBox.warning(self, "تعذر العكس", str(e))
+            return
+        QMessageBox.information(self, "تم", "تم عكس الإقفال، والفترة متاحة الآن لإعادة الإقفال بأرقام مصححة")
+        self.refresh_inventory_periods()
+        self.refresh_data()
+
+    def refresh_inventory_periods(self):
+        periods = self.accounting.get_inventory_periods()
+        self.inventory_periods_table.setRowCount(len(periods))
+        for row, p in enumerate(periods):
+            status = "تم عكسه" if p['reversed_at'] else "مرحّل"
+            from_item = QTableWidgetItem(p['start_date'])
+            from_item.setData(Qt.ItemDataRole.UserRole, p['id'])
+            self.inventory_periods_table.setItem(row, 0, from_item)
+            self.inventory_periods_table.setItem(row, 1, QTableWidgetItem(p['end_date']))
+            self.inventory_periods_table.setItem(row, 2, money_item(p['opening_inventory']))
+            self.inventory_periods_table.setItem(row, 3, money_item(p['closing_inventory']))
+            self.inventory_periods_table.setItem(row, 4, money_item(p['cogs']))
+            self.inventory_periods_table.setItem(row, 5, QTableWidgetItem(status))
+        fit_table_height(self.inventory_periods_table)
 
     def build_balance_sheet_tab(self):
         widget = QWidget()
@@ -360,6 +438,7 @@ class AccountingModule(QWidget):
         fit_table_height(self.table)
 
         self.refresh_trading_account()
+        self.refresh_inventory_periods()
 
     def refresh_balance_sheet_table(self):
         rows = self.accounting.get_balance_sheet_detail()

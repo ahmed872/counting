@@ -1,11 +1,17 @@
+from logic.money import round_money
+
 
 class AccountingLogic:
     def __init__(self, db_manager):
         self.db = db_manager
 
     def calculate_vat(self, amount, rate=0.15):
-        vat = amount * rate
-        total = amount + vat
+        """P1-3: rounded once, here, at the one place VAT is computed
+        forward from a pre-tax amount - not left to whichever screen
+        calls this to remember to round its own result before storing or
+        displaying it."""
+        vat = round_money(amount * rate)
+        total = round_money(amount + vat)
         return vat, total
 
     def get_account_balance(self, account_code):
@@ -54,9 +60,12 @@ class AccountingLogic:
 
     def reverse_vat(self, total_amount, rate=0.15):
         """Given a VAT-inclusive total (e.g. the actual cash collected end-of-day),
-        back out the pre-tax amount and the VAT portion."""
-        amount = total_amount / (1 + rate)
-        vat = total_amount - amount
+        back out the pre-tax amount and the VAT portion. Rounded once, here
+        (P1-3) - vat is computed as the remainder against the rounded
+        pre-tax amount, not independently, so amount + vat always equals
+        total_amount to the halala with no separate rounding to reconcile."""
+        amount = round_money(total_amount / (1 + rate))
+        vat = round_money(total_amount - amount)
         return amount, vat
 
     def get_trial_balance(self):
@@ -212,22 +221,24 @@ class AccountingLogic:
         = cost of goods available for sale; minus closing inventory = cost of goods sold."""
         purchases = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM purchases
-               WHERE category = 'raw_material' AND date(date) BETWEEN date(?) AND date(?)""",
+               WHERE category = 'raw_material' AND voided_at IS NULL
+                 AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
         purchase_related_expenses = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM purchases
-               WHERE category = 'purchase_expense' AND date(date) BETWEEN date(?) AND date(?)""",
+               WHERE category = 'purchase_expense' AND voided_at IS NULL
+                 AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
         purchase_returns = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM purchase_returns
-               WHERE date(date) BETWEEN date(?) AND date(?)""",
+               WHERE voided_at IS NULL AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
         sales_returns = self.db.fetch_one(
             """SELECT COALESCE(SUM(amount), 0) as v FROM sales_returns
-               WHERE date(date) BETWEEN date(?) AND date(?)""",
+               WHERE voided_at IS NULL AND date(date) BETWEEN date(?) AND date(?)""",
             (start_date, end_date),
         )['v'] or 0
 
@@ -251,6 +262,158 @@ class AccountingLogic:
             'gross_profit': gross_profit,
         }
 
+    def get_posted_cogs(self, start_date, end_date):
+        """Actual ledger-posted cost of goods sold (account 5000) in a date
+        range - as opposed to get_trading_account()'s live estimate from
+        purchases, this is only ever non-zero where an inventory period has
+        actually been closed and posted. Reconciles by construction: it is
+        the same account the balance sheet's Inventory figure (1100) is the
+        mirror image of."""
+        row = self.db.fetch_one(
+            """SELECT COALESCE(SUM(debit) - SUM(credit), 0) as value
+               FROM journal_items ji
+               JOIN journal_entries je ON ji.entry_id = je.id
+               WHERE ji.account_code = '5000' AND date(je.date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )
+        return row['value'] or 0
+
+    def get_inventory_periods(self):
+        """Every inventory close ever posted, newest first, including
+        reversed ones (kept for audit history rather than deleted)."""
+        return self.db.fetch_all(
+            "SELECT * FROM inventory_periods ORDER BY start_date DESC, id DESC"
+        )
+
+    def _latest_closed_inventory_period(self, before_date):
+        return self.db.fetch_one(
+            """SELECT * FROM inventory_periods
+               WHERE reversed_at IS NULL AND date(end_date) < date(?)
+               ORDER BY date(end_date) DESC, id DESC LIMIT 1""",
+            (before_date,),
+        )
+
+    def close_inventory_period(self, start_date, end_date, closing_inventory,
+                                opening_inventory_override=None, user_id=None):
+        """Posts a real period-close: Dr 5000 (COGS) / Cr 1100 (المخزون) for
+        the raw material actually consumed this period, so the Inventory
+        account finally decreases instead of only ever accumulating every
+        purchase forever (see the long comment on get_financial_summary for
+        why that was silently wrong). opening_inventory is always derived
+        from the immediately preceding closed period's own closing figure -
+        never re-typed by hand - so the chain of periods can never drift out
+        of sync with itself. opening_inventory_override exists only to seed
+        the very first period with whatever physical stock already existed
+        before this feature was ever used; it is rejected once a prior
+        period exists, so it can never silently override real history."""
+        if end_date < start_date:
+            raise ValueError("تاريخ النهاية يجب أن يكون بعد تاريخ البداية")
+
+        overlap = self.db.fetch_one(
+            """SELECT id FROM inventory_periods
+               WHERE reversed_at IS NULL
+                 AND date(start_date) <= date(?) AND date(end_date) >= date(?)""",
+            (end_date, start_date),
+        )
+        if overlap:
+            raise ValueError("هذه الفترة (أو جزء منها) مقفلة بالفعل")
+
+        prior = self._latest_closed_inventory_period(start_date)
+        if prior:
+            if opening_inventory_override is not None:
+                raise ValueError(
+                    "لا يمكن تحديد رصيد افتتاحي يدويًا - يوجد إقفال سابق بالفعل "
+                    "والرصيد الافتتاحي لهذه الفترة هو رصيد إقفال الفترة السابقة"
+                )
+            opening_inventory = prior['closing_inventory']
+        else:
+            opening_inventory = opening_inventory_override or 0
+
+        purchases = self.db.fetch_one(
+            """SELECT COALESCE(SUM(amount), 0) as v FROM purchases
+               WHERE category = 'raw_material' AND voided_at IS NULL
+                 AND date(date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )['v'] or 0
+        returns = self.db.fetch_one(
+            """SELECT COALESCE(SUM(amount), 0) as v FROM purchase_returns
+               WHERE category = 'raw_material' AND voided_at IS NULL
+                 AND date(date) BETWEEN date(?) AND date(?)""",
+            (start_date, end_date),
+        )['v'] or 0
+
+        goods_available = opening_inventory + purchases - returns
+        if closing_inventory > goods_available + 0.01:
+            raise ValueError(
+                f"المخزون الختامي ({closing_inventory:,.2f}) أكبر من إجمالي البضاعة "
+                f"المتاحة للبيع ({goods_available:,.2f}) - راجع الرقم المُدخل"
+            )
+        cogs = round(goods_available - closing_inventory, 2)
+
+        with self.db.transaction() as cursor:
+            entry_id = None
+            if cogs > 0:
+                entry_id = self.db.insert_journal_entry(
+                    cursor, end_date,
+                    f"إقفال مخزون الفترة {start_date} إلى {end_date}",
+                    None,
+                    [
+                        {'account_code': '5000', 'debit': cogs, 'credit': 0},
+                        {'account_code': '1100', 'debit': 0, 'credit': cogs},
+                    ],
+                )
+            cursor.execute(
+                """INSERT INTO inventory_periods
+                   (start_date, end_date, opening_inventory, raw_material_purchases,
+                    raw_material_purchase_returns, closing_inventory, cogs,
+                    journal_entry_id, created_by)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (start_date, end_date, opening_inventory, purchases, returns,
+                 closing_inventory, cogs, entry_id, user_id),
+            )
+            period_id = cursor.lastrowid
+
+        return {
+            'id': period_id, 'start_date': start_date, 'end_date': end_date,
+            'opening_inventory': opening_inventory, 'purchases': purchases,
+            'purchase_returns': returns, 'closing_inventory': closing_inventory,
+            'cogs': cogs, 'journal_entry_id': entry_id,
+        }
+
+    def reverse_inventory_period(self, period_id):
+        """Reopens a posted close: deletes its journal entry and flags the
+        row reversed (kept, not deleted, for audit history) so the period
+        can be re-closed with corrected numbers. Must be done most-recent-
+        first, because every later period's opening_inventory was derived
+        from this one's closing_inventory - reversing out of order would
+        leave a later period's own posted COGS resting on a number that no
+        longer exists."""
+        period = self.db.fetch_one("SELECT * FROM inventory_periods WHERE id = ?", (period_id,))
+        if not period:
+            raise ValueError("لا يوجد إقفال بهذا الرقم")
+        if period['reversed_at']:
+            raise ValueError("هذا الإقفال تم عكسه بالفعل")
+
+        later = self.db.fetch_one(
+            """SELECT id FROM inventory_periods
+               WHERE reversed_at IS NULL AND date(start_date) > date(?)""",
+            (period['end_date'],),
+        )
+        if later:
+            raise ValueError("يجب عكس الإقفالات الأحدث أولاً قبل عكس هذا الإقفال")
+
+        with self.db.transaction() as cursor:
+            # Clear the reference before deleting the entry it points to -
+            # journal_entry_id is a real foreign key, so deleting the
+            # journal_entries row first trips a foreign key violation.
+            cursor.execute(
+                "UPDATE inventory_periods SET reversed_at = CURRENT_TIMESTAMP, "
+                "journal_entry_id = NULL WHERE id = ?",
+                (period_id,),
+            )
+            if period['journal_entry_id']:
+                self.db.delete_journal_entry_on_cursor(cursor, period['journal_entry_id'])
+
     def get_supplier_statement(self, supplier_id):
         """Running ledger for a single supplier: opening balance + purchases (credit) - payments (debit) - purchase returns (debit)."""
         supplier = self.db.fetch_one("SELECT * FROM suppliers WHERE id = ?", (supplier_id,))
@@ -263,7 +426,8 @@ class AccountingLogic:
             entries.append({'date': '', 'type': 'رصيد افتتاحي', 'debit': 0, 'credit': opening_balance})
 
         purchases = self.db.fetch_all(
-            "SELECT date, total_amount FROM purchases WHERE supplier_id = ? AND payment_status = 'Credit' ORDER BY date",
+            "SELECT date, total_amount FROM purchases WHERE supplier_id = ? AND payment_status = 'Credit' "
+            "AND voided_at IS NULL ORDER BY date",
             (supplier_id,),
         )
         for p in purchases:
@@ -278,7 +442,8 @@ class AccountingLogic:
             entries.append({'date': pay['date'], 'type': f"سداد ({method_label})", 'debit': pay['amount'] or 0, 'credit': 0})
 
         returns = self.db.fetch_all(
-            "SELECT date, amount, vat_amount FROM purchase_returns WHERE supplier_id = ? AND refund_method = 'CreditNote' ORDER BY date",
+            "SELECT date, amount, vat_amount FROM purchase_returns WHERE supplier_id = ? "
+            "AND refund_method = 'CreditNote' AND voided_at IS NULL ORDER BY date",
             (supplier_id,),
         )
         for r in returns:
@@ -436,7 +601,7 @@ class AccountingLogic:
                        COALESCE(SUM(p.vat_amount), 0) as vat,
                        COALESCE(SUM(p.total_amount), 0) as total
                 FROM purchases p
-                WHERE date(p.date) BETWEEN date(?) AND date(?){clause}
+                WHERE p.voided_at IS NULL AND date(p.date) BETWEEN date(?) AND date(?){clause}
                 GROUP BY COALESCE(p.category, 'raw_material')""",
             (start_date, end_date) + params,
         )
@@ -456,13 +621,13 @@ class AccountingLogic:
         sales_returns = self.db.fetch_one(
             f"""SELECT COALESCE(SUM(amount), 0) as net, COALESCE(SUM(vat_amount), 0) as vat
                 FROM sales_returns sr
-                WHERE date(sr.date) BETWEEN date(?) AND date(?){sales_clause}""",
+                WHERE sr.voided_at IS NULL AND date(sr.date) BETWEEN date(?) AND date(?){sales_clause}""",
             (start_date, end_date) + sales_params,
         )
         purchase_returns = self.db.fetch_one(
             f"""SELECT COALESCE(SUM(amount), 0) as net, COALESCE(SUM(vat_amount), 0) as vat
                 FROM purchase_returns pr
-                WHERE date(pr.date) BETWEEN date(?) AND date(?){purchase_clause}""",
+                WHERE pr.voided_at IS NULL AND date(pr.date) BETWEEN date(?) AND date(?){purchase_clause}""",
             (start_date, end_date) + purchase_params,
         )
         return {
@@ -521,7 +686,7 @@ class AccountingLogic:
                        COALESCE(SUM(p.amount), 0) as net,
                        COALESCE(SUM(p.vat_amount), 0) as vat
                 FROM purchases p
-                WHERE date(p.date) BETWEEN date(?) AND date(?){purchase_clause}
+                WHERE p.voided_at IS NULL AND date(p.date) BETWEEN date(?) AND date(?){purchase_clause}
                 GROUP BY date(p.date)""",
             (start_date, end_date) + purchase_params,
         )

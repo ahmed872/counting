@@ -20,6 +20,27 @@ MAX_AMOUNT = 10_000_000        # 10 million riyals in a single field
 _ARABIC_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
 
 
+def round_money(value):
+    """P1-3: the one rounding policy every monetary amount in the app goes
+    through - halalas, always round-half-up, computed via Decimal rather
+    than Python's built-in round().
+
+    Python's round() uses round-half-to-even ("banker's rounding") on top
+    of a binary float that frequently cannot represent a decimal amount
+    exactly in the first place - round(2.675, 2) returns 2.67, not 2.68,
+    because 2.675 is actually stored as something microscopically below
+    it. That is invisible on any single number and silently wrong on
+    every accountant's or cashier's expectation of ordinary rounding.
+    Going through str(value) first (not Decimal(value) directly) is what
+    avoids inheriting that same binary imprecision into the Decimal.
+
+    Returns a float, not a Decimal - every caller, every SQLite REAL
+    column, and every existing calculation in this app already expects a
+    plain float; only the rounding step itself needed to change."""
+    from decimal import Decimal, ROUND_HALF_UP
+    return float(Decimal(str(value)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+
+
 def normalise(text):
     """The raw text, with Arabic digits and separators turned into something
     float() understands. Does not validate."""
@@ -64,4 +85,4 @@ def parse_money(text, label="المبلغ", allow_blank=True, allow_zero=True):
 
     # Riyals and halalas. Anything finer is a typo, and unrounded floats
     # accumulate a drift that shows up later as a trial balance off by 0.01.
-    return round(value, 2)
+    return round_money(value)

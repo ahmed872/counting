@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QPushButton, QDateEdit, QLabel, QScrollArea,
-    QTableWidget, QFrame,
+    QTableWidget, QFrame, QInputDialog,
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, QDate
@@ -49,6 +49,11 @@ def silence_dialogs():
     for attr in ("information", "warning", "critical"):
         setattr(QMessageBox, attr, staticmethod(lambda *a, **k: QMessageBox.StandardButton.Ok))
     QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    # QInputDialog.getText() is what void_selected_purchase/return prompts for
+    # a reason with (P1-2) - a real modal .exec() that never returns in a
+    # headless run, hanging the whole suite at the first test that reaches
+    # it. Auto-answered exactly like every QMessageBox above.
+    QInputDialog.getText = staticmethod(lambda *a, **k: ("سبب اختباري", True))
 
 
 def render(widget):
@@ -65,6 +70,22 @@ def render(widget):
 def is_near_white(hex_colour):
     r, g, b = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
     return r > 235 and g > 235 and b > 235
+
+
+# The private half of logic.licence.DEV_PUBLIC_KEY_HEX - safe to commit
+# alongside it for the same reason (explicitly the dev pair, never the pair
+# any real customer's build is made with; see logic/licence.py). Only this
+# test suite signs with it, mirroring what packaging/make_key.py does with
+# the real private key in production.
+_DEV_PRIVATE_KEY_HEX = "a1165f7fbcdbed88831941b4c7d6d03358e1598dffc21d2d126ca3f3856674f6"
+
+
+def _sign_dev_key(device_code):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from logic.licence import _encode, _group, _SIGNATURE_CHARS
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_DEV_PRIVATE_KEY_HEX))
+    signature = private_key.sign(device_code.encode("utf-8"))
+    return _group(_encode(signature, _SIGNATURE_CHARS), size=6)
 
 
 def main():
@@ -192,6 +213,22 @@ def main():
         assert abs(row["absence_deduction"] - 200) < 0.01, row["absence_deduction"]
         assert abs(row["net_salary"] - 5800) < 0.01, row["net_salary"]
     check("one absent day deducts (basic+allowances)/30", absence_deducts_one_day)
+
+    def daily_rate_is_rounded_to_the_halala_not_left_a_repeating_float():
+        """P1-3: a salary of 5000 does not divide evenly by 30 - daily_rate
+        used to be left as the raw repeating float (166.66666666666666),
+        which then propagated into absence_deduction and net_salary."""
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("راتب غير صحيح القسمة", "عامل", 1, 5000, 0))
+        try:
+            rate = window.hr_logic.calculate_daily_rate(5000, 0)
+            assert rate == 166.67, rate
+            assert round(rate, 10) == rate, "daily_rate is still an unrounded repeating float"
+        finally:
+            db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+    check("daily_rate is rounded to the halala, not left as a repeating float",
+          daily_rate_is_rounded_to_the_halala_not_left_a_repeating_float)
 
     def post_payroll_once():
         hr = window.hr
@@ -361,14 +398,76 @@ def main():
         assert remainder["amount"] - remainder["amount_recovered"] > 0
         june = next(p for p in window.hr_logic.get_monthly_payroll(6, 2026) if p["id"] == emp_id)
         assert june["advances_recovered"] > 0, "the remaining debt did not carry into next month"
-        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
-        db.execute_query("DELETE FROM payroll_runs WHERE month=5 AND year=2026 AND "
-                          "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+        # The whole month=5/2026 run, not just this employee's row: its
+        # journal entry is about to be deleted below (delete_journal_
+        # entries_created_after), and leaving other employees' items
+        # pointed at a payroll_runs row whose journal no longer exists
+        # would be exactly the kind of orphan reference P1-8's integrity
+        # suite exists to catch - this test is the only one in the shared
+        # suite that ever posts to this specific month/year, so removing
+        # the whole run here is correct, not just convenient.
+        db.execute_query(
+            "DELETE FROM payroll_run_items WHERE run_id = "
+            "(SELECT id FROM payroll_runs WHERE month=5 AND year=2026)")
+        db.execute_query("DELETE FROM payroll_runs WHERE month=5 AND year=2026")
         db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
         db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
         delete_journal_entries_created_after(journal_marker)
     check("an advance bigger than salary is recovered gradually, never below zero pay",
           advance_bigger_than_salary_never_makes_net_pay_negative)
+
+    def advance_settlement_reconciles_exactly_across_the_runs_that_recover_it():
+        """P0-4 regression: the amount recovered from an advance, summed
+        across however many payroll runs it takes to pay it off, must equal
+        the advance to the riyal - never a fraction left dangling
+        unsettled, never recovered a second time after it is already
+        settled. Uses an advance sized to take exactly two runs to clear."""
+        journal_marker = newest_journal_entry_id()
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("تسوية سلفة", "عامل", 1, 4000, 0))
+        window.hr_logic.grant_advance(emp_id, "2027-01-01", 6000, "سلفة تسوية")
+        adv_id = db.fetch_one(
+            "SELECT id FROM employee_deductions WHERE employee_id = ? AND type='Advance'",
+            (emp_id,))["id"]
+
+        window.hr_logic.post_payroll(1, 2027)
+        run1 = db.fetch_one(
+            "SELECT advances_recovered FROM payroll_run_items WHERE employee_id = ? "
+            "AND run_id = (SELECT id FROM payroll_runs WHERE month=1 AND year=2027)", (emp_id,))
+        mid = db.fetch_one("SELECT amount, amount_recovered, settled_run_id FROM employee_deductions WHERE id = ?",
+                            (adv_id,))
+        assert mid["settled_run_id"] is None, "settled after only a partial recovery"
+        assert abs(mid["amount_recovered"] - run1["advances_recovered"]) < 0.01
+
+        window.hr_logic.post_payroll(2, 2027)
+        run2 = db.fetch_one(
+            "SELECT advances_recovered FROM payroll_run_items WHERE employee_id = ? "
+            "AND run_id = (SELECT id FROM payroll_runs WHERE month=2 AND year=2027)", (emp_id,))
+        done = db.fetch_one("SELECT amount, amount_recovered, settled_run_id FROM employee_deductions WHERE id = ?",
+                             (adv_id,))
+        assert done["settled_run_id"] is not None, "fully recovered but never marked settled"
+        assert abs(done["amount_recovered"] - done["amount"]) < 0.01, \
+            "amount recovered does not equal the original advance"
+        assert abs((run1["advances_recovered"] + run2["advances_recovered"]) - 6000) < 0.01, \
+            "the two runs together did not recover exactly the advance amount"
+
+        october = next(p for p in window.hr_logic.get_monthly_payroll(3, 2027) if p["id"] == emp_id)
+        assert october["advances_recovered"] == 0, \
+            "a fully settled advance is still being deducted the month after it was cleared"
+
+        # The whole runs, not just this employee's rows - see the identical
+        # note in advance_bigger_than_salary_never_makes_net_pay_negative
+        # above; their journal entries are deleted right below.
+        db.execute_query(
+            "DELETE FROM payroll_run_items WHERE run_id IN "
+            "(SELECT id FROM payroll_runs WHERE month IN (1,2) AND year=2027)")
+        db.execute_query("DELETE FROM payroll_runs WHERE month IN (1,2) AND year=2027")
+        db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        delete_journal_entries_created_after(journal_marker)
+    check("an advance's settlement across however many payroll runs it takes reconciles exactly to the riyal",
+          advance_settlement_reconciles_exactly_across_the_runs_that_recover_it)
 
     def a_31_day_month_cannot_deduct_more_than_the_salary():
         """A 31-day month allows 31 attendance rows, and 31 x daily_rate is
@@ -432,9 +531,13 @@ def main():
             "the posted snapshot changed after editing attendance for that month"
         assert abs(snapshot_after["net_salary"] - 2900) < 0.01, snapshot_after["net_salary"]
 
-        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
-        db.execute_query("DELETE FROM payroll_runs WHERE month=4 AND year=2026 AND "
-                          "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+        # The whole run, not just this employee's row - see the identical
+        # note in advance_bigger_than_salary_never_makes_net_pay_negative
+        # above; its journal entry is deleted right below.
+        db.execute_query(
+            "DELETE FROM payroll_run_items WHERE run_id = "
+            "(SELECT id FROM payroll_runs WHERE month=4 AND year=2026)")
+        db.execute_query("DELETE FROM payroll_runs WHERE month=4 AND year=2026")
         db.execute_query("DELETE FROM attendance WHERE employee_id = ?", (emp_id,))
         db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
         delete_journal_entries_created_after(journal_marker)
@@ -996,6 +1099,101 @@ def main():
             f"an untranslated payment status leaked into a journal description: {descriptions}"
     check("purchase categories hit the right accounts", purchases_route_by_category)
 
+    def void_transaction_rejects_invalid_input_and_double_voiding():
+        """P1-2: db.void_transaction() is the one shared path every void
+        button goes through - a bad table name, a blank reason, an unknown
+        id, or voiding something already voided must all be refused before
+        anything is posted, the same discipline P0-5 already applies to
+        insert_journal_entry itself."""
+        pid = db.insert_and_return_id(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2033-01-01', 200, 200, 0, 'Cash', 'operating_expense', 'اختبار الإلغاء')")
+        try:
+            try:
+                db.void_transaction('employees', pid, None, "سبب")
+                raise AssertionError("an unsupported table was accepted")
+            except ValueError:
+                pass
+            try:
+                db.void_transaction('purchases', pid, None, "   ")
+                raise AssertionError("a blank reason was accepted")
+            except ValueError:
+                pass
+            try:
+                db.void_transaction('purchases', 9999999, None, "سبب")
+                raise AssertionError("a nonexistent record id was accepted")
+            except ValueError:
+                pass
+
+            db.void_transaction('purchases', pid, 1, "خطأ في الإدخال")
+            row = db.fetch_one("SELECT voided_at, voided_by, void_reason FROM purchases WHERE id = ?", (pid,))
+            assert row["voided_at"] and row["voided_by"] == 1 and row["void_reason"] == "خطأ في الإدخال"
+
+            try:
+                db.void_transaction('purchases', pid, 1, "مرة تانية")
+                raise AssertionError("a second void on the same row was accepted")
+            except ValueError:
+                pass
+        finally:
+            db.execute_query("DELETE FROM purchases WHERE id = ?", (pid,))
+    check("void_transaction refuses an unsupported table, a blank reason, an unknown id, and double-voiding",
+          void_transaction_rejects_invalid_input_and_double_voiding)
+
+    def a_voided_purchase_with_no_journal_entry_can_still_be_voided():
+        """Not every voidable row is guaranteed to have a journal_entry_id
+        (a row inserted directly, or from a database that predates this
+        feature) - voiding must still succeed, it simply has nothing to
+        reverse."""
+        pid = db.insert_and_return_id(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description, journal_entry_id) VALUES "
+            "(NULL, '2033-01-02', 50, 50, 0, 'Cash', 'operating_expense', 'بدون قيد', NULL)")
+        try:
+            reversal_id = db.void_transaction('purchases', pid, None, "لا يوجد قيد لعكسه")
+            assert reversal_id is None
+            assert db.fetch_one("SELECT voided_at FROM purchases WHERE id = ?", (pid,))["voided_at"]
+        finally:
+            db.execute_query("DELETE FROM purchases WHERE id = ?", (pid,))
+    check("voiding a row with no journal entry at all still succeeds, with nothing to reverse",
+          a_voided_purchase_with_no_journal_entry_can_still_be_voided)
+
+    def voided_purchases_and_returns_disappear_from_report_totals_but_not_from_the_database():
+        """The whole point of voiding instead of deleting: the row and its
+        original journal entry are permanent history (queryable forever),
+        but every report total built from these tables must read as if it
+        never happened."""
+        acc = window.accounting.accounting
+        marker = newest_journal_entry_id()
+        start, end = "2033-02-01", "2033-02-28"
+        pid = db.insert_and_return_id(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2033-02-15', 4000, 4000, 0, 'Cash', 'raw_material', 'اختبار التقارير')")
+        with db.transaction() as cursor:
+            entry_id = db.insert_journal_entry(cursor, "2033-02-15", "اختبار التقارير", None, [
+                {"account_code": "1100", "debit": 4000, "credit": 0},
+                {"account_code": "1000", "debit": 0, "credit": 4000},
+            ])
+            cursor.execute("UPDATE purchases SET journal_entry_id = ? WHERE id = ?", (entry_id, pid))
+
+        before = acc.get_purchases_by_category(start, end)["raw_material"]["net"]
+        assert abs(before - 4000) < 0.01, before
+
+        db.void_transaction('purchases', pid, None, "اختبار - استبعاد من التقارير")
+        after = acc.get_purchases_by_category(start, end)["raw_material"]["net"]
+        assert abs(after) < 0.01, "a voided purchase still counts toward the report total"
+
+        # Still there, still queryable, still voided - not gone.
+        still_exists = db.fetch_one(
+            "SELECT COUNT(*) c FROM purchases WHERE id = ? AND voided_at IS NOT NULL", (pid,))["c"]
+        assert still_exists == 1
+
+        db.execute_query("DELETE FROM purchases WHERE id = ?", (pid,))
+        delete_journal_entries_created_after(marker)
+    check("a voided purchase disappears from report totals but stays in the database as permanent history",
+          voided_purchases_and_returns_disappear_from_report_totals_but_not_from_the_database)
+
     def general_ledger_tab_shows_every_posting_with_a_running_balance():
         """كشف حساب (per account, not per supplier/customer): the table must
         show exactly the entries and running balance get_account_ledger
@@ -1038,6 +1236,46 @@ def main():
         assert abs(row["t"] - 1725) < 0.01, row["t"]
         assert abs(row["v"] - 225) < 0.01, row["v"]   # 15% of the 1500 net
     check("daily sales split VAT out of a tax-inclusive total", daily_sales_vat)
+
+    def money_rounding_uses_half_up_not_pythons_banker_rounding():
+        """P1-3: Python's built-in round() uses round-half-to-even on top of
+        a binary float that often cannot represent a decimal amount exactly
+        - round(2.675, 2) is 2.67, not the 2.68 an accountant or a cashier
+        would write by hand, because 2.675 is actually stored as something
+        microscopically below it. round_money() goes through Decimal
+        instead and gets the answer a human expects."""
+        from logic.money import round_money
+        assert round(2.675, 2) == 2.67, \
+            "this Python's round() no longer reproduces the bug this test exists to guard against"
+        assert round_money(2.675) == 2.68, round_money(2.675)
+        assert round_money(1.005) == 1.01, round_money(1.005)
+        assert round_money(0.1 + 0.2) == 0.3, round_money(0.1 + 0.2)
+        # A whole run of amounts that individually look fine under naive
+        # float addition but drift when accumulated many times.
+        total = 0.0
+        for _ in range(1000):
+            total += 0.1
+        assert total != 100.0, \
+            "float accumulation drift no longer reproduces - nothing left to guard against here"
+        assert round_money(total) == 100.0, round_money(total)
+    check("round_money() rounds half-up via Decimal, not Python's banker's rounding on raw floats",
+          money_rounding_uses_half_up_not_pythons_banker_rounding)
+
+    def vat_calculation_and_its_reverse_are_internally_consistent_to_the_halala():
+        """P1-3: calculate_vat and reverse_vat now round once, centrally,
+        rather than leaving an unrounded float for whichever screen called
+        them to round (or not) on its own. amount + vat must equal the
+        total exactly to two decimals in both directions, for amounts
+        chosen specifically because naive rounding disagrees with them."""
+        acc = window.accounting.accounting
+        for amount in (17.83, 2.675, 100.005, 33.333, 0.01, 9999.995):
+            vat, total = acc.calculate_vat(amount)
+            assert round(vat, 2) == vat and round(total, 2) == total, (amount, vat, total)
+            recovered_amount, recovered_vat = acc.reverse_vat(total)
+            assert abs(recovered_amount + recovered_vat - total) < 0.001, \
+                (total, recovered_amount, recovered_vat)
+    check("VAT calculation and its reverse round consistently to the halala, even for awkward amounts",
+          vat_calculation_and_its_reverse_are_internally_consistent_to_the_halala)
 
     def delivery_app_sales_post_to_the_bank_account_not_cash():
         """شركات التوصيل (هنقرستيشن / جاهز وغيرها) settle to the bank, never
@@ -1291,9 +1529,14 @@ def main():
         sales.returns_table.setCurrentCell(0, 0)
         sales.delete_selected_return()
         after_delete = net_revenue()
-        assert abs(after_delete - before) < 0.01, "deleting the return did not restore revenue"
-        assert db.fetch_one("SELECT COUNT(*) c FROM sales_returns")["c"] == 0
-    check("a sales return reduces revenue and deleting it reverses cleanly",
+        assert abs(after_delete - before) < 0.01, "voiding the return did not restore revenue"
+        # P1-2: void, not delete - the row survives as history, flagged voided,
+        # with its own original journal entry also left standing (only a new
+        # reversal entry cancels its effect - see void_transaction()).
+        voided = db.fetch_one(
+            "SELECT COUNT(*) c FROM sales_returns WHERE voided_at IS NOT NULL")["c"]
+        assert voided == 1, "the voided return row is missing or not flagged voided"
+    check("a sales return reduces revenue and voiding it reverses cleanly",
           sales_returns_reduce_revenue_and_reverse_cleanly)
 
     def purchase_return_can_be_deleted_and_reverses_its_entry():
@@ -1325,9 +1568,14 @@ def main():
         after = db.fetch_one(
             "SELECT COALESCE(SUM(credit)-SUM(debit),0) c FROM journal_items "
             "WHERE account_code='1100'")["c"]
-        assert abs(after - before) < 0.01, "deleting the return did not reverse the inventory account"
-        assert db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"] == returns_before
-    check("a purchase return can be deleted and reverses its own entry",
+        assert abs(after - before) < 0.01, "voiding the return did not reverse the inventory account"
+        # P1-2: void, not delete - the row count grows by one (the voided
+        # row stays), rather than shrinking back to what it was before.
+        assert db.fetch_one("SELECT COUNT(*) c FROM purchase_returns")["c"] == returns_before + 1
+        assert db.fetch_one(
+            "SELECT COUNT(*) c FROM purchase_returns WHERE id = ? AND voided_at IS NOT NULL",
+            (row["id"],))["c"] == 1
+    check("a purchase return can be voided and reverses its own entry",
           purchase_return_can_be_deleted_and_reverses_its_entry)
 
     def opening_balances_fix_negative_cash():
@@ -1363,7 +1611,12 @@ def main():
         after = db.fetch_one(
             "SELECT COALESCE(SUM(debit)-SUM(credit),0) v FROM journal_items WHERE account_code='5200'")["v"]
         assert abs((before - after) - 999) < 0.01, f"{before} -> {after}"
-    check("deleting a purchase also reverses its journal entry", deleting_a_purchase_reverses_its_entry)
+        assert db.fetch_one(
+            "SELECT voided_at, reversal_journal_entry_id FROM purchases WHERE id = "
+            "(SELECT id FROM purchases ORDER BY id DESC LIMIT 1)")["voided_at"], \
+            "the purchase row was not flagged voided"
+    check("voiding a purchase reverses its journal entry via a new reversal entry, not a delete",
+          deleting_a_purchase_reverses_its_entry)
 
     def unbalanced_journal_entries_are_refused():
         """Nothing previously stopped a caller with a mistake in it from
@@ -1387,6 +1640,77 @@ def main():
         assert entry_id
         db.delete_journal_entry(entry_id)
     check("an unbalanced journal entry is refused", unbalanced_journal_entries_are_refused)
+
+    def invalid_journal_entries_are_refused_at_the_one_shared_write_path():
+        """P0-5: insert_journal_entry() is the one function every business
+        flow in the app ultimately posts a journal through - centralising
+        these checks here means no future screen can skip them, rather than
+        depending on each screen to have remembered to validate its own
+        inputs before building an items list by hand."""
+        def try_post(items, date="2026-01-01"):
+            with db.transaction() as cursor:
+                db.insert_journal_entry(cursor, date, "اختبار صحة القيد", None, items)
+
+        try:
+            try_post([])
+            raise AssertionError("an entry with no items was accepted")
+        except ValueError:
+            pass
+
+        try:
+            try_post(None, date=None)
+            raise AssertionError("an entry with no date was accepted")
+        except (ValueError, TypeError):
+            pass
+
+        try:
+            try_post([
+                {"account_code": "1000", "debit": 100, "credit": 0},
+                {"account_code": "9999", "debit": 0, "credit": 100},
+            ])
+            raise AssertionError("an entry referencing a nonexistent account code was accepted")
+        except ValueError:
+            pass
+
+        try:
+            try_post([
+                {"account_code": "1000", "debit": -100, "credit": 0},
+                {"account_code": "4000", "debit": 0, "credit": -100},
+            ])
+            raise AssertionError("an entry with a negative amount was accepted")
+        except ValueError:
+            pass
+
+        try:
+            try_post([
+                {"account_code": "1000", "debit": 100, "credit": 100},
+            ])
+            raise AssertionError("a line item that is both debit and credit at once was accepted")
+        except ValueError:
+            pass
+
+        # None of the rejected attempts above should have left anything behind.
+        assert not db.fetch_one(
+            "SELECT id FROM journal_entries WHERE description = 'اختبار صحة القيد'"
+        ), "a rejected journal entry attempt still left a row behind"
+    check("insert_journal_entry rejects empty items, missing dates, unknown accounts, negative amounts, "
+          "and dual debit/credit lines - not just unbalanced totals",
+          invalid_journal_entries_are_refused_at_the_one_shared_write_path)
+
+    def the_whole_database_has_zero_foreign_key_violations():
+        """A cheap, global correctness check that costs nothing to run after
+        every other test in this file has had a chance to leave something
+        behind: whatever the rest of this suite has done to the shared
+        database by this point, SQLite's own foreign_key_check must still
+        find nothing dangling anywhere in it."""
+        conn = db.get_connection()
+        try:
+            violations = conn.execute("PRAGMA foreign_key_check").fetchall()
+            assert not violations, [tuple(v) for v in violations]
+        finally:
+            conn.close()
+    check("PRAGMA foreign_key_check finds zero violations anywhere in the database",
+          the_whole_database_has_zero_foreign_key_violations)
 
     def foreign_keys_are_actually_enforced():
         """SQLite ships FK checking off by default and does not remember the
@@ -1519,6 +1843,197 @@ def main():
             "backup() does not appear to use sqlite3's Connection.backup() API at all"
     check("the backup button's source never regresses to a raw file copy of the live database",
           backup_never_regresses_to_a_raw_file_copy)
+
+    def validate_database_file_rejects_garbage_and_unrelated_files():
+        """P1-5: the one gate every restore goes through before touching the
+        live database - a file that is not SQLite at all, a real SQLite
+        database that is not this program's, and (implicitly, via the same
+        integrity_check call restore() itself makes) a corrupt one."""
+        from database.db_manager import validate_database_file
+        import sqlite3 as _sqlite3
+
+        missing_path = os.path.join(tempfile.gettempdir(), "_erp_does_not_exist.db")
+        if os.path.exists(missing_path):
+            os.remove(missing_path)
+        ok, error = validate_database_file(missing_path)
+        assert not ok and error
+
+        garbage_path = os.path.join(tempfile.gettempdir(), "_erp_garbage.db")
+        with open(garbage_path, "wb") as f:
+            f.write(b"this is not a sqlite database at all, just text")
+        try:
+            ok, error = validate_database_file(garbage_path)
+            assert not ok and "SQLite" in error, error
+        finally:
+            os.remove(garbage_path)
+
+        unrelated_path = os.path.join(tempfile.gettempdir(), "_erp_unrelated.db")
+        if os.path.exists(unrelated_path):
+            os.remove(unrelated_path)
+        conn = _sqlite3.connect(unrelated_path)
+        conn.execute("CREATE TABLE some_other_app (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        try:
+            ok, error = validate_database_file(unrelated_path)
+            assert not ok and "جداول أساسية" in error, error
+        finally:
+            os.remove(unrelated_path)
+
+        ok, error = validate_database_file(db.db_path)
+        assert ok and error is None, error
+    check("validate_database_file rejects a nonexistent file, garbage, and an unrelated SQLite database",
+          validate_database_file_rejects_garbage_and_unrelated_files)
+
+    def restore_round_trips_and_leaves_a_safety_copy():
+        """A real end-to-end restore through the actual button: back up,
+        change something, restore, confirm the change is gone (the backup's
+        state came back), confirm a safety copy of what was live right
+        before the restore exists next to the database file, and confirm
+        the just-restored database itself passes both integrity checks."""
+        from ui.settings_module import SettingsModule
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db, current_user={"id": 1, "username": "admin", "role": "admin"})
+
+        backup_path = os.path.join(tempfile.gettempdir(), "_erp_restore_backup.db")
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+
+        marker_supplier = "مورد اختبار الاستعادة"
+        db.execute_query("DELETE FROM suppliers WHERE name = ?", (marker_supplier,))
+
+        original_save = QFileDialog.getSaveFileName
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.backup()
+        finally:
+            QFileDialog.getSaveFileName = original_save
+        assert os.path.exists(backup_path)
+
+        db.execute_query(
+            "INSERT INTO suppliers (name, opening_balance) VALUES (?, ?)",
+            (marker_supplier, 1))
+        assert db.fetch_one("SELECT id FROM suppliers WHERE name = ?", (marker_supplier,)), \
+            "sanity check: the marker row was not actually inserted before restore"
+
+        existing_safety_files = {
+            f for f in os.listdir(os.path.dirname(db.db_path))
+            if f.startswith(os.path.basename(db.db_path) + ".before-restore-")
+        }
+
+        original_open = QFileDialog.getOpenFileName
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.restore()
+        finally:
+            QFileDialog.getOpenFileName = original_open
+            os.remove(backup_path)
+
+        assert not db.fetch_one("SELECT id FROM suppliers WHERE name = ?", (marker_supplier,)), \
+            "the marker row inserted after the backup is still present - restore did not roll back to it"
+
+        new_safety_files = {
+            f for f in os.listdir(os.path.dirname(db.db_path))
+            if f.startswith(os.path.basename(db.db_path) + ".before-restore-")
+        } - existing_safety_files
+        assert new_safety_files, "restore() did not leave a safety copy of the pre-restore database"
+        for name in new_safety_files:
+            os.remove(os.path.join(os.path.dirname(db.db_path), name))
+
+        assert db.check_integrity() == "ok", db.check_integrity()
+        assert db.check_foreign_keys() == [], db.check_foreign_keys()
+    check("restoring a backup rolls the database back to it, leaves a safety copy, "
+          "and the restored database passes both integrity checks",
+          restore_round_trips_and_leaves_a_safety_copy)
+
+    def restore_rejects_a_corrupt_file_without_touching_the_live_database():
+        """The confirmation dialog must never even appear for a file that
+        fails validation - and the live database must be provably untouched
+        (same bytes, not just 'still openable') afterward."""
+        from ui.settings_module import SettingsModule
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db, current_user={"id": 1, "username": "admin", "role": "admin"})
+
+        garbage_path = os.path.join(tempfile.gettempdir(), "_erp_restore_garbage.db")
+        with open(garbage_path, "wb") as f:
+            f.write(b"garbage, not a database")
+
+        with open(db.db_path, "rb") as f:
+            before_bytes = f.read()
+
+        asked = []
+        original_question = QMessageBox.question
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(True) or QMessageBox.StandardButton.Yes)
+        original_open = QFileDialog.getOpenFileName
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (garbage_path, ""))
+        try:
+            settings.restore()
+        finally:
+            QFileDialog.getOpenFileName = original_open
+            QMessageBox.question = original_question
+            os.remove(garbage_path)
+
+        assert not asked, "the confirmation dialog appeared for a file that should have been rejected first"
+        with open(db.db_path, "rb") as f:
+            after_bytes = f.read()
+        assert after_bytes == before_bytes, "the live database was modified despite the backup file being invalid"
+    check("restoring a corrupt/garbage file is rejected before the confirmation dialog, "
+          "leaving the live database byte-for-byte untouched",
+          restore_rejects_a_corrupt_file_without_touching_the_live_database)
+
+    def an_interrupted_restore_copy_never_damages_the_live_database():
+        """P1-5: the copy lands in a temporary file first and is only ever
+        swapped into place with a single atomic os.replace() - simulated
+        here by making the copy itself fail partway through, the same
+        failure a crash or power loss mid-copy would cause."""
+        from ui.settings_module import SettingsModule
+        import ui.settings_module as settings_module
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db, current_user={"id": 1, "username": "admin", "role": "admin"})
+
+        backup_path = os.path.join(tempfile.gettempdir(), "_erp_interrupted_backup.db")
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+        original_save = QFileDialog.getSaveFileName
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.backup()
+        finally:
+            QFileDialog.getSaveFileName = original_save
+
+        with open(db.db_path, "rb") as f:
+            before_bytes = f.read()
+
+        tmp_path = db.db_path + ".restoring-tmp"
+
+        def failing_copyfile(src, dst):
+            if dst == tmp_path:
+                raise OSError("simulated crash mid-copy")
+            return original_copyfile(src, dst)
+
+        original_copyfile = settings_module.shutil.copyfile
+        settings_module.shutil.copyfile = failing_copyfile
+        original_open = QFileDialog.getOpenFileName
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.restore()
+        finally:
+            QFileDialog.getOpenFileName = original_open
+            settings_module.shutil.copyfile = original_copyfile
+            os.remove(backup_path)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            for name in os.listdir(os.path.dirname(db.db_path)):
+                if name.startswith(os.path.basename(db.db_path) + ".before-restore-"):
+                    os.remove(os.path.join(os.path.dirname(db.db_path), name))
+
+        with open(db.db_path, "rb") as f:
+            after_bytes = f.read()
+        assert after_bytes == before_bytes, \
+            "a failure mid-copy still damaged the live database - it should only ever touch a temp file"
+    check("a failure while copying the chosen backup never damages the live database, only a temp file",
+          an_interrupted_restore_copy_never_damages_the_live_database)
 
     def purchase_return_credits_the_right_account():
         """Every return used to credit Inventory (1100) no matter what was
@@ -1833,6 +2348,173 @@ def main():
         os.remove(out)
     check("report exports a real PDF", pdf_export_works)
 
+    def inventory_period_close_matches_the_expected_accounting_result():
+        """P0-3: account 1100 (المخزون) only ever accumulated every
+        raw-material purchase forever - nothing ever posted Dr COGS / Cr
+        Inventory for what was actually consumed, so the ledger's own
+        Inventory balance was never trustworthy and account 5000 (تكلفة
+        البضاعة المباعة) was always exactly zero (see the long comment on
+        get_financial_summary). close_inventory_period() is a real period
+        close: it reads actual raw-material purchases/returns posted in the
+        window, takes a physical closing count, and posts the difference to
+        the ledger. Uses a private date window far from anything else in
+        this shared test database so its purchase/return totals cannot be
+        polluted by any other test.
+
+        Note: this deliberately excludes purchase_expense (category 5150,
+        e.g. freight-in) from the COGS formula, unlike the generic
+        get_trading_account() report estimate - this app already expenses
+        that category immediately to account 5150 at the moment of
+        purchase rather than capitalising it into 1100/المخزون, so folding
+        it into this posting too would double-count it in the income
+        statement (once in 5150, again in 5000 for the same money)."""
+        acc = window.accounting.accounting
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2031-01-10', 30000, 34500, 4500, 'Cash', 'raw_material', 'test')")
+        db.execute_query(
+            "INSERT INTO purchase_returns (branch_id, date, amount, vat_amount, "
+            "refund_method, category) VALUES "
+            "(NULL, '2031-01-20', 2000, 300, 'Cash', 'raw_material')")
+        # An operating-category purchase inside the same window must never
+        # leak into the raw-material COGS calculation.
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2031-01-12', 9999, 9999, 0, 'Cash', 'operating_expense', 'must not count')")
+
+        cogs_before = acc.get_posted_cogs("2031-01-01", "2031-01-31")
+        assert abs(cogs_before) < 0.01, "no close has happened yet - posted COGS must still be zero"
+
+        result = acc.close_inventory_period(
+            "2031-01-01", "2031-01-31", closing_inventory=12000,
+            opening_inventory_override=10000)
+        # 10,000 opening + 30,000 purchases - 2,000 returns - 12,000 closing
+        assert abs(result["cogs"] - 26000) < 0.01, result
+        assert result["journal_entry_id"], "a non-zero COGS close must post a journal entry"
+
+        inv_1100 = acc.get_account_balance("1100")
+        cogs_1100_side = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items WHERE account_code='1100' "
+            "AND entry_id = ?", (result["journal_entry_id"],))["v"]
+        assert abs(cogs_1100_side - 26000) < 0.01, \
+            "the close must credit (reduce) account 1100 by exactly the posted COGS"
+        cogs_5000_side = db.fetch_one(
+            "SELECT COALESCE(SUM(debit),0) v FROM journal_items WHERE account_code='5000' "
+            "AND entry_id = ?", (result["journal_entry_id"],))["v"]
+        assert abs(cogs_5000_side - 26000) < 0.01, \
+            "the close must debit (increase) account 5000 by exactly the posted COGS"
+
+        posted = acc.get_posted_cogs("2031-01-01", "2031-01-31")
+        assert abs(posted - 26000) < 0.01, posted
+    check("closing an inventory period posts the correct Dr COGS / Cr Inventory journal entry",
+          inventory_period_close_matches_the_expected_accounting_result)
+
+    def a_second_close_derives_its_opening_balance_from_the_first_close():
+        acc = window.accounting.accounting
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category, description) VALUES "
+            "(NULL, '2031-02-10', 5000, 5750, 750, 'Cash', 'raw_material', 'test')")
+        result = acc.close_inventory_period("2031-02-01", "2031-02-28", closing_inventory=9000)
+        assert abs(result["opening_inventory"] - 12000) < 0.01, \
+            "opening must be automatically taken from the previous close's closing figure"
+        # 12,000 opening + 5,000 purchases - 0 returns - 9,000 closing
+        assert abs(result["cogs"] - 8000) < 0.01, result
+
+        try:
+            db.execute_query(
+                "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+                "payment_status, category) VALUES (NULL, '2031-03-05', 1, 1, 0, 'Cash', 'raw_material')")
+            acc.close_inventory_period("2031-03-01", "2031-03-31", closing_inventory=0,
+                                        opening_inventory_override=999999)
+            raise AssertionError("a manual opening override must be rejected once a prior close exists")
+        except ValueError:
+            pass
+    check("a later inventory close derives its opening balance from the previous close, not a manual override",
+          a_second_close_derives_its_opening_balance_from_the_first_close)
+
+    def closing_inventory_above_goods_available_is_rejected():
+        acc = window.accounting.accounting
+        try:
+            acc.close_inventory_period("2031-04-01", "2031-04-30", closing_inventory=999999999)
+            raise AssertionError("closing inventory greater than goods available must be rejected")
+        except ValueError:
+            pass
+        try:
+            acc.close_inventory_period("2031-01-15", "2031-01-25", closing_inventory=0)
+            raise AssertionError("an inventory period overlapping an already-closed period must be rejected")
+        except ValueError:
+            pass
+    check("an impossible closing count or an overlapping period is rejected before anything is posted",
+          closing_inventory_above_goods_available_is_rejected)
+
+    def reversing_an_inventory_close_deletes_its_journal_and_allows_a_reclose():
+        acc = window.accounting.accounting
+        periods = {p["start_date"]: p for p in acc.get_inventory_periods()}
+        first = periods["2031-01-01"]
+        second = periods["2031-02-01"]
+
+        try:
+            acc.reverse_inventory_period(first["id"])
+            raise AssertionError("must not allow reversing an earlier close while a later one still stands")
+        except ValueError:
+            pass
+
+        entry_id = second["journal_entry_id"]
+        acc.reverse_inventory_period(second["id"])
+        assert not db.fetch_one("SELECT id FROM journal_entries WHERE id = ?", (entry_id,)), \
+            "reversal must delete the posted journal entry"
+        reopened = db.fetch_one("SELECT reversed_at FROM inventory_periods WHERE id = ?", (second["id"],))
+        assert reopened["reversed_at"], "the period row must be flagged reversed, not deleted"
+
+        # The date range is now free to be re-closed with corrected numbers.
+        redo = acc.close_inventory_period("2031-02-01", "2031-02-28", closing_inventory=11000)
+        assert abs(redo["opening_inventory"] - 12000) < 0.01, redo
+        assert abs(redo["cogs"] - (12000 + 5000 - 11000)) < 0.01, redo
+    check("reversing an inventory close removes its journal entry and allows a corrected re-close",
+          reversing_an_inventory_close_deletes_its_journal_and_allows_a_reclose)
+
+    def inventory_period_close_rolls_back_completely_on_a_failure():
+        """Same failure-injection pattern as payroll/advances/opening
+        balances (P0-2): forces insert_journal_entry to blow up mid-close
+        and asserts the inventory_periods row never lands without its
+        journal, and account 1100/5000 are left exactly as they were."""
+        acc = window.accounting.accounting
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category) VALUES (NULL, '2031-05-10', 4000, 4600, 600, 'Cash', 'raw_material')")
+        before_1100 = acc.get_account_balance("1100")
+        before_5000 = acc.get_account_balance("5000")
+        before_periods = db.fetch_one("SELECT COUNT(*) c FROM inventory_periods")["c"]
+
+        def boom(*a, **k):
+            raise RuntimeError("simulated crash right before the journal is written")
+
+        original = db.insert_journal_entry
+        db.insert_journal_entry = boom
+        try:
+            try:
+                acc.close_inventory_period("2031-05-01", "2031-05-31", closing_inventory=1000)
+                raise AssertionError("the simulated failure did not propagate")
+            except RuntimeError:
+                pass
+        finally:
+            db.insert_journal_entry = original
+
+        assert db.fetch_one("SELECT COUNT(*) c FROM inventory_periods")["c"] == before_periods, \
+            "an orphan inventory_periods row survived the failed close"
+        assert abs(acc.get_account_balance("1100") - before_1100) < 0.01, "account 1100 moved despite the rollback"
+        assert abs(acc.get_account_balance("5000") - before_5000) < 0.01, "account 5000 moved despite the rollback"
+
+        # Prove the connection/transaction helper was not left broken, and
+        # that the date range is still genuinely open (nothing was posted).
+        result = acc.close_inventory_period("2031-05-01", "2031-05-31", closing_inventory=1000)
+        assert result["journal_entry_id"], "the retried close should succeed and post normally"
+    check("an inventory close rolls back completely if it fails right before the journal write",
+          inventory_period_close_rolls_back_completely_on_a_failure)
+
     # ---------------- UI regressions ----------------
     print("\n[ui]")
 
@@ -1979,6 +2661,57 @@ def main():
             "the income statement result has no scroll area of its own"
     check("the trading account result can be scrolled to in full",
           trading_account_result_is_fully_reachable)
+
+    def the_inventory_close_button_actually_posts_through_the_ui():
+        """A backend method with no working button behind it is not a
+        feature. Drives the real page: sets a custom period, types a
+        closing count, clicks إقفال هذه الفترة الآن, and checks the posted
+        journal shows up in the history table and the ledger - then selects
+        that row and clicks عكس الإقفال المحدد and checks it disappears
+        from the posted total and the row now reads تم عكسه."""
+        goto("accounting")
+        acc = window.accounting
+        acc.tabs.setCurrentIndex(2)  # حساب المتاجرة - selection models on an inactive
+                                     # QTabWidget tab do not reliably register a row select
+        db.execute_query(
+            "INSERT INTO purchases (branch_id, date, amount, total_amount, vat_amount, "
+            "payment_status, category) VALUES (NULL, '2032-01-15', 3000, 3450, 450, 'Cash', 'raw_material')")
+        # Whatever earlier tests in this shared suite already closed becomes
+        # this period's own opening balance (auto-derived, by design) - read
+        # it back rather than assuming 0, so this test still holds however
+        # many other closes happened to run before it.
+        prior_periods = [p for p in acc.accounting.get_inventory_periods()
+                          if not p['reversed_at'] and p['end_date'] < '2032-01-01']
+        opening = max(prior_periods, key=lambda p: p['end_date'])['closing_inventory'] if prior_periods else 0
+
+        acc.period_input.setCurrentText("مخصص")
+        acc.start_date.setDate(QDate(2032, 1, 1))
+        acc.end_date.setDate(QDate(2032, 1, 31))
+        acc.closing_inventory_input.setValue(1000)
+        acc.close_period_btn.click()
+        app.processEvents()
+
+        rows = [acc.inventory_periods_table.item(r, 0).text()
+                for r in range(acc.inventory_periods_table.rowCount())]
+        assert "2032-01-01" in rows, "the newly closed period did not appear in the history table"
+        row_idx = rows.index("2032-01-01")
+        assert acc.inventory_periods_table.item(row_idx, 5).text() == "مرحّل"
+        posted = acc.accounting.get_posted_cogs("2032-01-01", "2032-01-31")
+        assert abs(posted - (opening + 3000 - 1000)) < 0.01, (posted, opening)
+
+        # setCurrentCell, not selectRow(): selectRow() left
+        # selectionModel().selectedRows() empty under the offscreen test
+        # platform even after the tab holding the table was made current -
+        # setCurrentCell reliably produces a real row selection here.
+        acc.inventory_periods_table.setCurrentCell(row_idx, 0)
+        app.processEvents()
+        acc.reverse_period_btn.click()
+        app.processEvents()
+        assert acc.inventory_periods_table.item(row_idx, 5).text() == "تم عكسه"
+        assert abs(acc.accounting.get_posted_cogs("2032-01-01", "2032-01-31")) < 0.01, \
+            "the reversed close's journal is still affecting posted COGS"
+    check("the accounting page's إقفال المخزون button posts a real journal entry, and عكس reverses it",
+          the_inventory_close_button_actually_posts_through_the_ui)
 
     def all_expiring_documents_are_reachable():
         """The owner reported (with a screenshot) that one of three duplicate
@@ -2234,6 +2967,177 @@ def main():
         db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
     check("a deactivated user cannot log in even with the right password",
           deactivated_user_cannot_log_in)
+
+    def five_wrong_passwords_locks_the_account_temporarily():
+        """P1-6: after five consecutive wrong passwords the account is
+        locked out for a while - even the CORRECT password must not work
+        during the lockout, and lockout_status() must report a real
+        remaining-minutes figure the login screen can show."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("lockout_test_user", "correct-password", "viewer")
+        try:
+            assert auth.lockout_status("lockout_test_user") is None, \
+                "a brand new account is already reported locked"
+            for _ in range(4):
+                assert auth.authenticate("lockout_test_user", "wrong") is None
+                assert auth.lockout_status("lockout_test_user") is None, \
+                    "locked out before reaching the failure threshold"
+
+            # The fifth wrong attempt crosses the threshold.
+            assert auth.authenticate("lockout_test_user", "wrong") is None
+            minutes = auth.lockout_status("lockout_test_user")
+            assert minutes is not None and minutes > 0, minutes
+
+            # The CORRECT password must still be refused while locked.
+            assert auth.authenticate("lockout_test_user", "correct-password") is None, \
+                "the correct password was accepted during a lockout"
+
+            # Force the lockout to have already expired, the same as if
+            # enough real time had passed, and confirm normal login
+            # resumes and the failure counter/lockout are both cleared.
+            db.execute_query(
+                "UPDATE login_lockouts SET locked_until = '2000-01-01 00:00:00' "
+                "WHERE username = 'lockout_test_user'")
+            assert auth.lockout_status("lockout_test_user") is None
+            assert auth.authenticate("lockout_test_user", "correct-password") is not None, \
+                "login did not resume after the lockout expired"
+            assert not db.fetch_one(
+                "SELECT username FROM login_lockouts WHERE username = 'lockout_test_user'"), \
+                "a successful login did not clear the lockout row"
+        finally:
+            db.execute_query("DELETE FROM login_lockouts WHERE username = 'lockout_test_user'")
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("five consecutive wrong passwords locks the account temporarily, even against "
+          "the correct password, and clears once it expires",
+          five_wrong_passwords_locks_the_account_temporarily)
+
+    def user_management_is_enforced_in_the_logic_layer_not_only_by_hiding_the_ui():
+        """P1-6: Settings already hides the user-management box from anyone
+        but an admin, but that is a UI convenience, not a security
+        boundary - a future screen that forgets the same check, or
+        anything that calls AuthLogic directly, must still be refused by
+        AuthLogic itself. actor_role=None (an internal/system caller with
+        no real "current user", e.g. ensure_default_admins on a fresh
+        database) is deliberately exempt - checked at the end."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        admin_uid = auth.create_user("role_enforce_admin", "adminpass1", "admin")
+        victim_uid = auth.create_user("role_enforce_victim", "victimpass1", "viewer")
+        try:
+            for actor_role in ("manager", "cashier", "viewer"):
+                try:
+                    auth.create_user("should_not_exist", "x", "viewer", actor_role=actor_role)
+                    raise AssertionError(f"a {actor_role} was allowed to create a user")
+                except PermissionError:
+                    pass
+                try:
+                    auth.set_active(victim_uid, False, actor_role=actor_role)
+                    raise AssertionError(f"a {actor_role} was allowed to deactivate a user")
+                except PermissionError:
+                    pass
+                try:
+                    auth.set_password(victim_uid, "newpass123", actor_role=actor_role)
+                    raise AssertionError(f"a {actor_role} was allowed to reset another user's password")
+                except PermissionError:
+                    pass
+
+            # An admin actor, and a caller that passes no actor_role at all
+            # (a system/bootstrap call), must both still work normally.
+            auth.set_active(victim_uid, False, actor_role="admin")
+            assert not db.fetch_one(
+                "SELECT is_active FROM users WHERE id = ?", (victim_uid,))["is_active"]
+            auth.set_active(victim_uid, True)   # no actor_role passed at all
+            assert db.fetch_one("SELECT is_active FROM users WHERE id = ?", (victim_uid,))["is_active"]
+
+            assert not db.fetch_one("SELECT id FROM users WHERE username = 'should_not_exist'"), \
+                "a user got created despite every attempt being refused"
+        finally:
+            db.execute_query("DELETE FROM users WHERE id IN (?, ?)", (admin_uid, victim_uid))
+            db.execute_query("DELETE FROM users WHERE username = 'should_not_exist'")
+    check("creating, deactivating, or resetting another user's password is refused by the logic "
+          "layer itself for a non-admin actor, not only hidden in the UI",
+          user_management_is_enforced_in_the_logic_layer_not_only_by_hiding_the_ui)
+
+    def a_user_can_still_change_their_own_password_without_being_an_admin():
+        """change_own_password() must stay completely unaffected by the new
+        admin-only guard - it never passes actor_role, and a viewer must
+        still be able to change their own password."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("self_password_test", "old-password-1", "viewer")
+        try:
+            auth.change_own_password(uid, "old-password-1", "new-password-2")
+            assert auth.authenticate("self_password_test", "new-password-2") is not None
+        finally:
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("a viewer can still change their own password without needing admin rights",
+          a_user_can_still_change_their_own_password_without_being_an_admin)
+
+    def lockout_applies_the_same_way_to_an_unknown_username():
+        """The same anonymity property authenticate() already has (wrong
+        password and unknown username look identical) has to hold for
+        lockouts too - otherwise five failed attempts against a username
+        that happens to be real, versus one that is made up, would behave
+        differently and leak which is which."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        fake_username = "this_username_was_never_created"
+        try:
+            for _ in range(5):
+                assert auth.authenticate(fake_username, "anything") is None
+            assert auth.lockout_status(fake_username) is not None
+        finally:
+            db.execute_query("DELETE FROM login_lockouts WHERE username = ?", (fake_username,))
+    check("locking out after repeated failures works the same for an unknown username as a real one",
+          lockout_applies_the_same_way_to_an_unknown_username)
+
+    def sensitive_actions_are_recorded_in_the_audit_log():
+        """P1-1: login attempts (success and failure), user creation, and
+        activation/deactivation must all leave a durable, human-readable
+        trail of who did what and when - and never the password itself,
+        anywhere in that trail."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+
+        before = db.fetch_one("SELECT COALESCE(MAX(id),0) m FROM audit_log")["m"]
+        uid = auth.create_user("audit_test_user", "correct-password", "viewer", "اختبار السجل",
+                                actor_user_id=1, actor_username="admin")
+        auth.authenticate("audit_test_user", "wrong-password")
+        auth.authenticate("audit_test_user", "correct-password")
+        auth.authenticate("no_such_user_at_all", "anything")
+        auth.set_active(uid, False, actor_user_id=1, actor_username="admin")
+
+        rows = db.fetch_all("SELECT * FROM audit_log WHERE id > ? ORDER BY id", (before,))
+        actions = [r["action"] for r in rows]
+        assert actions == ["user_created", "login_failed", "login_success",
+                            "login_failed", "user_deactivated"], actions
+
+        created = rows[0]
+        assert created["entity_type"] == "user" and created["entity_id"] == uid
+        assert created["username"] == "admin", "the actor, not the new account, should be logged as who created it"
+        assert "correct-password" not in (created["after_data"] or ""), \
+            "the plaintext password leaked into the audit log"
+
+        wrong_login = rows[1]
+        assert wrong_login["username"] == "audit_test_user"
+        assert "wrong-password" not in str(dict(wrong_login))
+
+        unknown_login = rows[3]
+        assert unknown_login["user_id"] is None, \
+            "a login attempt against an unknown username should have no real user_id"
+        assert unknown_login["username"] == "no_such_user_at_all"
+
+        # The account can be fully removed afterward without the audit log
+        # blocking it or losing its own history - see the "no FOREIGN KEY on
+        # user_id" note in schema.sql.
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+        still_there = db.fetch_one("SELECT COUNT(*) c FROM audit_log WHERE id > ?", (before,))["c"]
+        assert still_there == 5, "deleting the account deleted its audit history"
+        db.execute_query("DELETE FROM audit_log WHERE id > ?", (before,))
+    check("login attempts, user creation, and activation changes are recorded in the audit log, "
+          "never the password itself, and survive the account being removed",
+          sensitive_actions_are_recorded_in_the_audit_log)
 
     def default_admin_seats_are_seeded_once_on_an_empty_users_table():
         """Both need a working way in before anyone has created a single
@@ -2601,6 +3505,10 @@ def main():
             assert admin_window.btn_settings.isVisible(), "an admin cannot see Settings at all"
             assert hasattr(admin_window.settings, "users_table"), \
                 "an admin's Settings page has no user-management box"
+            assert hasattr(admin_window.settings, "audit_table"), \
+                "an admin's Settings page has no audit-log box"
+            assert admin_window.settings.audit_table.rowCount() > 0, \
+                "the audit log box is empty despite this test's own login just having happened"
         finally:
             admin_window.close()
             db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
@@ -2617,7 +3525,9 @@ def main():
         viewer_settings = SettingsModule(db, current_user={"role": "viewer"})
         assert not hasattr(viewer_settings, "users_table"), \
             "a viewer's own Settings module still built the user-management box"
-    check("SettingsModule itself never builds the user box for a non-admin",
+        assert not hasattr(viewer_settings, "audit_table"), \
+            "a viewer's own Settings module still built the audit-log box"
+    check("SettingsModule itself never builds the user or audit-log box for a non-admin",
           settings_module_hides_the_users_box_for_non_admins)
 
     def ahmed_admin_is_hidden_from_the_visible_user_list():
@@ -2697,6 +3607,39 @@ def main():
             db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
     check("the login dialog rejects a wrong password and forces a real one past a temporary login",
           login_dialog_end_to_end_including_the_forced_password_change)
+
+    def login_dialog_shows_the_specific_lockout_message():
+        """P1-6, driven through the real dialog: after enough wrong
+        passwords the on-screen message must change from the generic
+        'wrong username or password' to a specific one naming the
+        lockout - not just the same message repeated, which would leave
+        someone assuming they keep mistyping rather than that the account
+        is temporarily locked."""
+        from ui.login_dialog import LoginDialog
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("lockout_dialog_test", "correct-pass-1", "viewer")
+        try:
+            dialog = LoginDialog(db)
+            dialog.show()
+            app.processEvents()
+            dialog.username_field.setText("lockout_dialog_test")
+            for _ in range(5):
+                dialog.password_field.setText("wrong-password")
+                dialog.try_login()
+            message = dialog.login_status.text()
+            assert "دقيق" in message, f"the lockout message did not mention a wait time: {message!r}"
+
+            dialog.password_field.setText("correct-pass-1")
+            dialog.try_login()
+            assert dialog.authenticated_user is None, \
+                "the correct password logged in anyway while the account was locked"
+        finally:
+            dialog.close()
+            db.execute_query("DELETE FROM login_lockouts WHERE username = 'lockout_dialog_test'")
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("the login dialog shows a specific message once too many wrong attempts lock the account",
+          login_dialog_shows_the_specific_lockout_message)
 
     # ---------------- what actually ships ----------------
     print("\n[release]")
@@ -2803,7 +3746,7 @@ def main():
 
         sandbox = tempfile.mkdtemp(prefix="_erp_licence_")
         saved = (os.environ.get("XDG_CONFIG_HOME"), os.environ.get("APPDATA"),
-                 os.environ.get("RESTAURANT_ERP_SECRET"))
+                 os.environ.get("RESTAURANT_ERP_PUBLIC_KEY"))
         os.environ["XDG_CONFIG_HOME"] = sandbox
         os.environ.pop("APPDATA", None)
         real_date = dt.date
@@ -2843,11 +3786,11 @@ def main():
             assert len(code) == 8, code
 
             # A key for someone else's machine must not open this one.
-            assert not licence.activate(fresh, licence.key_for_device("ZZZZ2345"))
+            assert not licence.activate(fresh, _sign_dev_key("ZZZZ2345"))
             assert not licence.activate(fresh, "AAAA-BBBB-CCCC-DDDD")
             assert not licence.is_activated(fresh)
 
-            key = licence.key_for_device(code)
+            key = _sign_dev_key(code)
             assert licence.activate(fresh, key), "the correct key was rejected"
             assert licence.is_activated(fresh)
 
@@ -2881,6 +3824,44 @@ def main():
             shutil.rmtree(sandbox, ignore_errors=True)
     check("paying unlocks it in place, with every number still there",
           paying_unlocks_it_without_losing_anything)
+
+    def licence_verification_only_ever_reads_a_public_key():
+        """P1-4: the shipped app must not be able to mint a licence key at
+        all - only verify one someone else signed. Confirmed by the
+        function that used to do that (key_for_device) no longer existing
+        on the module at all, not just being unused."""
+        import logic.licence as licence
+        assert not hasattr(licence, "key_for_device"), \
+            "the client-side module can still generate a valid licence key itself"
+        assert not hasattr(licence, "SECRET") and not hasattr(licence, "DEV_SECRET"), \
+            "a signing secret is still present on the client-side module"
+    check("the shipped licence module can verify a signature but has no way to produce one",
+          licence_verification_only_ever_reads_a_public_key)
+
+    def ed25519_licence_signatures_reject_tampering_and_malformed_keys():
+        """P1-4 acceptance tests: valid signature accepted, a single
+        flipped character (tampered payload) rejected, wrong device
+        rejected, and a malformed/garbage token rejected - all against the
+        public key alone, the same one the shipped app carries."""
+        import logic.licence as licence
+
+        code = "TEST1234"
+        key = _sign_dev_key(code)
+        assert licence.is_valid(code, key), "a genuinely signed key was rejected"
+
+        # Tamper with one character deep in the signature - not just the
+        # formatting/grouping, the actual decoded signature bytes.
+        tampered = key[:40] + ("A" if key[40] != "A" else "B") + key[41:]
+        assert not licence.is_valid(code, tampered), "a tampered signature was accepted"
+
+        assert not licence.is_valid("OTHR5678", key), \
+            "a key signed for one device verified against a different one"
+
+        for garbage in ("", "not-a-key-at-all", "0" * 103, key[:-10], key + "EXTRA"):
+            assert not licence.is_valid(code, garbage), f"malformed key accepted: {garbage!r}"
+    check("a licence signature verifies correctly, and rejects tampering, the wrong device, "
+          "and malformed keys",
+          ed25519_licence_signatures_reject_tampering_and_malformed_keys)
 
     def the_expiry_screen_can_actually_activate():
         """Blocking startup with a message and exiting leaves nowhere to type
@@ -2996,6 +3977,54 @@ def main():
                 "the build regenerates the manual again - that is what broke it"
     check("the manual is readable and the build cannot replace it",
           the_manual_is_readable)
+
+    def uncaught_exceptions_are_logged_with_a_friendly_message_instead_of_vanishing():
+        """P2: before this, an uncaught exception just made the window
+        disappear - nothing for the customer to describe, nothing for
+        whoever supports the program to go on. Now it is written to a
+        real log file with its traceback, and the customer sees a message
+        naming where that file is instead of the program silently dying."""
+        import logging
+        from main import setup_logging
+        from logic.paths import log_path
+
+        logger = setup_logging()
+        # Idempotent: calling it again (as every earlier check in this
+        # file effectively already has, indirectly, by importing main) must
+        # not stack up a second handler and therefore a second copy of
+        # every log line.
+        setup_logging()
+        assert len(logger.handlers) == 1, \
+            f"setup_logging() is not idempotent - {len(logger.handlers)} handlers attached"
+
+        try:
+            raise ValueError("simulated crash for the P2 logging test")
+        except ValueError:
+            exc_info = sys.exc_info()
+
+        original_critical = QMessageBox.critical
+        shown = []
+        QMessageBox.critical = staticmethod(
+            lambda *a, **k: shown.append(a) or QMessageBox.StandardButton.Ok)
+        try:
+            sys.excepthook(*exc_info)
+        finally:
+            QMessageBox.critical = original_critical
+
+        assert shown, "no message box was shown for the uncaught exception"
+        assert "خطأ" in shown[0][2], shown[0]
+
+        for handler in logger.handlers:
+            handler.flush()
+        with open(log_path(), encoding="utf-8") as f:
+            content = f.read()
+        assert "simulated crash for the P2 logging test" in content, \
+            "the exception was not written to the log file"
+        assert "ValueError" in content
+        assert "Traceback" in content, "the log entry has no traceback"
+    check("an uncaught exception is written to the log file with its traceback, "
+          "and shown to the user as a friendly message instead of vanishing",
+          uncaught_exceptions_are_logged_with_a_friendly_message_instead_of_vanishing)
 
     def packaging_bundles_every_data_file():
         """Files loaded through resource_path() are data, not code, so
@@ -4106,6 +5135,104 @@ def main():
             dialog.close()
     check("the login dialog groups each field tightly with its own label, not evenly spaced",
           login_dialog_groups_each_label_tightly_with_its_own_field)
+
+    # ---------------- database integrity (P1-8) ----------------
+    # Deliberately last: a final, whole-database gate that runs after every
+    # other check in this file has had a full chance to leave something
+    # behind, rather than checking a narrow slice mid-run.
+    print("\n[integrity]")
+
+    def foreign_keys_pragma_is_on_for_a_fresh_connection():
+        conn = db.get_connection()
+        try:
+            assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        finally:
+            conn.close()
+    check("PRAGMA foreign_keys is ON for a fresh connection", foreign_keys_pragma_is_on_for_a_fresh_connection)
+
+    def the_whole_database_passes_integrity_check():
+        assert db.check_integrity() == "ok", db.check_integrity()
+    check("PRAGMA integrity_check reports the whole database as ok",
+          the_whole_database_passes_integrity_check)
+
+    def the_whole_database_has_zero_foreign_key_violations_at_the_very_end():
+        violations = db.check_foreign_keys()
+        assert not violations, [tuple(v) for v in violations]
+    check("PRAGMA foreign_key_check finds zero violations after every test in this file has run",
+          the_whole_database_has_zero_foreign_key_violations_at_the_very_end)
+
+    def no_journal_item_points_at_a_journal_entry_that_does_not_exist():
+        orphans = db.fetch_all(
+            "SELECT ji.id, ji.entry_id FROM journal_items ji "
+            "LEFT JOIN journal_entries je ON je.id = ji.entry_id WHERE je.id IS NULL")
+        assert not orphans, [(o["id"], o["entry_id"]) for o in orphans]
+    check("no journal_items row points at a journal_entries row that does not exist",
+          no_journal_item_points_at_a_journal_entry_that_does_not_exist)
+
+    def no_journal_item_points_at_an_account_that_does_not_exist():
+        orphans = db.fetch_all(
+            "SELECT ji.id, ji.account_code FROM journal_items ji "
+            "LEFT JOIN chart_of_accounts coa ON coa.code = ji.account_code WHERE coa.code IS NULL")
+        assert not orphans, [(o["id"], o["account_code"]) for o in orphans]
+    check("no journal_items row points at a chart_of_accounts code that does not exist",
+          no_journal_item_points_at_an_account_that_does_not_exist)
+
+    def every_journal_entry_in_the_whole_database_balances():
+        unbalanced = db.fetch_all(
+            "SELECT entry_id, ROUND(SUM(debit)-SUM(credit), 2) AS diff "
+            "FROM journal_items GROUP BY entry_id HAVING ABS(diff) > 0.009")
+        assert not unbalanced, [(u["entry_id"], u["diff"]) for u in unbalanced]
+    check("every journal entry in the whole database balances to the halala",
+          every_journal_entry_in_the_whole_database_balances)
+
+    def every_posted_payroll_run_has_a_real_journal_entry():
+        """P1-8: payroll_runs.journal_entry_id (added this pass - see the
+        migration in database/db_manager.py) makes this a real relationship
+        check rather than a heuristic - every posted run must point at a
+        journal entry that actually exists, and every journal entry whose
+        description matches a payroll posting must be pointed at by some
+        run, so neither side can drift from the other silently."""
+        runs = db.fetch_all("SELECT id, month, year, journal_entry_id FROM payroll_runs")
+        for run in runs:
+            assert run["journal_entry_id"], \
+                f"payroll run {run['id']} ({run['month']}/{run['year']}) has no journal_entry_id"
+            assert db.fetch_one(
+                "SELECT id FROM journal_entries WHERE id = ?", (run["journal_entry_id"],)
+            ), f"payroll run {run['id']}'s journal_entry_id {run['journal_entry_id']} does not exist"
+    check("every posted payroll run has a real journal entry behind it",
+          every_posted_payroll_run_has_a_real_journal_entry)
+
+    def no_duplicate_sales_attendance_or_payroll_period_rows():
+        """The three UNIQUE indexes/constraints this app relies on to stop a
+        double-click or a re-run from silently doubling a day's revenue, an
+        attendance record, or a payroll month - checked directly against
+        live data rather than only trusting that the constraint exists."""
+        dup_sales = db.fetch_all(
+            "SELECT branch_id, date, payment_method, COUNT(*) c FROM sales "
+            "GROUP BY branch_id, date, payment_method HAVING c > 1")
+        assert not dup_sales, dup_sales
+        dup_attendance = db.fetch_all(
+            "SELECT employee_id, date, COUNT(*) c FROM attendance "
+            "GROUP BY employee_id, date HAVING c > 1")
+        assert not dup_attendance, dup_attendance
+        dup_payroll = db.fetch_all(
+            "SELECT month, year, COUNT(*) c FROM payroll_runs GROUP BY month, year HAVING c > 1")
+        assert not dup_payroll, dup_payroll
+    check("no duplicate sales-day, attendance-day, or payroll-period rows anywhere in the database",
+          no_duplicate_sales_attendance_or_payroll_period_rows)
+
+    def no_voided_row_is_missing_its_void_bookkeeping():
+        """P1-2's own invariant, checked globally: a voided row always has
+        both a reason and a timestamp together, never one without the
+        other, across every voidable table."""
+        for table in ("purchases", "purchase_returns", "sales_returns"):
+            broken = db.fetch_all(
+                f"SELECT id FROM {table} WHERE "
+                f"(voided_at IS NOT NULL AND (void_reason IS NULL OR void_reason = '')) "
+                f"OR (voided_at IS NULL AND voided_by IS NOT NULL)")
+            assert not broken, (table, [b["id"] for b in broken])
+    check("every voided row across purchases/returns has a reason, and nothing is half-voided",
+          no_voided_row_is_missing_its_void_bookkeeping)
 
     print("\n" + "=" * 52)
     if failures:

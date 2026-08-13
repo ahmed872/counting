@@ -11,56 +11,86 @@ How it works from the two sides:
                   WhatsApp, gets a key back, pastes it in the box on that same
                   screen, and carries on. He never reinstalls anything.
 
-  The seller      runs the key generator with that device code and the shared
-                  secret, and sends back the key it prints.
+  The seller      runs the key generator (packaging/make_key.py, or the
+                  "توليد مفتاح تفعيل" GitHub Actions workflow) with that device
+                  code and the PRIVATE signing key, and sends back the key it
+                  prints.
 
 A key is bound to one device code, so a key that leaks unlocks that one machine
 and nothing else.
 
-Honest about what this is: the app has to be able to check a key while offline,
-so it carries what it needs to do that. Someone determined enough to open the
-executable can extract it. This stops a customer from using the program without
-paying; it does not stop a cracker, and no offline desktop program can. The
-secret is at least kept out of the source: it is supplied at build time.
+P1-4: this used to be a single shared HMAC secret, baked into the shipped
+executable, that both signed keys and verified them - anyone who extracted it
+from the .exe could mint a valid key for ANY device, not just their own. Now an
+Ed25519 keypair: the PRIVATE key never leaves the seller's side (it lives only
+in packaging/make_key.py's caller, typically a GitHub Actions secret used only
+by the key-generator workflow); the shipped app carries only the PUBLIC key,
+which can verify a signature but cannot produce a new one. Extracting the
+public key from the executable, same as before, only lets someone confirm a
+licence is genuine - it does not let them forge one.
+
+The real signature is 64 bytes, and there is no way to make an asymmetric
+signature shorter without weakening it - "do not invent custom cryptography"
+applies as much to shrinking a signature as to writing a new one. The
+resulting key is a single long code rather than the old short one; it is still
+meant to be copy-pasted through WhatsApp, never retyped by hand.
+
+Honest about what this is: the app has to be able to check a key while
+offline, so it carries the public key needed to do that. That is not a
+weakness particular to this design - it is true of every offline licence
+scheme, asymmetric or not. The difference this change makes is specifically
+that whatever the app carries can no longer mint new keys.
 """
 
-import hashlib
-import hmac
-import os
 import re
+import os
 import uuid
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 from logic.trial import _read_marker, _write_marker
 
-DEV_SECRET = "development-secret-not-for-release"
+# A published keypair used only for local development and the test suite -
+# safe to commit because it is explicitly not the pair any real customer's
+# copy is built with. The matching private key is published too, right next
+# to it, as tests/test_app.py's _DEV_PRIVATE_KEY_HEX - so whoever holds it
+# can only forge licences that verify against THIS public key; a real build
+# swaps in a different public key entirely (see _load_public_key_hex), and
+# using_development_key() below exists specifically to refuse shipping a
+# build that forgot to.
+DEV_PUBLIC_KEY_HEX = "da4b822c4ac06d99315f5a088f0106b0ccfef443b52246ed184e0448db734516"
 
 
-def _load_secret():
-    """The real secret is written into logic/_secret.py at build time from a
-    value held in the repository's Actions secrets, never in the source.
-
-    An env var alone would not do: it is read on the machine the program runs
-    on, and the customer's machine has no such variable - every build would
-    quietly fall back to the placeholder, and the placeholder is published in
-    this file for anyone to read. The build refuses to run without the real one.
+def _load_public_key_hex():
+    """The real public key is written into logic/_licence_key.py at build
+    time from a value held in the repository's Actions secrets, never in the
+    source. Baking in only the PUBLIC half is the whole point of this scheme
+    (see packaging/make_key.py for where the private half actually lives) -
+    there is nothing wrong with this value leaking, which is exactly why it
+    is fine to fall back to an environment variable or the published dev key
+    when no build-time file is present.
     """
     try:
-        from logic import _secret          # written by the build, git-ignored
-        value = getattr(_secret, "SECRET", "").strip()
+        from logic import _licence_key      # written by the build, git-ignored
+        value = getattr(_licence_key, "PUBLIC_KEY_HEX", "").strip()
         if value:
             return value
     except ImportError:
         pass
-    return os.environ.get("RESTAURANT_ERP_SECRET", DEV_SECRET)
+    return os.environ.get("RESTAURANT_ERP_PUBLIC_KEY", DEV_PUBLIC_KEY_HEX)
 
 
-SECRET = _load_secret()
+PUBLIC_KEY_HEX = _load_public_key_hex()
 
 
-def using_development_secret():
-    """True when no real secret was baked in. The build checks this and stops:
-    shipping with the placeholder means anyone reading this file can mint keys."""
-    return SECRET == DEV_SECRET
+def using_development_key():
+    """True when no real public key was baked in. The build checks this and
+    stops: shipping with the dev key means a licence signed with the
+    published dev private key - available to anyone who reads this file's
+    history - would be accepted as genuine."""
+    return PUBLIC_KEY_HEX == DEV_PUBLIC_KEY_HEX
+
 
 _DEVICE_KEY = "device_code"
 _LICENCE_KEY = "licence_key"
@@ -68,6 +98,14 @@ _LICENCE_KEY = "licence_key"
 # I, O, 0 and 1 are left out. These codes get read off a screen and typed into a
 # phone, and every one of those pairs gets confused doing it.
 _ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+
+# An Ed25519 signature is exactly 64 bytes. 103 base-33 "digits" is the
+# smallest number that can hold every possible 64-byte value without losing
+# any of it (33**103 > 256**64) - fewer would silently truncate some
+# signatures, which would make some genuine keys unverifiable rather than
+# making anything more compact in a way that matters.
+_SIGNATURE_BYTES = 64
+_SIGNATURE_CHARS = 103
 
 
 def _encode(digest, length):
@@ -77,6 +115,18 @@ def _encode(digest, length):
         number, index = divmod(number, len(_ALPHABET))
         out.append(_ALPHABET[index])
     return "".join(out)
+
+
+def _decode(text, byte_length):
+    """Reverse of _encode(): that function peels off characters least-
+    significant-first via repeated divmod, so rebuilding the original value
+    walks the string in reverse and multiplies up one base-33 digit at a
+    time. Raises ValueError on any character outside _ALPHABET, exactly
+    like the int()/float() built-ins callers already expect to catch."""
+    number = 0
+    for ch in reversed(text):
+        number = number * len(_ALPHABET) + _ALPHABET.index(ch)
+    return number.to_bytes(byte_length, "big")
 
 
 def _group(text, size=4):
@@ -113,24 +163,25 @@ def normalise_key(text):
     return re.sub(r"[^A-Za-z0-9]", "", str(text or "")).upper()
 
 
-def key_for_device(code, secret=None):
-    """The one valid key for this device code. Used by both sides: the
-    generator prints it, the app compares against it."""
-    digest = hmac.new(
-        (secret or SECRET).encode("utf-8"),
-        f"RESTAURANT-ERP-v1:{code}".encode("utf-8"),
-        hashlib.sha256,
-    ).digest()
-    return _group(_encode(digest, 16))
-
-
-def is_valid(code, key, secret=None):
-    expected = normalise_key(key_for_device(code, secret))
-    supplied = normalise_key(key)
-    if not supplied:
+def is_valid(code, key, public_key_hex=None):
+    """Verifies a signature against the device code, using only the public
+    key - nothing here can produce a new valid key, only check one someone
+    else (packaging/make_key.py, holding the private key) already produced."""
+    cleaned = normalise_key(key)
+    if len(cleaned) != _SIGNATURE_CHARS:
         return False
-    # Constant time, so the check cannot be probed a character at a time.
-    return hmac.compare_digest(expected, supplied)
+    try:
+        signature = _decode(cleaned, _SIGNATURE_BYTES)
+        public_key = Ed25519PublicKey.from_public_bytes(
+            bytes.fromhex(public_key_hex or PUBLIC_KEY_HEX))
+        public_key.verify(signature, code.encode("utf-8"))
+        return True
+    except (InvalidSignature, ValueError):
+        # ValueError covers a malformed key (bad characters already handled
+        # by the length check, but also a public_key_hex that is not valid
+        # hex or not 32 bytes) as well as InvalidSignature's own cousin
+        # exceptions some backends raise for a garbled signature.
+        return False
 
 
 def is_activated(db):

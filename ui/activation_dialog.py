@@ -82,15 +82,15 @@ class ActivationDialog(QDialog):
         code_row.addWidget(copy_btn)
         layout.addLayout(code_row)
 
-        step_two = QLabel("٢ — اكتب المفتاح الذي وصلك هنا:")
+        step_two = QLabel("٢ — انسخ المفتاح الذي وصلك والصقه هنا (وليس بإعادة الكتابة):")
         step_two.setStyleSheet("font-weight:800; color:#1f3b57; font-size:14px;")
         layout.addWidget(step_two)
 
         self.key_field = QLineEdit()
-        self.key_field.setPlaceholderText("XXXX-XXXX-XXXX-XXXX")
+        self.key_field.setPlaceholderText("الصق مفتاح التفعيل كاملاً هنا")
         self.key_field.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.key_field.setStyleSheet(
-            "font-size:19px; font-weight:700; letter-spacing:2px; padding:10px;")
+            "font-size:14px; font-weight:700; letter-spacing:1px; padding:10px;")
         self.key_field.returnPressed.connect(self.try_activate)
         layout.addWidget(self.key_field)
 

@@ -247,6 +247,64 @@ CREATE TABLE IF NOT EXISTS sales_returns (
     FOREIGN KEY (branch_id) REFERENCES branches(id)
 );
 
+-- Failed-login throttling (P1-6): one row per username that has ever failed
+-- a login. Not a FOREIGN KEY to users(id) - a lockout has to work even for
+-- an unknown/mistyped username (so a login attempt still cannot be used to
+-- probe which usernames exist - see AuthLogic.authenticate), and must
+-- survive the account itself being recreated.
+CREATE TABLE IF NOT EXISTS login_lockouts (
+    username TEXT PRIMARY KEY,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    locked_until DATETIME
+);
+
+-- Audit trail for sensitive actions (P1-1). user_id is nullable (and not
+-- constrained NOT NULL) on purpose: a failed login against an unknown
+-- username has no real user row to point at, but the attempt itself - who
+-- was typed, when, whether it succeeded - is exactly what an audit log
+-- exists to keep. Never holds a plaintext password anywhere.
+--
+-- Deliberately no FOREIGN KEY on user_id: an audit trail's whole job is to
+-- outlive the thing it is recording. username is stored alongside it as
+-- plain text for exactly this reason - a row must stay readable regardless
+-- of what later happens to the account, rather than going dead (or
+-- blocking the account from ever being removed) the moment it does.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT,
+    action TEXT NOT NULL,
+    entity_type TEXT,
+    entity_id INTEGER,
+    before_data TEXT,
+    after_data TEXT,
+    branch_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Inventory period closes (COGS): a physical count posted to the ledger so
+-- account 1100 (المخزون) actually decreases for consumption instead of
+-- accumulating every raw-material purchase forever. See
+-- AccountingLogic.close_inventory_period().
+CREATE TABLE IF NOT EXISTS inventory_periods (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    start_date DATE NOT NULL,
+    end_date DATE NOT NULL,
+    opening_inventory REAL NOT NULL,
+    raw_material_purchases REAL NOT NULL,
+    raw_material_purchase_returns REAL NOT NULL,
+    closing_inventory REAL NOT NULL,
+    cogs REAL NOT NULL,
+    journal_entry_id INTEGER,
+    reversed_at DATETIME,
+    reversal_journal_entry_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    created_by INTEGER,
+    FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id),
+    FOREIGN KEY (reversal_journal_entry_id) REFERENCES journal_entries(id),
+    FOREIGN KEY (created_by) REFERENCES users(id)
+);
+
 -- Employee Deductions / Advances / Bonuses
 CREATE TABLE IF NOT EXISTS employee_deductions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

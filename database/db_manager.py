@@ -1,6 +1,59 @@
 import sqlite3
 from contextlib import contextmanager
 
+# Tables that must exist in any real database from this program - checked
+# before a chosen backup file is ever allowed to replace the live database.
+# Not every table (a customer's copy from an older version may not have all
+# of them yet), just enough that an unrelated .db file or a garbage/renamed
+# file cannot be mistaken for a genuine backup.
+_CORE_TABLES = ("branches", "chart_of_accounts", "journal_entries", "users")
+
+
+def validate_database_file(path):
+    """P1-5: opens `path` as SQLite (read-only, its own connection) and
+    checks it is actually usable as this program's database before anything
+    is allowed to overwrite the live one with it. Returns (True, None) or
+    (False, <Arabic error message>) - never raises, so a caller can always
+    show the message directly without its own try/except.
+
+    Three checks, cheapest and most decisive first: the file has to open as
+    SQLite at all (rejects a renamed non-database file instantly), it has
+    to carry this program's own core tables (rejects some other, unrelated
+    SQLite database), and PRAGMA integrity_check has to say the page
+    structure itself is not corrupt (rejects a truncated or bit-rotted
+    file that still happens to open)."""
+    import os
+    if not os.path.exists(path):
+        return False, "الملف غير موجود"
+
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.OperationalError as exc:
+        return False, f"تعذر فتح الملف كقاعدة بيانات: {exc}"
+
+    try:
+        try:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.DatabaseError:
+            return False, "هذا الملف ليس قاعدة بيانات SQLite صالحة"
+
+        missing = [t for t in _CORE_TABLES if t not in tables]
+        if missing:
+            return False, (
+                "هذا الملف لا يبدو نسخة احتياطية من هذا البرنامج "
+                f"(جداول أساسية غير موجودة: {', '.join(missing)})"
+            )
+
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            return False, f"الملف تالف: {integrity}"
+
+        return True, None
+    finally:
+        conn.close()
+
+
 class DBManager:
     def __init__(self, db_path='restaurant_erp.db'):
         self.db_path = db_path
@@ -254,6 +307,34 @@ class DBManager:
         if self.table_exists(cursor, 'users') and 'branch_id' not in table_columns('users'):
             cursor.execute("ALTER TABLE users ADD COLUMN branch_id INTEGER REFERENCES branches(id)")
 
+        # P1-8: payroll_runs never stored which journal entry it posted -
+        # every other business table with a journal effect (purchases,
+        # customer_sales, inventory_periods...) does, and without it there
+        # was no non-heuristic way to confirm a posted payroll run actually
+        # has a journal behind it, or to find that journal to reverse later.
+        if self.table_exists(cursor, 'payroll_runs') and \
+                'journal_entry_id' not in table_columns('payroll_runs'):
+            cursor.execute("ALTER TABLE payroll_runs ADD COLUMN journal_entry_id INTEGER")
+
+        # P1-2: void/reversal instead of a hard delete for posted purchases,
+        # purchase returns, and sales returns - the row (and its original
+        # journal entry) stay in place as history; voiding posts a new
+        # reversal journal entry rather than deleting anything, and
+        # reporting queries exclude a voided row's amount by filtering on
+        # voided_at, not by the row being gone.
+        for table in ('purchases', 'purchase_returns', 'sales_returns'):
+            if not self.table_exists(cursor, table):
+                continue
+            columns = table_columns(table)
+            if 'voided_at' not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN voided_at DATETIME")
+            if 'voided_by' not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN voided_by INTEGER")
+            if 'void_reason' not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN void_reason TEXT")
+            if 'reversal_journal_entry_id' not in columns:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN reversal_journal_entry_id INTEGER")
+
         self.arabise_account_names(cursor)
         self.enforce_uniqueness(cursor)
 
@@ -405,6 +486,26 @@ class DBManager:
             (key, str(value)),
         )
 
+    def check_integrity(self):
+        """PRAGMA integrity_check on the live database - 'ok' or a list of
+        problems. Used after a restore (P1-5) and by the database integrity
+        test suite (P1-8)."""
+        conn = self.get_connection()
+        try:
+            return conn.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            conn.close()
+
+    def check_foreign_keys(self):
+        """PRAGMA foreign_key_check on the live database - an empty list
+        means no violations. Used after a restore (P1-5) and by the
+        database integrity test suite (P1-8)."""
+        conn = self.get_connection()
+        try:
+            return conn.execute("PRAGMA foreign_key_check").fetchall()
+        finally:
+            conn.close()
+
     def delete_journal_entry_on_cursor(self, cursor, entry_id):
         """Same two deletes as delete_journal_entry() below, against a
         cursor the caller already holds - so removing a business row and
@@ -426,6 +527,59 @@ class DBManager:
             return
         with self.transaction() as cursor:
             self.delete_journal_entry_on_cursor(cursor, entry_id)
+
+    VOIDABLE_TABLES = ('purchases', 'purchase_returns', 'sales_returns')
+
+    def void_transaction(self, table, record_id, user_id, reason):
+        """P1-2: void a posted purchase / purchase return / sales return
+        without touching history. Unlike delete_journal_entry_on_cursor
+        (used elsewhere for a row that is itself being deleted, e.g.
+        clear_day), this keeps both the original row and its original
+        journal entry exactly as they were, and posts a new reversal
+        journal entry - debit and credit swapped - dated today. A voided
+        row is still visible everywhere it always was; only its amount
+        stops counting toward any report total, by filtering on
+        voided_at, never by the row disappearing."""
+        import datetime as _datetime
+
+        if table not in self.VOIDABLE_TABLES:
+            raise ValueError(f"جدول غير مدعوم للإلغاء: {table}")
+        if not reason or not reason.strip():
+            raise ValueError("سبب الإلغاء مطلوب")
+        row = self.fetch_one(f"SELECT * FROM {table} WHERE id = ?", (record_id,))
+        if not row:
+            raise ValueError("لا يوجد سجل بهذا الرقم")
+        if row["voided_at"]:
+            raise ValueError("هذه العملية ملغاة بالفعل")
+
+        entry_id = row["journal_entry_id"]
+        reversal_id = None
+        with self.transaction() as cursor:
+            if entry_id:
+                cursor.execute(
+                    "SELECT account_code, debit, credit FROM journal_items WHERE entry_id = ?",
+                    (entry_id,))
+                items = cursor.fetchall()
+                if items:
+                    cursor.execute(
+                        "SELECT date, description, branch_id FROM journal_entries WHERE id = ?",
+                        (entry_id,))
+                    original = cursor.fetchone()
+                    swapped = [
+                        {"account_code": it["account_code"],
+                         "debit": it["credit"] or 0, "credit": it["debit"] or 0}
+                        for it in items
+                    ]
+                    today = _datetime.datetime.now().strftime("%Y-%m-%d")
+                    reversal_id = self.insert_journal_entry(
+                        cursor, today, f"عكس: {original['description']}",
+                        original["branch_id"], swapped)
+            cursor.execute(
+                f"UPDATE {table} SET voided_at = CURRENT_TIMESTAMP, voided_by = ?, "
+                f"void_reason = ?, reversal_journal_entry_id = ? WHERE id = ?",
+                (user_id, reason.strip(), reversal_id, record_id),
+            )
+        return reversal_id
 
     @contextmanager
     def transaction(self):
@@ -460,7 +614,46 @@ class DBManager:
         caller already holds - so they can be combined into one transaction
         with whatever operational row (a purchase, a payment, a sale) the
         entry belongs to. add_journal_entry() below is the same two inserts
-        for callers that only need the journal entry on its own."""
+        for callers that only need the journal entry on its own.
+
+        P0-5: every caller ultimately funnels through here, so this is the
+        one place that can actually guarantee a posted journal is valid -
+        a UI screen skipping a check is a bug in one screen; this raising
+        instead is a guarantee for every screen, present and future. Do not
+        depend on UI callers to produce a valid journal on their own."""
+        if not items:
+            raise ValueError(f"لا يمكن إنشاء قيد محاسبي بدون بنود ({description})")
+        if not date:
+            raise ValueError(f"القيد المحاسبي يتطلب تاريخًا ({description})")
+
+        for item in items:
+            debit = item.get('debit') or 0
+            credit = item.get('credit') or 0
+            if debit < 0 or credit < 0:
+                raise ValueError(
+                    f"بند القيد لا يمكن أن يكون بمبلغ سالب: {item.get('account_code')} "
+                    f"مدين {debit:,.2f} دائن {credit:,.2f} ({description})"
+                )
+            if debit > 0 and credit > 0:
+                raise ValueError(
+                    f"بند القيد لا يمكن أن يكون مدينًا ودائنًا في نفس الوقت: "
+                    f"{item.get('account_code')} ({description})"
+                )
+
+        account_codes = {item['account_code'] for item in items}
+        placeholders = ",".join("?" * len(account_codes))
+        cursor.execute(
+            f"SELECT code FROM chart_of_accounts WHERE code IN ({placeholders})",
+            tuple(account_codes),
+        )
+        known_codes = {row[0] for row in cursor.fetchall()}
+        unknown = account_codes - known_codes
+        if unknown:
+            raise ValueError(
+                f"القيد يشير إلى حساب غير موجود في دليل الحسابات: {', '.join(sorted(unknown))} "
+                f"({description})"
+            )
+
         debit = round(sum(item['debit'] for item in items), 2)
         credit = round(sum(item['credit'] for item in items), 2)
         if abs(debit - credit) > 0.01:

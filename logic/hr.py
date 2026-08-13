@@ -1,6 +1,8 @@
 import calendar
 from datetime import datetime, timedelta
 
+from logic.money import round_money
+
 DOC_LABELS = {
     'iqama': 'إقامة',
     'passport': 'جواز سفر',
@@ -14,7 +16,11 @@ class HRLogic:
         self.db = db_manager
 
     def calculate_daily_rate(self, base_salary, allowances):
-        return (base_salary + allowances) / 30
+        # P1-3: rounded here, once - a salary that does not divide evenly
+        # by 30 (almost every real one) used to leave an unrounded
+        # repeating float sitting in daily_rate, which then propagated
+        # into absence_deduction and every payroll total summed from it.
+        return round_money((base_salary + allowances) / 30)
 
     def get_document_alerts(self, days=30):
         today = datetime.now().date()
@@ -293,7 +299,9 @@ class HRLogic:
                         )
                         remaining -= applied
 
-            self.db.insert_journal_entry(cursor, timestamp, description, None, journal_items)
+            entry_id = self.db.insert_journal_entry(cursor, timestamp, description, None, journal_items)
+            cursor.execute(
+                "UPDATE payroll_runs SET journal_entry_id = ? WHERE id = ?", (entry_id, run_id))
 
         return run_id
 
