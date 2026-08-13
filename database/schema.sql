@@ -247,6 +247,17 @@ CREATE TABLE IF NOT EXISTS sales_returns (
     FOREIGN KEY (branch_id) REFERENCES branches(id)
 );
 
+-- Failed-login throttling (P1-6): one row per username that has ever failed
+-- a login. Not a FOREIGN KEY to users(id) - a lockout has to work even for
+-- an unknown/mistyped username (so a login attempt still cannot be used to
+-- probe which usernames exist - see AuthLogic.authenticate), and must
+-- survive the account itself being recreated.
+CREATE TABLE IF NOT EXISTS login_lockouts (
+    username TEXT PRIMARY KEY,
+    failed_count INTEGER NOT NULL DEFAULT 0,
+    locked_until DATETIME
+);
+
 -- Audit trail for sensitive actions (P1-1). user_id is nullable (and not
 -- constrained NOT NULL) on purpose: a failed login against an unknown
 -- username has no real user row to point at, but the attempt itself - who

@@ -2952,6 +2952,130 @@ def main():
     check("a deactivated user cannot log in even with the right password",
           deactivated_user_cannot_log_in)
 
+    def five_wrong_passwords_locks_the_account_temporarily():
+        """P1-6: after five consecutive wrong passwords the account is
+        locked out for a while - even the CORRECT password must not work
+        during the lockout, and lockout_status() must report a real
+        remaining-minutes figure the login screen can show."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("lockout_test_user", "correct-password", "viewer")
+        try:
+            assert auth.lockout_status("lockout_test_user") is None, \
+                "a brand new account is already reported locked"
+            for _ in range(4):
+                assert auth.authenticate("lockout_test_user", "wrong") is None
+                assert auth.lockout_status("lockout_test_user") is None, \
+                    "locked out before reaching the failure threshold"
+
+            # The fifth wrong attempt crosses the threshold.
+            assert auth.authenticate("lockout_test_user", "wrong") is None
+            minutes = auth.lockout_status("lockout_test_user")
+            assert minutes is not None and minutes > 0, minutes
+
+            # The CORRECT password must still be refused while locked.
+            assert auth.authenticate("lockout_test_user", "correct-password") is None, \
+                "the correct password was accepted during a lockout"
+
+            # Force the lockout to have already expired, the same as if
+            # enough real time had passed, and confirm normal login
+            # resumes and the failure counter/lockout are both cleared.
+            db.execute_query(
+                "UPDATE login_lockouts SET locked_until = '2000-01-01 00:00:00' "
+                "WHERE username = 'lockout_test_user'")
+            assert auth.lockout_status("lockout_test_user") is None
+            assert auth.authenticate("lockout_test_user", "correct-password") is not None, \
+                "login did not resume after the lockout expired"
+            assert not db.fetch_one(
+                "SELECT username FROM login_lockouts WHERE username = 'lockout_test_user'"), \
+                "a successful login did not clear the lockout row"
+        finally:
+            db.execute_query("DELETE FROM login_lockouts WHERE username = 'lockout_test_user'")
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("five consecutive wrong passwords locks the account temporarily, even against "
+          "the correct password, and clears once it expires",
+          five_wrong_passwords_locks_the_account_temporarily)
+
+    def user_management_is_enforced_in_the_logic_layer_not_only_by_hiding_the_ui():
+        """P1-6: Settings already hides the user-management box from anyone
+        but an admin, but that is a UI convenience, not a security
+        boundary - a future screen that forgets the same check, or
+        anything that calls AuthLogic directly, must still be refused by
+        AuthLogic itself. actor_role=None (an internal/system caller with
+        no real "current user", e.g. ensure_default_admins on a fresh
+        database) is deliberately exempt - checked at the end."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        admin_uid = auth.create_user("role_enforce_admin", "adminpass1", "admin")
+        victim_uid = auth.create_user("role_enforce_victim", "victimpass1", "viewer")
+        try:
+            for actor_role in ("manager", "cashier", "viewer"):
+                try:
+                    auth.create_user("should_not_exist", "x", "viewer", actor_role=actor_role)
+                    raise AssertionError(f"a {actor_role} was allowed to create a user")
+                except PermissionError:
+                    pass
+                try:
+                    auth.set_active(victim_uid, False, actor_role=actor_role)
+                    raise AssertionError(f"a {actor_role} was allowed to deactivate a user")
+                except PermissionError:
+                    pass
+                try:
+                    auth.set_password(victim_uid, "newpass123", actor_role=actor_role)
+                    raise AssertionError(f"a {actor_role} was allowed to reset another user's password")
+                except PermissionError:
+                    pass
+
+            # An admin actor, and a caller that passes no actor_role at all
+            # (a system/bootstrap call), must both still work normally.
+            auth.set_active(victim_uid, False, actor_role="admin")
+            assert not db.fetch_one(
+                "SELECT is_active FROM users WHERE id = ?", (victim_uid,))["is_active"]
+            auth.set_active(victim_uid, True)   # no actor_role passed at all
+            assert db.fetch_one("SELECT is_active FROM users WHERE id = ?", (victim_uid,))["is_active"]
+
+            assert not db.fetch_one("SELECT id FROM users WHERE username = 'should_not_exist'"), \
+                "a user got created despite every attempt being refused"
+        finally:
+            db.execute_query("DELETE FROM users WHERE id IN (?, ?)", (admin_uid, victim_uid))
+            db.execute_query("DELETE FROM users WHERE username = 'should_not_exist'")
+    check("creating, deactivating, or resetting another user's password is refused by the logic "
+          "layer itself for a non-admin actor, not only hidden in the UI",
+          user_management_is_enforced_in_the_logic_layer_not_only_by_hiding_the_ui)
+
+    def a_user_can_still_change_their_own_password_without_being_an_admin():
+        """change_own_password() must stay completely unaffected by the new
+        admin-only guard - it never passes actor_role, and a viewer must
+        still be able to change their own password."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("self_password_test", "old-password-1", "viewer")
+        try:
+            auth.change_own_password(uid, "old-password-1", "new-password-2")
+            assert auth.authenticate("self_password_test", "new-password-2") is not None
+        finally:
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("a viewer can still change their own password without needing admin rights",
+          a_user_can_still_change_their_own_password_without_being_an_admin)
+
+    def lockout_applies_the_same_way_to_an_unknown_username():
+        """The same anonymity property authenticate() already has (wrong
+        password and unknown username look identical) has to hold for
+        lockouts too - otherwise five failed attempts against a username
+        that happens to be real, versus one that is made up, would behave
+        differently and leak which is which."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        fake_username = "this_username_was_never_created"
+        try:
+            for _ in range(5):
+                assert auth.authenticate(fake_username, "anything") is None
+            assert auth.lockout_status(fake_username) is not None
+        finally:
+            db.execute_query("DELETE FROM login_lockouts WHERE username = ?", (fake_username,))
+    check("locking out after repeated failures works the same for an unknown username as a real one",
+          lockout_applies_the_same_way_to_an_unknown_username)
+
     def sensitive_actions_are_recorded_in_the_audit_log():
         """P1-1: login attempts (success and failure), user creation, and
         activation/deactivation must all leave a durable, human-readable
@@ -3467,6 +3591,39 @@ def main():
             db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
     check("the login dialog rejects a wrong password and forces a real one past a temporary login",
           login_dialog_end_to_end_including_the_forced_password_change)
+
+    def login_dialog_shows_the_specific_lockout_message():
+        """P1-6, driven through the real dialog: after enough wrong
+        passwords the on-screen message must change from the generic
+        'wrong username or password' to a specific one naming the
+        lockout - not just the same message repeated, which would leave
+        someone assuming they keep mistyping rather than that the account
+        is temporarily locked."""
+        from ui.login_dialog import LoginDialog
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+        uid = auth.create_user("lockout_dialog_test", "correct-pass-1", "viewer")
+        try:
+            dialog = LoginDialog(db)
+            dialog.show()
+            app.processEvents()
+            dialog.username_field.setText("lockout_dialog_test")
+            for _ in range(5):
+                dialog.password_field.setText("wrong-password")
+                dialog.try_login()
+            message = dialog.login_status.text()
+            assert "دقيق" in message, f"the lockout message did not mention a wait time: {message!r}"
+
+            dialog.password_field.setText("correct-pass-1")
+            dialog.try_login()
+            assert dialog.authenticated_user is None, \
+                "the correct password logged in anyway while the account was locked"
+        finally:
+            dialog.close()
+            db.execute_query("DELETE FROM login_lockouts WHERE username = 'lockout_dialog_test'")
+            db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+    check("the login dialog shows a specific message once too many wrong attempts lock the account",
+          login_dialog_shows_the_specific_lockout_message)
 
     # ---------------- what actually ships ----------------
     print("\n[release]")

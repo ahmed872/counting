@@ -207,8 +207,9 @@ class SettingsModule(QWidget):
             self.auth.create_user(username, password, role, display_name,
                                    must_change_password=True, branch_id=branch_id,
                                    actor_user_id=self.current_user.get("id"),
-                                   actor_username=self.current_user.get("username"))
-        except ValueError as exc:
+                                   actor_username=self.current_user.get("username"),
+                                   actor_role=self.current_user.get("role"))
+        except (ValueError, PermissionError) as exc:
             QMessageBox.warning(self, "تنبيه", str(exc))
             return
         QMessageBox.information(
@@ -237,9 +238,14 @@ class SettingsModule(QWidget):
             QLineEdit.EchoMode.Password)
         if not ok or not new_password:
             return
-        self.auth.set_password(user_id, new_password, must_change_password=True,
-                                actor_user_id=self.current_user.get("id"),
-                                actor_username=self.current_user.get("username"))
+        try:
+            self.auth.set_password(user_id, new_password, must_change_password=True,
+                                    actor_user_id=self.current_user.get("id"),
+                                    actor_username=self.current_user.get("username"),
+                                    actor_role=self.current_user.get("role"))
+        except PermissionError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
+            return
         QMessageBox.information(self, "تم", "تم إعادة تعيين كلمة المرور.")
 
     def toggle_selected_active(self):
@@ -248,9 +254,14 @@ class SettingsModule(QWidget):
         if user_id is None:
             return
         currently_active = self.users_table.item(row, 4).data(Qt.ItemDataRole.UserRole)
-        self.auth.set_active(user_id, not currently_active,
-                              actor_user_id=self.current_user.get("id"),
-                              actor_username=self.current_user.get("username"))
+        try:
+            self.auth.set_active(user_id, not currently_active,
+                                  actor_user_id=self.current_user.get("id"),
+                                  actor_username=self.current_user.get("username"),
+                                  actor_role=self.current_user.get("role"))
+        except PermissionError as exc:
+            QMessageBox.warning(self, "تنبيه", str(exc))
+            return
         self.load_users()
 
     def load_users(self):

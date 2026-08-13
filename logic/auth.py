@@ -18,8 +18,20 @@ logic/licence.py, just applied the way passwords specifically need to be
 import hashlib
 import hmac
 import os
+from datetime import datetime, timedelta
 
 from logic.audit import AuditLogger
+
+# P1-6: after this many consecutive failures, the account is locked out for
+# this long. Deliberately modest, not a hard security boundary - this is a
+# single offline desktop program with no network exposure to brute-force
+# over, so the actual threat this defends against is someone with physical
+# access to the machine trying passwords by hand while its owner is away
+# from the desk, not an automated attack. Five wrong guesses is a real typo
+# tolerance; a fifteen-minute wait after that is a real deterrent to guessing
+# without locking a legitimate owner out for the rest of the day.
+_MAX_FAILED_ATTEMPTS = 5
+_LOCKOUT_MINUTES = 15
 
 ROLE_ADMIN = "admin"
 ROLE_MANAGER = "manager"
@@ -81,30 +93,94 @@ class AuthLogic:
                 must_change_password=True,
             )
 
+    def _now_iso(self):
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    def lockout_status(self, username):
+        """Minutes remaining if `username` is currently locked out, or None -
+        a separate query from authenticate() itself so the login screen can
+        show a specific "too many attempts, wait N minutes" message without
+        authenticate()'s own return value revealing whether a lockout is why
+        it failed (unknown username, wrong password, and a lockout on a
+        username that was never real all still return the same None from
+        authenticate - see there)."""
+        username = (username or "").strip().lower()
+        row = self.db.fetch_one(
+            "SELECT locked_until FROM login_lockouts WHERE username = ?", (username,))
+        if not row or not row["locked_until"] or row["locked_until"] <= self._now_iso():
+            return None
+        remaining = datetime.strptime(row["locked_until"], "%Y-%m-%d %H:%M:%S") - datetime.now()
+        return max(1, int(remaining.total_seconds() // 60) + 1)
+
+    def _register_failed_login(self, username):
+        row = self.db.fetch_one(
+            "SELECT failed_count FROM login_lockouts WHERE username = ?", (username,))
+        count = (row["failed_count"] if row else 0) + 1
+        locked_until = None
+        if count >= _MAX_FAILED_ATTEMPTS:
+            locked_until = (datetime.now() + timedelta(minutes=_LOCKOUT_MINUTES)).strftime(
+                "%Y-%m-%d %H:%M:%S")
+            count = 0   # the next window after the lockout expires starts clean
+        self.db.execute_query(
+            "INSERT INTO login_lockouts (username, failed_count, locked_until) VALUES (?, ?, ?) "
+            "ON CONFLICT(username) DO UPDATE SET failed_count = excluded.failed_count, "
+            "locked_until = excluded.locked_until",
+            (username, count, locked_until),
+        )
+        if locked_until:
+            self.audit.log("login_lockout_triggered", username=username)
+
+    def _clear_failed_logins(self, username):
+        self.db.execute_query("DELETE FROM login_lockouts WHERE username = ?", (username,))
+
     def authenticate(self, username, password):
         """Returns the user row (without the hash/salt) on success, or None -
-        wrong password and unknown/deactivated username look identical from
-        the outside, so a login attempt cannot be used to probe which
-        usernames exist. Every attempt is audit-logged here, in the one
-        place every login in the app actually goes through, rather than
-        depending on the login screen to remember to log it - success and
-        failure alike, and never the password itself."""
+        wrong password, unknown/deactivated username, and a lockout all look
+        identical from the outside (see lockout_status for how the login
+        screen still shows something more specific), so a login attempt
+        cannot be used to probe which usernames exist or which are locked
+        out. Every attempt is audit-logged here, in the one place every
+        login in the app actually goes through, rather than depending on
+        the login screen to remember to log it - success and failure alike,
+        and never the password itself."""
         username = (username or "").strip().lower()
+
+        if self.lockout_status(username) is not None:
+            self.audit.log("login_blocked", username=username)
+            return None
+
         row = self.db.fetch_one(
             "SELECT * FROM users WHERE username = ? AND is_active = 1", (username,)
         )
         if row is None:
+            self._register_failed_login(username)
             self.audit.log("login_failed", username=username)
             return None
         if not _verify_password(password or "", row["password_hash"], row["password_salt"]):
+            self._register_failed_login(username)
             self.audit.log("login_failed", user_id=row["id"], username=username)
             return None
+        self._clear_failed_logins(username)
         self.audit.log("login_success", user_id=row["id"], username=username)
         return self._public(row)
 
+    def _require_admin(self, actor_role, action):
+        """P1-6: enforced here, in the logic layer, not only by the
+        Settings screen hiding the user-management box from anyone but an
+        admin. A UI check can be skipped by a future screen that forgets
+        to add it, or bypassed by anything that calls this method
+        directly; this cannot. actor_role=None (the default) skips the
+        check entirely - reserved for callers with no real "current user"
+        of their own, such as ensure_default_admins() seeding the two
+        admin seats on a brand new database before anyone has logged in
+        at all."""
+        if actor_role is not None and actor_role != ROLE_ADMIN:
+            raise PermissionError(f"هذه العملية للأدمن فقط: {action}")
+
     def create_user(self, username, password, role, display_name=None,
                      must_change_password=False, branch_id=None,
-                     actor_user_id=None, actor_username=None):
+                     actor_user_id=None, actor_username=None, actor_role=None):
+        self._require_admin(actor_role, "إنشاء مستخدم")
         username = (username or "").strip().lower()
         if not username:
             raise ValueError("اسم المستخدم مطلوب")
@@ -145,7 +221,8 @@ class AuthLogic:
         return [dict(r) for r in rows]
 
     def set_password(self, user_id, new_password, must_change_password=False,
-                      actor_user_id=None, actor_username=None):
+                      actor_user_id=None, actor_username=None, actor_role=None):
+        self._require_admin(actor_role, "إعادة تعيين كلمة مرور مستخدم آخر")
         if not new_password:
             raise ValueError("كلمة المرور مطلوبة")
         password_hash, salt = _hash_password(new_password)
@@ -166,7 +243,8 @@ class AuthLogic:
         self.set_password(user_id, new_password, must_change_password=False,
                            actor_user_id=user_id, actor_username=row["username"])
 
-    def set_active(self, user_id, is_active, actor_user_id=None, actor_username=None):
+    def set_active(self, user_id, is_active, actor_user_id=None, actor_username=None, actor_role=None):
+        self._require_admin(actor_role, "تفعيل أو تعطيل مستخدم")
         self.db.execute_query(
             "UPDATE users SET is_active = ? WHERE id = ?", (1 if is_active else 0, user_id)
         )
