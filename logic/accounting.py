@@ -1,11 +1,17 @@
+from logic.money import round_money
+
 
 class AccountingLogic:
     def __init__(self, db_manager):
         self.db = db_manager
 
     def calculate_vat(self, amount, rate=0.15):
-        vat = amount * rate
-        total = amount + vat
+        """P1-3: rounded once, here, at the one place VAT is computed
+        forward from a pre-tax amount - not left to whichever screen
+        calls this to remember to round its own result before storing or
+        displaying it."""
+        vat = round_money(amount * rate)
+        total = round_money(amount + vat)
         return vat, total
 
     def get_account_balance(self, account_code):
@@ -54,9 +60,12 @@ class AccountingLogic:
 
     def reverse_vat(self, total_amount, rate=0.15):
         """Given a VAT-inclusive total (e.g. the actual cash collected end-of-day),
-        back out the pre-tax amount and the VAT portion."""
-        amount = total_amount / (1 + rate)
-        vat = total_amount - amount
+        back out the pre-tax amount and the VAT portion. Rounded once, here
+        (P1-3) - vat is computed as the remainder against the rounded
+        pre-tax amount, not independently, so amount + vat always equals
+        total_amount to the halala with no separate rounding to reconcile."""
+        amount = round_money(total_amount / (1 + rate))
+        vat = round_money(total_amount - amount)
         return amount, vat
 
     def get_trial_balance(self):

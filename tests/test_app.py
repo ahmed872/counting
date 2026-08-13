@@ -198,6 +198,22 @@ def main():
         assert abs(row["net_salary"] - 5800) < 0.01, row["net_salary"]
     check("one absent day deducts (basic+allowances)/30", absence_deducts_one_day)
 
+    def daily_rate_is_rounded_to_the_halala_not_left_a_repeating_float():
+        """P1-3: a salary of 5000 does not divide evenly by 30 - daily_rate
+        used to be left as the raw repeating float (166.66666666666666),
+        which then propagated into absence_deduction and net_salary."""
+        emp_id = db.insert_and_return_id(
+            "INSERT INTO employees (name, job_title, branch_id, base_salary, allowances) "
+            "VALUES (?,?,?,?,?)", ("راتب غير صحيح القسمة", "عامل", 1, 5000, 0))
+        try:
+            rate = window.hr_logic.calculate_daily_rate(5000, 0)
+            assert rate == 166.67, rate
+            assert round(rate, 10) == rate, "daily_rate is still an unrounded repeating float"
+        finally:
+            db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+    check("daily_rate is rounded to the halala, not left as a repeating float",
+          daily_rate_is_rounded_to_the_halala_not_left_a_repeating_float)
+
     def post_payroll_once():
         hr = window.hr
         month, year = hr.payroll_month.currentData(), int(hr.payroll_year.text())
@@ -1188,6 +1204,46 @@ def main():
         assert abs(row["t"] - 1725) < 0.01, row["t"]
         assert abs(row["v"] - 225) < 0.01, row["v"]   # 15% of the 1500 net
     check("daily sales split VAT out of a tax-inclusive total", daily_sales_vat)
+
+    def money_rounding_uses_half_up_not_pythons_banker_rounding():
+        """P1-3: Python's built-in round() uses round-half-to-even on top of
+        a binary float that often cannot represent a decimal amount exactly
+        - round(2.675, 2) is 2.67, not the 2.68 an accountant or a cashier
+        would write by hand, because 2.675 is actually stored as something
+        microscopically below it. round_money() goes through Decimal
+        instead and gets the answer a human expects."""
+        from logic.money import round_money
+        assert round(2.675, 2) == 2.67, \
+            "this Python's round() no longer reproduces the bug this test exists to guard against"
+        assert round_money(2.675) == 2.68, round_money(2.675)
+        assert round_money(1.005) == 1.01, round_money(1.005)
+        assert round_money(0.1 + 0.2) == 0.3, round_money(0.1 + 0.2)
+        # A whole run of amounts that individually look fine under naive
+        # float addition but drift when accumulated many times.
+        total = 0.0
+        for _ in range(1000):
+            total += 0.1
+        assert total != 100.0, \
+            "float accumulation drift no longer reproduces - nothing left to guard against here"
+        assert round_money(total) == 100.0, round_money(total)
+    check("round_money() rounds half-up via Decimal, not Python's banker's rounding on raw floats",
+          money_rounding_uses_half_up_not_pythons_banker_rounding)
+
+    def vat_calculation_and_its_reverse_are_internally_consistent_to_the_halala():
+        """P1-3: calculate_vat and reverse_vat now round once, centrally,
+        rather than leaving an unrounded float for whichever screen called
+        them to round (or not) on its own. amount + vat must equal the
+        total exactly to two decimals in both directions, for amounts
+        chosen specifically because naive rounding disagrees with them."""
+        acc = window.accounting.accounting
+        for amount in (17.83, 2.675, 100.005, 33.333, 0.01, 9999.995):
+            vat, total = acc.calculate_vat(amount)
+            assert round(vat, 2) == vat and round(total, 2) == total, (amount, vat, total)
+            recovered_amount, recovered_vat = acc.reverse_vat(total)
+            assert abs(recovered_amount + recovered_vat - total) < 0.001, \
+                (total, recovered_amount, recovered_vat)
+    check("VAT calculation and its reverse round consistently to the halala, even for awkward amounts",
+          vat_calculation_and_its_reverse_are_internally_consistent_to_the_halala)
 
     def delivery_app_sales_post_to_the_bank_account_not_cash():
         """شركات التوصيل (هنقرستيشن / جاهز وغيرها) settle to the bank, never
