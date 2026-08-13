@@ -247,6 +247,30 @@ CREATE TABLE IF NOT EXISTS sales_returns (
     FOREIGN KEY (branch_id) REFERENCES branches(id)
 );
 
+-- Audit trail for sensitive actions (P1-1). user_id is nullable (and not
+-- constrained NOT NULL) on purpose: a failed login against an unknown
+-- username has no real user row to point at, but the attempt itself - who
+-- was typed, when, whether it succeeded - is exactly what an audit log
+-- exists to keep. Never holds a plaintext password anywhere.
+--
+-- Deliberately no FOREIGN KEY on user_id: an audit trail's whole job is to
+-- outlive the thing it is recording. username is stored alongside it as
+-- plain text for exactly this reason - a row must stay readable regardless
+-- of what later happens to the account, rather than going dead (or
+-- blocking the account from ever being removed) the moment it does.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT,
+    action TEXT NOT NULL,
+    entity_type TEXT,
+    entity_id INTEGER,
+    before_data TEXT,
+    after_data TEXT,
+    branch_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Inventory period closes (COGS): a physical count posted to the ledger so
 -- account 1100 (المخزون) actually decreases for consumption instead of
 -- accumulating every raw-material purchase forever. See

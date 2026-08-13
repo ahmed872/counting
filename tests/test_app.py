@@ -2574,6 +2574,53 @@ def main():
     check("a deactivated user cannot log in even with the right password",
           deactivated_user_cannot_log_in)
 
+    def sensitive_actions_are_recorded_in_the_audit_log():
+        """P1-1: login attempts (success and failure), user creation, and
+        activation/deactivation must all leave a durable, human-readable
+        trail of who did what and when - and never the password itself,
+        anywhere in that trail."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+
+        before = db.fetch_one("SELECT COALESCE(MAX(id),0) m FROM audit_log")["m"]
+        uid = auth.create_user("audit_test_user", "correct-password", "viewer", "اختبار السجل",
+                                actor_user_id=1, actor_username="admin")
+        auth.authenticate("audit_test_user", "wrong-password")
+        auth.authenticate("audit_test_user", "correct-password")
+        auth.authenticate("no_such_user_at_all", "anything")
+        auth.set_active(uid, False, actor_user_id=1, actor_username="admin")
+
+        rows = db.fetch_all("SELECT * FROM audit_log WHERE id > ? ORDER BY id", (before,))
+        actions = [r["action"] for r in rows]
+        assert actions == ["user_created", "login_failed", "login_success",
+                            "login_failed", "user_deactivated"], actions
+
+        created = rows[0]
+        assert created["entity_type"] == "user" and created["entity_id"] == uid
+        assert created["username"] == "admin", "the actor, not the new account, should be logged as who created it"
+        assert "correct-password" not in (created["after_data"] or ""), \
+            "the plaintext password leaked into the audit log"
+
+        wrong_login = rows[1]
+        assert wrong_login["username"] == "audit_test_user"
+        assert "wrong-password" not in str(dict(wrong_login))
+
+        unknown_login = rows[3]
+        assert unknown_login["user_id"] is None, \
+            "a login attempt against an unknown username should have no real user_id"
+        assert unknown_login["username"] == "no_such_user_at_all"
+
+        # The account can be fully removed afterward without the audit log
+        # blocking it or losing its own history - see the "no FOREIGN KEY on
+        # user_id" note in schema.sql.
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+        still_there = db.fetch_one("SELECT COUNT(*) c FROM audit_log WHERE id > ?", (before,))["c"]
+        assert still_there == 5, "deleting the account deleted its audit history"
+        db.execute_query("DELETE FROM audit_log WHERE id > ?", (before,))
+    check("login attempts, user creation, and activation changes are recorded in the audit log, "
+          "never the password itself, and survive the account being removed",
+          sensitive_actions_are_recorded_in_the_audit_log)
+
     def default_admin_seats_are_seeded_once_on_an_empty_users_table():
         """Both need a working way in before anyone has created a single
         account by hand - one for whoever supports the program, one for the
@@ -2940,6 +2987,10 @@ def main():
             assert admin_window.btn_settings.isVisible(), "an admin cannot see Settings at all"
             assert hasattr(admin_window.settings, "users_table"), \
                 "an admin's Settings page has no user-management box"
+            assert hasattr(admin_window.settings, "audit_table"), \
+                "an admin's Settings page has no audit-log box"
+            assert admin_window.settings.audit_table.rowCount() > 0, \
+                "the audit log box is empty despite this test's own login just having happened"
         finally:
             admin_window.close()
             db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
@@ -2956,7 +3007,9 @@ def main():
         viewer_settings = SettingsModule(db, current_user={"role": "viewer"})
         assert not hasattr(viewer_settings, "users_table"), \
             "a viewer's own Settings module still built the user-management box"
-    check("SettingsModule itself never builds the user box for a non-admin",
+        assert not hasattr(viewer_settings, "audit_table"), \
+            "a viewer's own Settings module still built the audit-log box"
+    check("SettingsModule itself never builds the user or audit-log box for a non-admin",
           settings_module_hides_the_users_box_for_non_admins)
 
     def ahmed_admin_is_hidden_from_the_visible_user_list():
