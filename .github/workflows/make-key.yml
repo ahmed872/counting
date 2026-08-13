@@ -35,20 +35,23 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: التحقق من وجود السرّ
+      - name: تثبيت مكتبة التوقيع
+        run: pip install cryptography
+
+      - name: التحقق من وجود المفتاح الخاص
         env:
-          LICENCE_SECRET: ${{ secrets.RESTAURANT_ERP_SECRET }}
+          LICENCE_PRIVATE_KEY: ${{ secrets.RESTAURANT_ERP_PRIVATE_KEY }}
         run: |
-          if [ -z "$LICENCE_SECRET" ]; then
-            echo "::error::سرّ التفعيل غير مضبوط في إعدادات المستودع."
+          if [ -z "$LICENCE_PRIVATE_KEY" ]; then
+            echo "::error::المفتاح الخاص للترخيص غير مضبوط في إعدادات المستودع."
             echo "أضفه من Settings -> Secrets and variables -> Actions"
-            echo "بنفس القيمة التي بُنيت بها نسخة العميل، وإلا لن يقبل البرنامج المفتاح."
+            echo "لازم يطابق المفتاح العام (RESTAURANT_ERP_PUBLIC_KEY) الذي بُنيت به نسخة العميل، وإلا لن يقبل البرنامج المفتاح."
             exit 1
           fi
 
       - name: توليد المفتاح
         env:
-          RESTAURANT_ERP_SECRET: ${{ secrets.RESTAURANT_ERP_SECRET }}
+          RESTAURANT_ERP_PRIVATE_KEY: ${{ secrets.RESTAURANT_ERP_PRIVATE_KEY }}
           DEVICE_CODE: ${{ inputs.device_code }}
           CUSTOMER: ${{ inputs.customer }}
         run: |

@@ -55,5 +55,6 @@ htmlcov/
 dist-single/
 dist-folder/
 
-# Build-time licence secret, written by the release build. Never committed.
-logic/_secret.py
+# Build-time licence public key, written by the release build. Not sensitive
+# on its own (see logic/licence.py), but still build-generated - never committed.
+logic/_licence_key.py

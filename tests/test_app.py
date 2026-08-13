@@ -72,6 +72,22 @@ def is_near_white(hex_colour):
     return r > 235 and g > 235 and b > 235
 
 
+# The private half of logic.licence.DEV_PUBLIC_KEY_HEX - safe to commit
+# alongside it for the same reason (explicitly the dev pair, never the pair
+# any real customer's build is made with; see logic/licence.py). Only this
+# test suite signs with it, mirroring what packaging/make_key.py does with
+# the real private key in production.
+_DEV_PRIVATE_KEY_HEX = "a1165f7fbcdbed88831941b4c7d6d03358e1598dffc21d2d126ca3f3856674f6"
+
+
+def _sign_dev_key(device_code):
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from logic.licence import _encode, _group, _SIGNATURE_CHARS
+    private_key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(_DEV_PRIVATE_KEY_HEX))
+    signature = private_key.sign(device_code.encode("utf-8"))
+    return _group(_encode(signature, _SIGNATURE_CHARS), size=6)
+
+
 def main():
     if os.path.exists(DB_PATH):
         os.remove(DB_PATH)
@@ -3366,7 +3382,7 @@ def main():
 
         sandbox = tempfile.mkdtemp(prefix="_erp_licence_")
         saved = (os.environ.get("XDG_CONFIG_HOME"), os.environ.get("APPDATA"),
-                 os.environ.get("RESTAURANT_ERP_SECRET"))
+                 os.environ.get("RESTAURANT_ERP_PUBLIC_KEY"))
         os.environ["XDG_CONFIG_HOME"] = sandbox
         os.environ.pop("APPDATA", None)
         real_date = dt.date
@@ -3406,11 +3422,11 @@ def main():
             assert len(code) == 8, code
 
             # A key for someone else's machine must not open this one.
-            assert not licence.activate(fresh, licence.key_for_device("ZZZZ2345"))
+            assert not licence.activate(fresh, _sign_dev_key("ZZZZ2345"))
             assert not licence.activate(fresh, "AAAA-BBBB-CCCC-DDDD")
             assert not licence.is_activated(fresh)
 
-            key = licence.key_for_device(code)
+            key = _sign_dev_key(code)
             assert licence.activate(fresh, key), "the correct key was rejected"
             assert licence.is_activated(fresh)
 
@@ -3444,6 +3460,44 @@ def main():
             shutil.rmtree(sandbox, ignore_errors=True)
     check("paying unlocks it in place, with every number still there",
           paying_unlocks_it_without_losing_anything)
+
+    def licence_verification_only_ever_reads_a_public_key():
+        """P1-4: the shipped app must not be able to mint a licence key at
+        all - only verify one someone else signed. Confirmed by the
+        function that used to do that (key_for_device) no longer existing
+        on the module at all, not just being unused."""
+        import logic.licence as licence
+        assert not hasattr(licence, "key_for_device"), \
+            "the client-side module can still generate a valid licence key itself"
+        assert not hasattr(licence, "SECRET") and not hasattr(licence, "DEV_SECRET"), \
+            "a signing secret is still present on the client-side module"
+    check("the shipped licence module can verify a signature but has no way to produce one",
+          licence_verification_only_ever_reads_a_public_key)
+
+    def ed25519_licence_signatures_reject_tampering_and_malformed_keys():
+        """P1-4 acceptance tests: valid signature accepted, a single
+        flipped character (tampered payload) rejected, wrong device
+        rejected, and a malformed/garbage token rejected - all against the
+        public key alone, the same one the shipped app carries."""
+        import logic.licence as licence
+
+        code = "TEST1234"
+        key = _sign_dev_key(code)
+        assert licence.is_valid(code, key), "a genuinely signed key was rejected"
+
+        # Tamper with one character deep in the signature - not just the
+        # formatting/grouping, the actual decoded signature bytes.
+        tampered = key[:40] + ("A" if key[40] != "A" else "B") + key[41:]
+        assert not licence.is_valid(code, tampered), "a tampered signature was accepted"
+
+        assert not licence.is_valid("OTHR5678", key), \
+            "a key signed for one device verified against a different one"
+
+        for garbage in ("", "not-a-key-at-all", "0" * 103, key[:-10], key + "EXTRA"):
+            assert not licence.is_valid(code, garbage), f"malformed key accepted: {garbage!r}"
+    check("a licence signature verifies correctly, and rejects tampering, the wrong device, "
+          "and malformed keys",
+          ed25519_licence_signatures_reject_tampering_and_malformed_keys)
 
     def the_expiry_screen_can_actually_activate():
         """Blocking startup with a message and exiting leaves nowhere to type

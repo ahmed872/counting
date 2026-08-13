@@ -530,7 +530,7 @@ class SettingsModule(QWidget):
         key_label = QLabel("مفتاح التفعيل:")
         key_label.setStyleSheet("font-weight:700; color:#334155;")
         self.licence_key_input = QLineEdit()
-        self.licence_key_input.setPlaceholderText("XXXX-XXXX-XXXX-XXXX")
+        self.licence_key_input.setPlaceholderText("الصق مفتاح التفعيل كاملاً هنا")
         self.licence_key_input.returnPressed.connect(self.apply_licence_key)
         self.activate_btn = QPushButton("تفعيل")
         self.activate_btn.clicked.connect(self.apply_licence_key)
