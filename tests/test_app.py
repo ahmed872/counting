@@ -398,9 +398,18 @@ def main():
         assert remainder["amount"] - remainder["amount_recovered"] > 0
         june = next(p for p in window.hr_logic.get_monthly_payroll(6, 2026) if p["id"] == emp_id)
         assert june["advances_recovered"] > 0, "the remaining debt did not carry into next month"
-        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
-        db.execute_query("DELETE FROM payroll_runs WHERE month=5 AND year=2026 AND "
-                          "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+        # The whole month=5/2026 run, not just this employee's row: its
+        # journal entry is about to be deleted below (delete_journal_
+        # entries_created_after), and leaving other employees' items
+        # pointed at a payroll_runs row whose journal no longer exists
+        # would be exactly the kind of orphan reference P1-8's integrity
+        # suite exists to catch - this test is the only one in the shared
+        # suite that ever posts to this specific month/year, so removing
+        # the whole run here is correct, not just convenient.
+        db.execute_query(
+            "DELETE FROM payroll_run_items WHERE run_id = "
+            "(SELECT id FROM payroll_runs WHERE month=5 AND year=2026)")
+        db.execute_query("DELETE FROM payroll_runs WHERE month=5 AND year=2026")
         db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
         db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
         delete_journal_entries_created_after(journal_marker)
@@ -447,10 +456,13 @@ def main():
         assert october["advances_recovered"] == 0, \
             "a fully settled advance is still being deducted the month after it was cleared"
 
-        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
+        # The whole runs, not just this employee's rows - see the identical
+        # note in advance_bigger_than_salary_never_makes_net_pay_negative
+        # above; their journal entries are deleted right below.
         db.execute_query(
-            "DELETE FROM payroll_runs WHERE month IN (1,2) AND year=2027 AND "
-            "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+            "DELETE FROM payroll_run_items WHERE run_id IN "
+            "(SELECT id FROM payroll_runs WHERE month IN (1,2) AND year=2027)")
+        db.execute_query("DELETE FROM payroll_runs WHERE month IN (1,2) AND year=2027")
         db.execute_query("DELETE FROM employee_deductions WHERE employee_id = ?", (emp_id,))
         db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
         delete_journal_entries_created_after(journal_marker)
@@ -519,9 +531,13 @@ def main():
             "the posted snapshot changed after editing attendance for that month"
         assert abs(snapshot_after["net_salary"] - 2900) < 0.01, snapshot_after["net_salary"]
 
-        db.execute_query("DELETE FROM payroll_run_items WHERE employee_id = ?", (emp_id,))
-        db.execute_query("DELETE FROM payroll_runs WHERE month=4 AND year=2026 AND "
-                          "(SELECT COUNT(*) FROM payroll_run_items WHERE run_id=payroll_runs.id)=0")
+        # The whole run, not just this employee's row - see the identical
+        # note in advance_bigger_than_salary_never_makes_net_pay_negative
+        # above; its journal entry is deleted right below.
+        db.execute_query(
+            "DELETE FROM payroll_run_items WHERE run_id = "
+            "(SELECT id FROM payroll_runs WHERE month=4 AND year=2026)")
+        db.execute_query("DELETE FROM payroll_runs WHERE month=4 AND year=2026")
         db.execute_query("DELETE FROM attendance WHERE employee_id = ?", (emp_id,))
         db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
         delete_journal_entries_created_after(journal_marker)
@@ -5071,6 +5087,104 @@ def main():
             dialog.close()
     check("the login dialog groups each field tightly with its own label, not evenly spaced",
           login_dialog_groups_each_label_tightly_with_its_own_field)
+
+    # ---------------- database integrity (P1-8) ----------------
+    # Deliberately last: a final, whole-database gate that runs after every
+    # other check in this file has had a full chance to leave something
+    # behind, rather than checking a narrow slice mid-run.
+    print("\n[integrity]")
+
+    def foreign_keys_pragma_is_on_for_a_fresh_connection():
+        conn = db.get_connection()
+        try:
+            assert conn.execute("PRAGMA foreign_keys").fetchone()[0] == 1
+        finally:
+            conn.close()
+    check("PRAGMA foreign_keys is ON for a fresh connection", foreign_keys_pragma_is_on_for_a_fresh_connection)
+
+    def the_whole_database_passes_integrity_check():
+        assert db.check_integrity() == "ok", db.check_integrity()
+    check("PRAGMA integrity_check reports the whole database as ok",
+          the_whole_database_passes_integrity_check)
+
+    def the_whole_database_has_zero_foreign_key_violations_at_the_very_end():
+        violations = db.check_foreign_keys()
+        assert not violations, [tuple(v) for v in violations]
+    check("PRAGMA foreign_key_check finds zero violations after every test in this file has run",
+          the_whole_database_has_zero_foreign_key_violations_at_the_very_end)
+
+    def no_journal_item_points_at_a_journal_entry_that_does_not_exist():
+        orphans = db.fetch_all(
+            "SELECT ji.id, ji.entry_id FROM journal_items ji "
+            "LEFT JOIN journal_entries je ON je.id = ji.entry_id WHERE je.id IS NULL")
+        assert not orphans, [(o["id"], o["entry_id"]) for o in orphans]
+    check("no journal_items row points at a journal_entries row that does not exist",
+          no_journal_item_points_at_a_journal_entry_that_does_not_exist)
+
+    def no_journal_item_points_at_an_account_that_does_not_exist():
+        orphans = db.fetch_all(
+            "SELECT ji.id, ji.account_code FROM journal_items ji "
+            "LEFT JOIN chart_of_accounts coa ON coa.code = ji.account_code WHERE coa.code IS NULL")
+        assert not orphans, [(o["id"], o["account_code"]) for o in orphans]
+    check("no journal_items row points at a chart_of_accounts code that does not exist",
+          no_journal_item_points_at_an_account_that_does_not_exist)
+
+    def every_journal_entry_in_the_whole_database_balances():
+        unbalanced = db.fetch_all(
+            "SELECT entry_id, ROUND(SUM(debit)-SUM(credit), 2) AS diff "
+            "FROM journal_items GROUP BY entry_id HAVING ABS(diff) > 0.009")
+        assert not unbalanced, [(u["entry_id"], u["diff"]) for u in unbalanced]
+    check("every journal entry in the whole database balances to the halala",
+          every_journal_entry_in_the_whole_database_balances)
+
+    def every_posted_payroll_run_has_a_real_journal_entry():
+        """P1-8: payroll_runs.journal_entry_id (added this pass - see the
+        migration in database/db_manager.py) makes this a real relationship
+        check rather than a heuristic - every posted run must point at a
+        journal entry that actually exists, and every journal entry whose
+        description matches a payroll posting must be pointed at by some
+        run, so neither side can drift from the other silently."""
+        runs = db.fetch_all("SELECT id, month, year, journal_entry_id FROM payroll_runs")
+        for run in runs:
+            assert run["journal_entry_id"], \
+                f"payroll run {run['id']} ({run['month']}/{run['year']}) has no journal_entry_id"
+            assert db.fetch_one(
+                "SELECT id FROM journal_entries WHERE id = ?", (run["journal_entry_id"],)
+            ), f"payroll run {run['id']}'s journal_entry_id {run['journal_entry_id']} does not exist"
+    check("every posted payroll run has a real journal entry behind it",
+          every_posted_payroll_run_has_a_real_journal_entry)
+
+    def no_duplicate_sales_attendance_or_payroll_period_rows():
+        """The three UNIQUE indexes/constraints this app relies on to stop a
+        double-click or a re-run from silently doubling a day's revenue, an
+        attendance record, or a payroll month - checked directly against
+        live data rather than only trusting that the constraint exists."""
+        dup_sales = db.fetch_all(
+            "SELECT branch_id, date, payment_method, COUNT(*) c FROM sales "
+            "GROUP BY branch_id, date, payment_method HAVING c > 1")
+        assert not dup_sales, dup_sales
+        dup_attendance = db.fetch_all(
+            "SELECT employee_id, date, COUNT(*) c FROM attendance "
+            "GROUP BY employee_id, date HAVING c > 1")
+        assert not dup_attendance, dup_attendance
+        dup_payroll = db.fetch_all(
+            "SELECT month, year, COUNT(*) c FROM payroll_runs GROUP BY month, year HAVING c > 1")
+        assert not dup_payroll, dup_payroll
+    check("no duplicate sales-day, attendance-day, or payroll-period rows anywhere in the database",
+          no_duplicate_sales_attendance_or_payroll_period_rows)
+
+    def no_voided_row_is_missing_its_void_bookkeeping():
+        """P1-2's own invariant, checked globally: a voided row always has
+        both a reason and a timestamp together, never one without the
+        other, across every voidable table."""
+        for table in ("purchases", "purchase_returns", "sales_returns"):
+            broken = db.fetch_all(
+                f"SELECT id FROM {table} WHERE "
+                f"(voided_at IS NOT NULL AND (void_reason IS NULL OR void_reason = '')) "
+                f"OR (voided_at IS NULL AND voided_by IS NOT NULL)")
+            assert not broken, (table, [b["id"] for b in broken])
+    check("every voided row across purchases/returns has a reason, and nothing is half-voided",
+          no_voided_row_is_missing_its_void_bookkeeping)
 
     print("\n" + "=" * 52)
     if failures:

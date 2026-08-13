@@ -307,6 +307,15 @@ class DBManager:
         if self.table_exists(cursor, 'users') and 'branch_id' not in table_columns('users'):
             cursor.execute("ALTER TABLE users ADD COLUMN branch_id INTEGER REFERENCES branches(id)")
 
+        # P1-8: payroll_runs never stored which journal entry it posted -
+        # every other business table with a journal effect (purchases,
+        # customer_sales, inventory_periods...) does, and without it there
+        # was no non-heuristic way to confirm a posted payroll run actually
+        # has a journal behind it, or to find that journal to reverse later.
+        if self.table_exists(cursor, 'payroll_runs') and \
+                'journal_entry_id' not in table_columns('payroll_runs'):
+            cursor.execute("ALTER TABLE payroll_runs ADD COLUMN journal_entry_id INTEGER")
+
         # P1-2: void/reversal instead of a hard delete for posted purchases,
         # purchase returns, and sales returns - the row (and its original
         # journal entry) stay in place as history; voiding posts a new

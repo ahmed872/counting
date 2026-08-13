@@ -299,7 +299,9 @@ class HRLogic:
                         )
                         remaining -= applied
 
-            self.db.insert_journal_entry(cursor, timestamp, description, None, journal_items)
+            entry_id = self.db.insert_journal_entry(cursor, timestamp, description, None, journal_items)
+            cursor.execute(
+                "UPDATE payroll_runs SET journal_entry_id = ? WHERE id = ?", (entry_id, run_id))
 
         return run_id
 
