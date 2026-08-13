@@ -1,6 +1,59 @@
 import sqlite3
 from contextlib import contextmanager
 
+# Tables that must exist in any real database from this program - checked
+# before a chosen backup file is ever allowed to replace the live database.
+# Not every table (a customer's copy from an older version may not have all
+# of them yet), just enough that an unrelated .db file or a garbage/renamed
+# file cannot be mistaken for a genuine backup.
+_CORE_TABLES = ("branches", "chart_of_accounts", "journal_entries", "users")
+
+
+def validate_database_file(path):
+    """P1-5: opens `path` as SQLite (read-only, its own connection) and
+    checks it is actually usable as this program's database before anything
+    is allowed to overwrite the live one with it. Returns (True, None) or
+    (False, <Arabic error message>) - never raises, so a caller can always
+    show the message directly without its own try/except.
+
+    Three checks, cheapest and most decisive first: the file has to open as
+    SQLite at all (rejects a renamed non-database file instantly), it has
+    to carry this program's own core tables (rejects some other, unrelated
+    SQLite database), and PRAGMA integrity_check has to say the page
+    structure itself is not corrupt (rejects a truncated or bit-rotted
+    file that still happens to open)."""
+    import os
+    if not os.path.exists(path):
+        return False, "الملف غير موجود"
+
+    try:
+        conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    except sqlite3.OperationalError as exc:
+        return False, f"تعذر فتح الملف كقاعدة بيانات: {exc}"
+
+    try:
+        try:
+            tables = {row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")}
+        except sqlite3.DatabaseError:
+            return False, "هذا الملف ليس قاعدة بيانات SQLite صالحة"
+
+        missing = [t for t in _CORE_TABLES if t not in tables]
+        if missing:
+            return False, (
+                "هذا الملف لا يبدو نسخة احتياطية من هذا البرنامج "
+                f"(جداول أساسية غير موجودة: {', '.join(missing)})"
+            )
+
+        integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            return False, f"الملف تالف: {integrity}"
+
+        return True, None
+    finally:
+        conn.close()
+
+
 class DBManager:
     def __init__(self, db_path='restaurant_erp.db'):
         self.db_path = db_path
@@ -423,6 +476,26 @@ class DBManager:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, str(value)),
         )
+
+    def check_integrity(self):
+        """PRAGMA integrity_check on the live database - 'ok' or a list of
+        problems. Used after a restore (P1-5) and by the database integrity
+        test suite (P1-8)."""
+        conn = self.get_connection()
+        try:
+            return conn.execute("PRAGMA integrity_check").fetchone()[0]
+        finally:
+            conn.close()
+
+    def check_foreign_keys(self):
+        """PRAGMA foreign_key_check on the live database - an empty list
+        means no violations. Used after a restore (P1-5) and by the
+        database integrity test suite (P1-8)."""
+        conn = self.get_connection()
+        try:
+            return conn.execute("PRAGMA foreign_key_check").fetchall()
+        finally:
+            conn.close()
 
     def delete_journal_entry_on_cursor(self, cursor, entry_id):
         """Same two deletes as delete_journal_entry() below, against a

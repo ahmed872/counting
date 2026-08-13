@@ -440,7 +440,9 @@ class SettingsModule(QWidget):
         note = QLabel(
             "كل البيانات موجودة في ملف واحد. خُذ نسخة احتياطية مرة كل شهر على الأقل "
             "(مثلاً أول كل شهر) واحفظها على فلاشة أو على الإيميل، حتى لا تفقد بياناتك "
-            "لو تعطّل الجهاز."
+            "لو تعطّل الجهاز.\n"
+            "تنبيه: هذا الملف يحتوي على كل بياناتك المالية والرواتب - لا يُرسل إلا لجهة "
+            "تثق بها، وبقناة آمنة (لا يُرسل على واتساب أو بالبريد العادي بلا حماية)."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color:#64748b;")
@@ -613,6 +615,17 @@ class SettingsModule(QWidget):
         path, _ = QFileDialog.getOpenFileName(self, "اختر نسخة احتياطية", "", "قاعدة بيانات (*.db)")
         if not path:
             return
+
+        # P1-5: a garbage file, an unrelated SQLite database, or a truncated/
+        # corrupt one must never get the chance to touch the live database -
+        # checked and rejected before the confirmation dialog even appears,
+        # let alone before anything is overwritten.
+        from database.db_manager import validate_database_file
+        ok, error = validate_database_file(path)
+        if not ok:
+            QMessageBox.critical(self, "نسخة غير صالحة", error)
+            return
+
         answer = QMessageBox.question(
             self, "تأكيد الاستعادة",
             "سيتم استبدال كل البيانات الحالية ببيانات النسخة المختارة.\n"
@@ -624,7 +637,25 @@ class SettingsModule(QWidget):
             safety = f"{self.db.db_path}.before-restore-{datetime.now().strftime('%Y%m%d%H%M%S')}"
             if os.path.exists(self.db.db_path):
                 shutil.copyfile(self.db.db_path, safety)
-            shutil.copyfile(path, self.db.db_path)
+
+            # Copied to a temporary file next to the live one, then swapped
+            # in with a single atomic rename - a crash or power loss mid-copy
+            # damages only the temporary file, never the live database that
+            # was actually in use a moment ago.
+            tmp_path = self.db.db_path + ".restoring-tmp"
+            shutil.copyfile(path, tmp_path)
+            os.replace(tmp_path, self.db.db_path)
+
+            integrity = self.db.check_integrity()
+            violations = self.db.check_foreign_keys()
+            if integrity != "ok" or violations:
+                QMessageBox.warning(
+                    self, "تحذير",
+                    "تمت الاستعادة، لكن فُحصت القاعدة الجديدة ووُجدت مشاكل فيها "
+                    f"({integrity}, {len(violations)} مخالفة ترابط). "
+                    "النسخة السابقة محفوظة كنسخة أمان بجانب ملف القاعدة.",
+                )
+
             # Written to the just-restored database, not the one it
             # replaced - it is the live database going forward, and "this
             # file was restored from a backup, and when" belongs in its own

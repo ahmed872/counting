@@ -1828,6 +1828,197 @@ def main():
     check("the backup button's source never regresses to a raw file copy of the live database",
           backup_never_regresses_to_a_raw_file_copy)
 
+    def validate_database_file_rejects_garbage_and_unrelated_files():
+        """P1-5: the one gate every restore goes through before touching the
+        live database - a file that is not SQLite at all, a real SQLite
+        database that is not this program's, and (implicitly, via the same
+        integrity_check call restore() itself makes) a corrupt one."""
+        from database.db_manager import validate_database_file
+        import sqlite3 as _sqlite3
+
+        missing_path = os.path.join(tempfile.gettempdir(), "_erp_does_not_exist.db")
+        if os.path.exists(missing_path):
+            os.remove(missing_path)
+        ok, error = validate_database_file(missing_path)
+        assert not ok and error
+
+        garbage_path = os.path.join(tempfile.gettempdir(), "_erp_garbage.db")
+        with open(garbage_path, "wb") as f:
+            f.write(b"this is not a sqlite database at all, just text")
+        try:
+            ok, error = validate_database_file(garbage_path)
+            assert not ok and "SQLite" in error, error
+        finally:
+            os.remove(garbage_path)
+
+        unrelated_path = os.path.join(tempfile.gettempdir(), "_erp_unrelated.db")
+        if os.path.exists(unrelated_path):
+            os.remove(unrelated_path)
+        conn = _sqlite3.connect(unrelated_path)
+        conn.execute("CREATE TABLE some_other_app (id INTEGER PRIMARY KEY)")
+        conn.commit()
+        conn.close()
+        try:
+            ok, error = validate_database_file(unrelated_path)
+            assert not ok and "جداول أساسية" in error, error
+        finally:
+            os.remove(unrelated_path)
+
+        ok, error = validate_database_file(db.db_path)
+        assert ok and error is None, error
+    check("validate_database_file rejects a nonexistent file, garbage, and an unrelated SQLite database",
+          validate_database_file_rejects_garbage_and_unrelated_files)
+
+    def restore_round_trips_and_leaves_a_safety_copy():
+        """A real end-to-end restore through the actual button: back up,
+        change something, restore, confirm the change is gone (the backup's
+        state came back), confirm a safety copy of what was live right
+        before the restore exists next to the database file, and confirm
+        the just-restored database itself passes both integrity checks."""
+        from ui.settings_module import SettingsModule
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db, current_user={"id": 1, "username": "admin", "role": "admin"})
+
+        backup_path = os.path.join(tempfile.gettempdir(), "_erp_restore_backup.db")
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+
+        marker_supplier = "مورد اختبار الاستعادة"
+        db.execute_query("DELETE FROM suppliers WHERE name = ?", (marker_supplier,))
+
+        original_save = QFileDialog.getSaveFileName
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.backup()
+        finally:
+            QFileDialog.getSaveFileName = original_save
+        assert os.path.exists(backup_path)
+
+        db.execute_query(
+            "INSERT INTO suppliers (name, opening_balance) VALUES (?, ?)",
+            (marker_supplier, 1))
+        assert db.fetch_one("SELECT id FROM suppliers WHERE name = ?", (marker_supplier,)), \
+            "sanity check: the marker row was not actually inserted before restore"
+
+        existing_safety_files = {
+            f for f in os.listdir(os.path.dirname(db.db_path))
+            if f.startswith(os.path.basename(db.db_path) + ".before-restore-")
+        }
+
+        original_open = QFileDialog.getOpenFileName
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.restore()
+        finally:
+            QFileDialog.getOpenFileName = original_open
+            os.remove(backup_path)
+
+        assert not db.fetch_one("SELECT id FROM suppliers WHERE name = ?", (marker_supplier,)), \
+            "the marker row inserted after the backup is still present - restore did not roll back to it"
+
+        new_safety_files = {
+            f for f in os.listdir(os.path.dirname(db.db_path))
+            if f.startswith(os.path.basename(db.db_path) + ".before-restore-")
+        } - existing_safety_files
+        assert new_safety_files, "restore() did not leave a safety copy of the pre-restore database"
+        for name in new_safety_files:
+            os.remove(os.path.join(os.path.dirname(db.db_path), name))
+
+        assert db.check_integrity() == "ok", db.check_integrity()
+        assert db.check_foreign_keys() == [], db.check_foreign_keys()
+    check("restoring a backup rolls the database back to it, leaves a safety copy, "
+          "and the restored database passes both integrity checks",
+          restore_round_trips_and_leaves_a_safety_copy)
+
+    def restore_rejects_a_corrupt_file_without_touching_the_live_database():
+        """The confirmation dialog must never even appear for a file that
+        fails validation - and the live database must be provably untouched
+        (same bytes, not just 'still openable') afterward."""
+        from ui.settings_module import SettingsModule
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db, current_user={"id": 1, "username": "admin", "role": "admin"})
+
+        garbage_path = os.path.join(tempfile.gettempdir(), "_erp_restore_garbage.db")
+        with open(garbage_path, "wb") as f:
+            f.write(b"garbage, not a database")
+
+        with open(db.db_path, "rb") as f:
+            before_bytes = f.read()
+
+        asked = []
+        original_question = QMessageBox.question
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(True) or QMessageBox.StandardButton.Yes)
+        original_open = QFileDialog.getOpenFileName
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (garbage_path, ""))
+        try:
+            settings.restore()
+        finally:
+            QFileDialog.getOpenFileName = original_open
+            QMessageBox.question = original_question
+            os.remove(garbage_path)
+
+        assert not asked, "the confirmation dialog appeared for a file that should have been rejected first"
+        with open(db.db_path, "rb") as f:
+            after_bytes = f.read()
+        assert after_bytes == before_bytes, "the live database was modified despite the backup file being invalid"
+    check("restoring a corrupt/garbage file is rejected before the confirmation dialog, "
+          "leaving the live database byte-for-byte untouched",
+          restore_rejects_a_corrupt_file_without_touching_the_live_database)
+
+    def an_interrupted_restore_copy_never_damages_the_live_database():
+        """P1-5: the copy lands in a temporary file first and is only ever
+        swapped into place with a single atomic os.replace() - simulated
+        here by making the copy itself fail partway through, the same
+        failure a crash or power loss mid-copy would cause."""
+        from ui.settings_module import SettingsModule
+        import ui.settings_module as settings_module
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db, current_user={"id": 1, "username": "admin", "role": "admin"})
+
+        backup_path = os.path.join(tempfile.gettempdir(), "_erp_interrupted_backup.db")
+        if os.path.exists(backup_path):
+            os.remove(backup_path)
+        original_save = QFileDialog.getSaveFileName
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.backup()
+        finally:
+            QFileDialog.getSaveFileName = original_save
+
+        with open(db.db_path, "rb") as f:
+            before_bytes = f.read()
+
+        tmp_path = db.db_path + ".restoring-tmp"
+
+        def failing_copyfile(src, dst):
+            if dst == tmp_path:
+                raise OSError("simulated crash mid-copy")
+            return original_copyfile(src, dst)
+
+        original_copyfile = settings_module.shutil.copyfile
+        settings_module.shutil.copyfile = failing_copyfile
+        original_open = QFileDialog.getOpenFileName
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            settings.restore()
+        finally:
+            QFileDialog.getOpenFileName = original_open
+            settings_module.shutil.copyfile = original_copyfile
+            os.remove(backup_path)
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+            for name in os.listdir(os.path.dirname(db.db_path)):
+                if name.startswith(os.path.basename(db.db_path) + ".before-restore-"):
+                    os.remove(os.path.join(os.path.dirname(db.db_path), name))
+
+        with open(db.db_path, "rb") as f:
+            after_bytes = f.read()
+        assert after_bytes == before_bytes, \
+            "a failure mid-copy still damaged the live database - it should only ever touch a temp file"
+    check("a failure while copying the chosen backup never damages the live database, only a temp file",
+          an_interrupted_restore_copy_never_damages_the_live_database)
+
     def purchase_return_credits_the_right_account():
         """Every return used to credit Inventory (1100) no matter what was
         actually being returned - refunding an operating expense quietly
