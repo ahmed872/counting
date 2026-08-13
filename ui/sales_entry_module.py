@@ -135,6 +135,25 @@ class SalesEntryModule(QWidget):
         # so it is entered and booked the same way a bank transfer is, just
         # tracked under its own label so the owner can see how much of his
         # revenue comes through delivery apps versus a direct transfer.
+        #
+        # P1-7 (production-hardening review): reconsidered deliberately, not
+        # left unexamined. A full aggregator-receivable model (Dr Delivery
+        # Receivable / Cr Revenue at the sale, Dr Bank + Dr Commission
+        # Expense / Cr Delivery Receivable at settlement) is the more
+        # "correct" accrual treatment when the platform holds funds for
+        # days before paying out - but it requires knowing the actual
+        # commission rate and settlement cadence, which is a real business
+        # fact about this specific owner's aggregator contracts, not
+        # something safe to assume. Left as the settle-on-receipt model
+        # already documented above (the owner types in whatever amount
+        # actually lands in the bank, whenever it lands): correct for cash-
+        # flow tracking, understates revenue by the commission on any day
+        # settlement has not happened yet, and does not track a receivable
+        # balance. If this restaurant's aggregators settle same-day and net
+        # of commission is close enough to gross, the gap is negligible; if
+        # they settle weekly, revenue will visibly lag the actual sale by
+        # up to that long. Worth a real conversation with the owner before
+        # building the receivable model, not a change made for him.
         self.delivery_input = self._amount_input()
 
         # Two columns, not four side by side in one row - "شبكة (مدى /
