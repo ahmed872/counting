@@ -158,6 +158,20 @@ class DBManager:
             """)
             cursor.execute("DROP TABLE sales_pre_delivery")
 
+        # After the rebuild above, not before it - that rebuild recreates
+        # sales from a hardcoded column list of its own, which would
+        # silently drop this column (and any data already in it) if it
+        # existed before the rebuild ran.
+        if self.table_exists(cursor, 'sales') and 'shortage_amount' not in table_columns('sales'):
+            # عجز لموظف - a cash-register shortfall for the day, entered
+            # alongside the payment channels and subtracted from the cash
+            # actually recorded (see save_daily_sales in sales_entry_
+            # module.py). Stored on every row for that day/branch, the
+            # same one-value-duplicated-onto-every-row pattern
+            # cashier_number already uses, so it can be read back (MAX,
+            # not SUM) without a separate table.
+            cursor.execute("ALTER TABLE sales ADD COLUMN shortage_amount REAL DEFAULT 0")
+
         if self.table_exists(cursor, 'sales_returns') and not self._table_check_allows(cursor, 'sales_returns', 'Delivery'):
             cursor.execute("ALTER TABLE sales_returns RENAME TO sales_returns_pre_delivery")
             cursor.execute("""

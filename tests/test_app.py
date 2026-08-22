@@ -1039,6 +1039,100 @@ def main():
         assert abs(row["v"] - 225) < 0.01, row["v"]   # 15% of the 1500 net
     check("daily sales split VAT out of a tax-inclusive total", daily_sales_vat)
 
+    def shortage_is_deducted_from_cash_and_from_the_days_total():
+        """عجز لموظف: a cash-register shortfall entered alongside the
+        payment channels. Requested formula: اليوم total = Cash + Network +
+        Transfer + Delivery - Shortage. Implemented by reducing the Cash
+        channel itself before it is posted, so both the reported total and
+        the actual cash debited to the books drop by the shortage - not
+        just the number shown on screen."""
+        test_branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)",
+            ("فرع اختبار العجز", ""))
+        journal_marker = newest_journal_entry_id()
+        try:
+            goto("sales")
+            s = window.sales
+            idx = s.branch_input.findData(test_branch_id)
+            assert idx >= 0, "test branch not found in the picker"
+            s.branch_input.setCurrentIndex(idx)
+            s.date_input.setDate(QDate(2026, 3, 15))
+            s.cash_input.setText("1000")
+            s.network_input.setText("300")
+            s.transfer_input.setText("0")
+            s.delivery_input.setText("0")
+            s.shortage_input.setText("200")
+            app.processEvents()
+            # 1000 + 300 - 200 = 1100
+            assert "1,100.00" in s.preview_label.text(), s.preview_label.text()
+            assert "200.00" in s.preview_label.text(), \
+                "the preview does not show the shortage that was entered"
+
+            s.save_daily_sales()
+
+            rows = db.fetch_all(
+                "SELECT payment_method, total_amount, shortage_amount FROM sales "
+                "WHERE branch_id = ? AND date = '2026-03-15'", (test_branch_id,))
+            by_method = {r["payment_method"]: r for r in rows}
+            # Cash posted net of the shortage (1000 - 200 = 800), not the
+            # 1000 that was typed in.
+            assert abs(by_method["Cash"]["total_amount"] - 800) < 0.01, by_method["Cash"]["total_amount"]
+            assert abs(by_method["POS"]["total_amount"] - 300) < 0.01, by_method["POS"]["total_amount"]
+            grand_total = sum(r["total_amount"] for r in rows)
+            assert abs(grand_total - 1100) < 0.01, grand_total
+            # Recorded for the day, not silently discarded once it has done
+            # its job of reducing the cash total.
+            assert all(abs((r["shortage_amount"] or 0) - 200) < 0.01 for r in rows), rows
+
+            entry_id = by_method["Cash"]["total_amount"] and db.fetch_one(
+                "SELECT journal_entry_id FROM sales WHERE branch_id = ? AND date = '2026-03-15' "
+                "AND payment_method = 'Cash'", (test_branch_id,))["journal_entry_id"]
+            cash_debit = db.fetch_one(
+                "SELECT SUM(debit) v FROM journal_items WHERE entry_id = ? AND account_code = '1000'",
+                (entry_id,))["v"] or 0
+            # The ledger itself reflects the reduced cash, not just the
+            # number shown in the history table - a shortage that only
+            # changed the display and left the full 1000 sitting in the
+            # cash account would be exactly the kind of silent mismatch
+            # this whole project has spent this pass hunting down.
+            assert abs(cash_debit - 800) < 0.01, cash_debit
+
+            # A shortage bigger than the cash entered makes no sense and
+            # must be refused before anything is saved.
+            s.branch_input.setCurrentIndex(idx)
+            s.date_input.setDate(QDate(2026, 3, 16))
+            s.cash_input.setText("100")
+            s.network_input.setText("0")
+            s.transfer_input.setText("0")
+            s.delivery_input.setText("0")
+            s.shortage_input.setText("500")
+            s.save_daily_sales()
+            assert not db.fetch_one(
+                "SELECT id FROM sales WHERE branch_id = ? AND date = '2026-03-16'", (test_branch_id,)), \
+                "a shortage bigger than the cash entered was accepted anyway"
+        finally:
+            # The rejected save above never reaches save_daily_sales()'s own
+            # field-clearing code (it returns early on validation failure) -
+            # cleared explicitly here so a leftover "500" in shortage_input
+            # does not silently reject every other test's own save from
+            # here on.
+            s.cash_input.clear()
+            s.network_input.clear()
+            s.transfer_input.clear()
+            s.delivery_input.clear()
+            s.shortage_input.clear()
+            for entry in db.fetch_all(
+                    "SELECT DISTINCT journal_entry_id FROM sales WHERE branch_id = ? "
+                    "AND journal_entry_id IS NOT NULL", (test_branch_id,)):
+                db.delete_journal_entry(entry["journal_entry_id"])
+            db.execute_query("DELETE FROM sales WHERE branch_id = ?", (test_branch_id,))
+            db.execute_query("DELETE FROM branches WHERE id = ?", (test_branch_id,))
+            delete_journal_entries_created_after(journal_marker)
+            goto("sales")
+            window.sales.load_history()
+    check("عجز لموظف is deducted from cash - in the preview, the saved total, and the ledger itself",
+          shortage_is_deducted_from_cash_and_from_the_days_total)
+
     def delivery_app_sales_post_to_the_bank_account_not_cash():
         """شركات التوصيل (هنقرستيشن / جاهز وغيرها) settle to the bank, never
         handed over as physical cash - a new payment_method value the sales
