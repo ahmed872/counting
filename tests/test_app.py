@@ -151,6 +151,61 @@ def main():
     check("clicking save more than once does not duplicate the employee",
           saving_twice_does_not_duplicate_the_employee)
 
+    def hr_extra_fields_save_edit_and_validate():
+        """The client's new requests: a photo, مدد (the GOSI-registered slice
+        of salary paid via bank transfer), medical insurance number/expiry,
+        and the one-time government fees paid for the employee - all of it
+        must round-trip through add, then through edit, and مدد must never
+        be allowed to exceed what the employee actually earns."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("سعيد مدد")
+        hr.job_input.setText("عامل")
+        hr.salary_input.setText("3000")
+        hr.allowance_input.setText("0")
+        hr.medical_insurance_input.setText("MED-99")
+        hr.medical_insurance_expiry.setDate(QDate(2027, 1, 1))
+        hr.madad_input.setText("800")
+        hr.passport_fee_input.setText("100")
+        hr.labor_office_fee_input.setText("200")
+        hr.medical_insurance_fee_input.setText("150")
+        hr.health_certificate_fee_input.setText("50")
+        hr._set_photo_preview(b"\xff\xd8fake-jpeg-bytes")
+        hr.save_employee()
+
+        row = db.fetch_one("SELECT * FROM employees WHERE name = 'سعيد مدد'")
+        assert row, "employee with the new fields was not saved"
+        assert row["medical_insurance_no"] == "MED-99", row["medical_insurance_no"]
+        assert row["medical_insurance_expiry"] == "2027-01-01", row["medical_insurance_expiry"]
+        assert abs(row["madad_salary"] - 800) < 0.01, row["madad_salary"]
+        assert abs(row["passport_fee"] - 100) < 0.01, row["passport_fee"]
+        assert abs(row["labor_office_fee"] - 200) < 0.01, row["labor_office_fee"]
+        assert abs(row["medical_insurance_fee"] - 150) < 0.01, row["medical_insurance_fee"]
+        assert abs(row["health_certificate_fee"] - 50) < 0.01, row["health_certificate_fee"]
+        assert bytes(row["photo"]) == b"\xff\xd8fake-jpeg-bytes", "photo bytes were not stored"
+        emp_id = row["id"]
+
+        # Picking the employee back up must repopulate every new field, not
+        # just the ones that already existed before this feature.
+        hr.employee_picker.setCurrentIndex(hr.employee_picker.findData(emp_id))
+        assert hr.medical_insurance_input.text() == "MED-99"
+        assert hr.madad_input.text().startswith("800")
+        assert hr.passport_fee_input.text().startswith("100")
+        assert hr._photo_bytes == b"\xff\xd8fake-jpeg-bytes", "photo was not reloaded into the form"
+
+        # مدد is what GOSI has on record as this employee's salary - it
+        # cannot be larger than what he actually earns.
+        hr.madad_input.setText("5000")
+        hr.save_employee()
+        unchanged = db.fetch_one("SELECT madad_salary FROM employees WHERE id = ?", (emp_id,))
+        assert abs(unchanged["madad_salary"] - 800) < 0.01, \
+            "an impossible مدد value (bigger than the salary) was saved anyway"
+
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+    check("HR: photo, مدد, medical insurance, and government fees save/edit/validate correctly",
+          hr_extra_fields_save_edit_and_validate)
+
     def new_employee_button_actually_clears_the_form():
         """The same broken clear made this button feel useless: in the common
         case (already adding a new employee, picker already on index 0), the

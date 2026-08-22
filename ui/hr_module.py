@@ -1,12 +1,15 @@
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QTableWidgetItem, QPushButton, QFormLayout, QLineEdit,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
-                             QGroupBox, QTabWidget)
+                             QGroupBox, QTabWidget, QFileDialog)
 from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtGui import QPixmap
 from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height
 from ui.formatting import money_item, money
 from logic.money import parse_money
 from logic.accounting import AccountingLogic
+
+PHOTO_PREVIEW_SIZE = 72
 
 
 class HRModule(QWidget):
@@ -75,6 +78,32 @@ class HRModule(QWidget):
         self.work_card_input = QLineEdit()
         self.work_card_expiry = QDateEdit(QDate.currentDate())
         self.work_card_expiry.setCalendarPopup(True)
+        self.medical_insurance_input = QLineEdit()
+        self.medical_insurance_expiry = QDateEdit(QDate.currentDate())
+        self.medical_insurance_expiry.setCalendarPopup(True)
+        # مدد: the slice of the employee's net pay the institution transfers
+        # through the official مدد system - what GOSI has on record for him,
+        # and so lower than what he actually receives once cash is added.
+        self.madad_input = QLineEdit()
+        self.passport_fee_input = QLineEdit()
+        self.labor_office_fee_input = QLineEdit()
+        self.medical_insurance_fee_input = QLineEdit()
+        self.health_certificate_fee_input = QLineEdit()
+
+        # Many workers share very similar names - a photo tells them apart
+        # at a glance. Kept as raw bytes on the employee row, not a file on
+        # disk, so a backup/restore of the database carries it along too.
+        self._photo_bytes = None
+        self.photo_preview = QLabel("لا توجد\nصورة")
+        self.photo_preview.setFixedSize(PHOTO_PREVIEW_SIZE, PHOTO_PREVIEW_SIZE)
+        self.photo_preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.photo_preview.setStyleSheet(
+            "QLabel { border:1px solid #cbd5e1; border-radius:6px; background:#f8fafc; "
+            "color:#94a3b8; font-size:11px; }")
+        self.photo_pick_btn = QPushButton("اختيار صورة...")
+        self.photo_pick_btn.clicked.connect(self.pick_employee_photo)
+        self.photo_clear_btn = QPushButton("إزالة الصورة")
+        self.photo_clear_btn.clicked.connect(self.clear_employee_photo)
 
         self._apply_field_widths()
 
@@ -95,6 +124,23 @@ class HRModule(QWidget):
         employee_form.addRow("رقم الجواز وتاريخ الانتهاء:", self._document_row(self.passport_input, self.passport_expiry))
         employee_form.addRow("رقم تصريح العمل وتاريخ الانتهاء:", self._document_row(self.work_permit_input, self.work_permit_expiry))
         employee_form.addRow("رقم البطاقة الصحية وتاريخ الانتهاء:", self._document_row(self.work_card_input, self.work_card_expiry))
+        employee_form.addRow("رقم التأمين الطبي وتاريخ الانتهاء:", self._document_row(self.medical_insurance_input, self.medical_insurance_expiry))
+        employee_form.addRow("مدد (يُحوَّل بنكياً من صافي الراتب):", self.madad_input)
+        employee_form.addRow("رسوم الجوازات:", self.passport_fee_input)
+        employee_form.addRow("رسوم مكتب العمل:", self.labor_office_fee_input)
+        employee_form.addRow("رسوم التأمين الطبي:", self.medical_insurance_fee_input)
+        employee_form.addRow("رسوم الشهادة الصحية:", self.health_certificate_fee_input)
+
+        photo_row = QHBoxLayout()
+        photo_row.setSpacing(10)
+        photo_row.addWidget(self.photo_preview)
+        photo_buttons = QVBoxLayout()
+        photo_buttons.setSpacing(6)
+        photo_buttons.addWidget(self.photo_pick_btn)
+        photo_buttons.addWidget(self.photo_clear_btn)
+        photo_row.addLayout(photo_buttons)
+        photo_row.addStretch()
+        employee_form.addRow("صورة الموظف:", photo_row)
 
         form_outer.addLayout(employee_form)
 
@@ -359,6 +405,29 @@ class HRModule(QWidget):
         return wrapper
 
 
+    def _set_photo_preview(self, photo_bytes):
+        self._photo_bytes = photo_bytes
+        if photo_bytes:
+            pixmap = QPixmap()
+            if pixmap.loadFromData(photo_bytes):
+                self.photo_preview.setPixmap(pixmap.scaled(
+                    PHOTO_PREVIEW_SIZE, PHOTO_PREVIEW_SIZE,
+                    Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                return
+        self.photo_preview.setPixmap(QPixmap())
+        self.photo_preview.setText("لا توجد\nصورة")
+
+    def pick_employee_photo(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "اختيار صورة الموظف", "", "صور (*.png *.jpg *.jpeg *.bmp)")
+        if not path:
+            return
+        with open(path, "rb") as f:
+            self._set_photo_preview(f.read())
+
+    def clear_employee_photo(self):
+        self._set_photo_preview(None)
+
     def load_branch_options(self):
         self.branch_input.clear()
         for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
@@ -379,6 +448,13 @@ class HRModule(QWidget):
             self.work_permit_expiry,
             self.work_card_input,
             self.work_card_expiry,
+            self.medical_insurance_input,
+            self.medical_insurance_expiry,
+            self.madad_input,
+            self.passport_fee_input,
+            self.labor_office_fee_input,
+            self.medical_insurance_fee_input,
+            self.health_certificate_fee_input,
         ]
         for field in fields:
             field.setMinimumWidth(160)
@@ -390,8 +466,13 @@ class HRModule(QWidget):
     def _clear_employee_fields(self):
         for field in (self.name_input, self.job_input, self.salary_input,
                       self.allowance_input, self.iqama_input, self.passport_input,
-                      self.work_permit_input, self.work_card_input):
+                      self.work_permit_input, self.work_card_input,
+                      self.medical_insurance_input, self.madad_input,
+                      self.passport_fee_input, self.labor_office_fee_input,
+                      self.medical_insurance_fee_input, self.health_certificate_fee_input):
             field.clear()
+        self.medical_insurance_expiry.setDate(QDate.currentDate())
+        self._set_photo_preview(None)
         self.save_btn.setText("إضافة موظف")
         self.deactivate_btn.setEnabled(False)
         self.termination_date.setDate(QDate.currentDate())
@@ -439,11 +520,19 @@ class HRModule(QWidget):
         self.passport_input.setText(emp["passport_no"] or "")
         self.work_permit_input.setText(emp["work_permit_no"] or "")
         self.work_card_input.setText(emp["work_card_no"] or "")
+        self.medical_insurance_input.setText(emp["medical_insurance_no"] or "")
+        self.madad_input.setText(str(emp["madad_salary"] or 0))
+        self.passport_fee_input.setText(str(emp["passport_fee"] or 0))
+        self.labor_office_fee_input.setText(str(emp["labor_office_fee"] or 0))
+        self.medical_insurance_fee_input.setText(str(emp["medical_insurance_fee"] or 0))
+        self.health_certificate_fee_input.setText(str(emp["health_certificate_fee"] or 0))
+        self._set_photo_preview(emp["photo"])
         for value, widget in (
             (emp["iqama_expiry"], self.iqama_expiry),
             (emp["passport_expiry"], self.passport_expiry),
             (emp["work_permit_expiry"], self.work_permit_expiry),
             (emp["work_card_expiry"], self.work_card_expiry),
+            (emp["medical_insurance_expiry"], self.medical_insurance_expiry),
         ):
             if value:
                 widget.setDate(QDate.fromString(str(value), "yyyy-MM-dd"))
@@ -462,8 +551,19 @@ class HRModule(QWidget):
             allowance = parse_money(self.allowance_input.text(), "البدلات")
             if salary < 0 or allowance < 0:
                 raise ValueError
+            madad = parse_money(self.madad_input.text(), "مدد")
+            passport_fee = parse_money(self.passport_fee_input.text(), "رسوم الجوازات")
+            labor_office_fee = parse_money(self.labor_office_fee_input.text(), "رسوم مكتب العمل")
+            medical_insurance_fee = parse_money(self.medical_insurance_fee_input.text(), "رسوم التأمين الطبي")
+            health_certificate_fee = parse_money(self.health_certificate_fee_input.text(), "رسوم الشهادة الصحية")
         except ValueError as exc:
             QMessageBox.warning(self, "تنبيه", str(exc))
+            return
+
+        # مدد is registered with GOSI as this employee's salary - it cannot
+        # be more than what he actually earns (base + allowances).
+        if madad > salary + allowance:
+            QMessageBox.warning(self, "تنبيه", "قيمة (مدد) لا يمكن أن تتجاوز إجمالي الراتب الأساسي والبدلات")
             return
 
         values = (
@@ -472,6 +572,9 @@ class HRModule(QWidget):
             self.passport_input.text().strip(), self.passport_expiry.date().toString("yyyy-MM-dd"),
             self.work_permit_input.text().strip(), self.work_permit_expiry.date().toString("yyyy-MM-dd"),
             self.work_card_input.text().strip(), self.work_card_expiry.date().toString("yyyy-MM-dd"),
+            self.medical_insurance_input.text().strip(), self.medical_insurance_expiry.date().toString("yyyy-MM-dd"),
+            madad, passport_fee, labor_office_fee, medical_insurance_fee, health_certificate_fee,
+            self._photo_bytes,
         )
 
         emp_id = self.editing_employee_id
@@ -479,8 +582,10 @@ class HRModule(QWidget):
             self.db.execute_query(
                 """INSERT INTO employees (name, job_title, branch_id, base_salary, allowances,
                    iqama_no, iqama_expiry, passport_no, passport_expiry,
-                   work_permit_no, work_permit_expiry, work_card_no, work_card_expiry)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   work_permit_no, work_permit_expiry, work_card_no, work_card_expiry,
+                   medical_insurance_no, medical_insurance_expiry, madad_salary,
+                   passport_fee, labor_office_fee, medical_insurance_fee, health_certificate_fee, photo)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 values,
             )
             message = "تم إضافة الموظف بنجاح"
@@ -488,7 +593,9 @@ class HRModule(QWidget):
             self.db.execute_query(
                 """UPDATE employees SET name=?, job_title=?, branch_id=?, base_salary=?, allowances=?,
                    iqama_no=?, iqama_expiry=?, passport_no=?, passport_expiry=?,
-                   work_permit_no=?, work_permit_expiry=?, work_card_no=?, work_card_expiry=?
+                   work_permit_no=?, work_permit_expiry=?, work_card_no=?, work_card_expiry=?,
+                   medical_insurance_no=?, medical_insurance_expiry=?, madad_salary=?,
+                   passport_fee=?, labor_office_fee=?, medical_insurance_fee=?, health_certificate_fee=?, photo=?
                    WHERE id=?""",
                 values + (emp_id,),
             )

@@ -55,7 +55,27 @@ class DBManager:
             'work_permit_no': 'TEXT',
             'work_permit_expiry': 'DATE',
             'work_card_no': 'TEXT',
-            'work_card_expiry': 'DATE'
+            'work_card_expiry': 'DATE',
+            # Client request: many workers share similar names - a photo
+            # tells them apart at a glance on the employee list/form.
+            'photo': 'BLOB',
+            # مدد: the portion of net salary the institution pays through
+            # the official مدد transfer system, registered with GOSI - see
+            # HRLogic.post_payroll for how this splits the monthly net pay
+            # between مدد (bank) and cash.
+            'madad_salary': 'REAL DEFAULT 0',
+            'medical_insurance_no': 'TEXT',
+            'medical_insurance_expiry': 'DATE',
+            # One-time government fees recorded when the employee is added
+            # - passport/iqama processing, labour office, medical
+            # insurance premium, health certificate - so a later report
+            # can show everything the institution has paid for this
+            # person without checking another platform.
+            'passport_fee': 'REAL DEFAULT 0',
+            'labor_office_fee': 'REAL DEFAULT 0',
+            'medical_insurance_fee': 'REAL DEFAULT 0',
+            'health_certificate_fee': 'REAL DEFAULT 0',
+            'fees_journal_entry_id': 'INTEGER',
         }
         for column_name, column_type in employee_additions.items():
             if column_name not in employee_columns:
