@@ -216,6 +216,50 @@ class HRLogic:
             'cash_portion': row['cash_portion'] or 0,
         } for row in rows]
 
+    def get_employee_report(self, employee_id, year, month=None):
+        """Everything about one employee for one month, or a whole year -
+        documents, government fees, and every riyal of salary paid to them -
+        so answering "what did we pay/register for this person in
+        August/this year" never needs another platform. month=None means
+        the whole year: pulls the frozen posted figures for any month
+        already posted, and a live preview for the rest."""
+        emp = self.db.fetch_one(
+            """SELECT e.*, b.name as branch_name FROM employees e
+               LEFT JOIN branches b ON b.id = e.branch_id WHERE e.id = ?""",
+            (employee_id,))
+        if not emp:
+            return None
+
+        months = [month] if month else list(range(1, 13))
+        by_month = []
+        totals = {
+            'gross_salary': 0, 'absence_deduction': 0, 'other_deductions': 0,
+            'bonuses': 0, 'advances_recovered': 0, 'net_salary': 0,
+            'madad_portion': 0, 'cash_portion': 0, 'present_days': 0, 'absent_days': 0,
+        }
+        for m in months:
+            rows = self.get_posted_payroll(m, year) if self.is_payroll_posted(m, year) \
+                else self.get_monthly_payroll(m, year)
+            row = next((r for r in rows if r['id'] == employee_id), None)
+            if not row:
+                continue
+            by_month.append({'month': m, 'posted': self.is_payroll_posted(m, year), **row})
+            for key in totals:
+                totals[key] += row[key]
+
+        government_fees = (
+            (emp['passport_fee'] or 0) + (emp['labor_office_fee'] or 0)
+            + (emp['medical_insurance_fee'] or 0) + (emp['health_certificate_fee'] or 0)
+        )
+
+        return {
+            'employee': emp,
+            'months': by_month,
+            'totals': totals,
+            'government_fees': government_fees,
+            'paid_total': totals['net_salary'] + government_fees,
+        }
+
     def post_payroll(self, month, year, paid_now=True):
         """Posts the month's payroll to the accounting journal:
         Debit Salaries Expense (5100) for gross-less-deductions-plus-bonuses,

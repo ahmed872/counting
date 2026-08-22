@@ -2076,6 +2076,94 @@ def main():
         os.remove(out)
     check("report exports a real PDF", pdf_export_works)
 
+    def employee_report_shows_everything_about_one_person():
+        """The client's ask: pull up one resident employee for a given month
+        and see everything about him in one place - photo, iqama number and
+        expiry, every other document, the government fees paid for him, and
+        the full salary breakdown (including the مدد/cash split) - without
+        checking another platform."""
+        from ui.formatting import money
+        from PyQt6.QtPrintSupport import QPrinter
+        hr = window.hr
+        month, year = 8, 2032   # a month nothing else in this suite posts to
+        assert not window.hr_logic.is_payroll_posted(month, year), \
+            "test setup collision - this month/year is already posted by another test"
+
+        hr.clear_employee_form()
+        hr.name_input.setText("عامل تقرير اختبار")
+        hr.job_input.setText("سائق")
+        hr.salary_input.setText("4000")
+        hr.allowance_input.setText("500")
+        hr.iqama_input.setText("IQ-777")
+        hr.iqama_expiry.setDate(QDate(2028, 1, 1))
+        hr.madad_input.setText("1000")
+        hr.passport_fee_input.setText("120")
+        hr.labor_office_fee_input.setText("300")
+        hr.medical_insurance_fee_input.setText("180")
+        hr.health_certificate_fee_input.setText("60")
+        hr._set_photo_preview(b"\xff\xd8fake-jpeg-bytes")
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name = 'عامل تقرير اختبار'")["id"]
+
+        # One absence, so the report's salary breakdown has something in
+        # every column, not just the trivial all-zero case.
+        hr.attendance_employee.setCurrentIndex(hr.attendance_employee.findData(emp_id))
+        hr.attendance_status.setCurrentIndex(hr.attendance_status.findData("Absent"))
+        hr.attendance_date.setDate(QDate(year, month, 5))
+        hr.record_attendance()
+
+        marker = newest_journal_entry_id()
+        window.hr_logic.post_payroll(month, year)
+        expected = window.hr_logic.get_employee_report(emp_id, year, month)
+
+        hr.load_employees()
+        hr.report_employee_picker.setCurrentIndex(hr.report_employee_picker.findData(emp_id))
+        hr.report_period_type.setCurrentIndex(hr.report_period_type.findData("month"))
+        hr.report_month.setCurrentIndex(hr.report_month.findData(month))
+        hr.report_year.setText(str(year))
+        hr.preview_employee_report()
+        html = hr.report_viewer.toHtml()
+
+        assert "عامل تقرير اختبار" in html, "employee name missing from the report"
+        assert "IQ-777" in html, "iqama number missing from the report"
+        assert "2028-01-01" in html, "iqama expiry missing from the report"
+        assert money(expected['totals']['net_salary']) in html, \
+            "net salary total in the report does not match get_employee_report()"
+        assert money(expected['totals']['madad_portion']) in html, \
+            "مدد portion in the report does not match get_employee_report()"
+        assert money(expected['totals']['cash_portion']) in html, \
+            "cash portion in the report does not match get_employee_report()"
+        assert money(expected['government_fees']) in html, \
+            "government fees total in the report does not match get_employee_report()"
+        assert money(expected['paid_total']) in html, \
+            "grand total paid in the report does not match get_employee_report()"
+
+        # Photo: an <img> tag with base64 data, not silently dropped.
+        assert "data:image/png;base64," in html or "data:image/" in hr.current_employee_report_html(), \
+            "the employee's photo did not make it into the report"
+
+        out = os.path.join(tempfile.gettempdir(), "_erp_employee_report_test.pdf")
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(out)
+        hr._employee_report_document().print(printer)
+        assert os.path.exists(out) and os.path.getsize(out) > 1000
+        os.remove(out)
+
+        # Undo the posting before removing the employee - payroll_run_items
+        # still holds a foreign key against it.
+        run_id = db.fetch_one(
+            "SELECT id FROM payroll_runs WHERE month=? AND year=?", (month, year))["id"]
+        db.execute_query("DELETE FROM payroll_run_items WHERE run_id = ?", (run_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE id = ?", (run_id,))
+        db.execute_query("DELETE FROM attendance WHERE employee_id = ?", (emp_id,))
+        delete_journal_entries_created_after(marker)
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+        hr.load_employees()
+    check("HR: the per-employee report shows documents, government fees, and the full salary breakdown",
+          employee_report_shows_everything_about_one_person)
+
     # ---------------- UI regressions ----------------
     print("\n[ui]")
 

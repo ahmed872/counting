@@ -1,15 +1,24 @@
+import base64
+from datetime import datetime
+
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QTableWidgetItem, QPushButton, QFormLayout, QLineEdit,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
-                             QGroupBox, QTabWidget, QFileDialog)
+                             QGroupBox, QTabWidget, QFileDialog, QTextBrowser)
 from PyQt6.QtCore import QDate, Qt
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QTextDocument
+from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height
 from ui.formatting import money_item, money
 from logic.money import parse_money
 from logic.accounting import AccountingLogic
 
 PHOTO_PREVIEW_SIZE = 72
+DOC_TYPE_LABELS = {
+    'iqama': 'الإقامة', 'passport': 'جواز السفر',
+    'work_permit': 'تصريح العمل', 'work_card': 'البطاقة الصحية',
+    'medical_insurance': 'التأمين الطبي',
+}
 
 
 class HRModule(QWidget):
@@ -391,6 +400,58 @@ class HRModule(QWidget):
         tables_layout.addStretch()
 
         tabs.addTab(tables_widget, "قائمة العاملين")
+
+        report_widget = QWidget()
+        report_layout = QVBoxLayout(report_widget)
+        report_layout.setContentsMargins(6, 6, 6, 6)
+        report_layout.setSpacing(12)
+
+        report_controls = QGroupBox("تقرير بيانات موظف مقيم")
+        report_form = QFormLayout(report_controls)
+        report_form.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        report_form.setSpacing(16)
+
+        self.report_employee_picker = QComboBox()
+        self.report_period_type = QComboBox()
+        self.report_period_type.addItem("شهر معيّن", "month")
+        self.report_period_type.addItem("السنة كاملة", "year")
+        self.report_period_type.currentIndexChanged.connect(self._update_report_period_enabled)
+        self.report_month = QComboBox()
+        for month in range(1, 13):
+            self.report_month.addItem(f"{month:02d}", month)
+        self.report_month.setCurrentIndex(QDate.currentDate().month() - 1)
+        self.report_year = QLineEdit(str(QDate.currentDate().year()))
+        self._apply_field_widths([self.report_employee_picker, self.report_period_type,
+                                   self.report_month, self.report_year])
+
+        report_form.addRow("الموظف:", self.report_employee_picker)
+        report_form.addRow("نوع الفترة:", self.report_period_type)
+        report_form.addRow("الشهر:", self.report_month)
+        report_form.addRow("السنة:", self.report_year)
+
+        report_buttons = QHBoxLayout()
+        report_buttons.setSpacing(10)
+        preview_btn = QPushButton("عرض التقرير")
+        preview_btn.clicked.connect(self.preview_employee_report)
+        pdf_btn = QPushButton("حفظ PDF")
+        pdf_btn.clicked.connect(self.save_employee_report_pdf)
+        print_btn = QPushButton("طباعة")
+        print_btn.clicked.connect(self.print_employee_report)
+        report_buttons.addWidget(preview_btn, 2)
+        report_buttons.addWidget(pdf_btn, 1)
+        report_buttons.addWidget(print_btn, 1)
+        report_form.addRow(report_buttons)
+
+        report_layout.addWidget(report_controls)
+
+        self.report_viewer = QTextBrowser()
+        self.report_viewer.setStyleSheet(
+            "QTextBrowser { background:white; border:1px solid #dde3ea; border-radius:12px; padding:10px; }")
+        self.report_viewer.setMinimumHeight(320)
+        report_layout.addWidget(self.report_viewer, 1)
+
+        tabs.addTab(report_widget, "تقرير الموظف")
+        self._update_report_period_enabled()
 
         self.load_employees()
 
@@ -824,6 +885,20 @@ class HRModule(QWidget):
             self.attendance_employee.addItem(emp['name'], emp['id'])
             self.deduction_employee.addItem(emp['name'], emp['id'])
 
+        # The per-employee report must still reach someone who has since
+        # left - the client wants "everything about him" including months
+        # he actually worked, not just people currently on payroll.
+        all_employees = self.db.fetch_all(
+            """SELECT e.id, e.name, e.is_active FROM employees e ORDER BY e.is_active DESC, e.name""")
+        report_current = self.report_employee_picker.currentData()
+        self.report_employee_picker.clear()
+        for emp in all_employees:
+            label = emp['name'] if emp['is_active'] else f"{emp['name']} (منتهي الخدمة)"
+            self.report_employee_picker.addItem(label, emp['id'])
+        restored_report = self.report_employee_picker.findData(report_current)
+        if restored_report >= 0:
+            self.report_employee_picker.setCurrentIndex(restored_report)
+
         # Repopulate the edit picker without firing its change handler, which
         # would otherwise wipe the form while the user is typing in it.
         self.employee_picker.blockSignals(True)
@@ -868,6 +943,195 @@ class HRModule(QWidget):
         outstanding_advances = self.hr_logic.get_outstanding_advances_total()
         self.advances_card.value_label.setText(money(outstanding_advances))
         fit_table_height(self.table)
+
+    def _update_report_period_enabled(self):
+        self.report_month.setEnabled(self.report_period_type.currentData() == "month")
+
+    def current_employee_report_html(self):
+        emp_id = self.report_employee_picker.currentData()
+        if emp_id is None:
+            return "<p>لا يوجد موظفون مسجلون بعد.</p>"
+        try:
+            year = int(self.report_year.text())
+        except ValueError:
+            raise ValueError("سنة غير صحيحة")
+        month = self.report_month.currentData() if self.report_period_type.currentData() == "month" else None
+        data = self.hr_logic.get_employee_report(emp_id, year, month)
+        if not data:
+            return "<p>تعذر إيجاد بيانات هذا الموظف.</p>"
+        return self.build_employee_report_html(data, month, year)
+
+    def build_employee_report_html(self, data, month, year):
+        emp = data['employee']
+        totals = data['totals']
+        period_label = f"شهر {month:02d}/{year}" if month else f"سنة {year}"
+
+        photo_html = ""
+        if emp['photo']:
+            b64 = base64.b64encode(bytes(emp['photo'])).decode('ascii')
+            photo_html = (f'<img src="data:image/png;base64,{b64}" width="96" height="96" '
+                          f'style="border-radius:8px;border:1px solid #cbd5e1;object-fit:cover;">')
+        else:
+            photo_html = ('<div style="width:96px;height:96px;border:1px solid #cbd5e1;border-radius:8px;'
+                          'display:flex;align-items:center;justify-content:center;color:#94a3b8;'
+                          'font-size:11px;">لا توجد صورة</div>')
+
+        def doc_row(label, number, expiry):
+            return (f"<tr><td style='padding:5px 8px'>{label}</td>"
+                    f"<td style='padding:5px 8px'>{number or '-'}</td>"
+                    f"<td style='padding:5px 8px'>{expiry or '-'}</td></tr>")
+
+        doc_fields = [
+            ('iqama', emp['iqama_no'], emp['iqama_expiry']),
+            ('passport', emp['passport_no'], emp['passport_expiry']),
+            ('work_permit', emp['work_permit_no'], emp['work_permit_expiry']),
+            ('work_card', emp['work_card_no'], emp['work_card_expiry']),
+            ('medical_insurance', emp['medical_insurance_no'], emp['medical_insurance_expiry']),
+        ]
+        documents_rows = "".join(doc_row(DOC_TYPE_LABELS[key], no, exp) for key, no, exp in doc_fields)
+
+        fee_fields = [
+            ("رسوم الجوازات", emp['passport_fee'] or 0),
+            ("رسوم مكتب العمل", emp['labor_office_fee'] or 0),
+            ("رسوم التأمين الطبي", emp['medical_insurance_fee'] or 0),
+            ("رسوم الشهادة الصحية", emp['health_certificate_fee'] or 0),
+        ]
+        fees_rows = "".join(
+            f"<tr><td style='padding:5px 8px'>{label}</td>"
+            f"<td style='padding:5px 8px;text-align:left'>{money(value)}</td></tr>"
+            for label, value in fee_fields
+        )
+        fees_rows += (f"<tr><td style='padding:5px 8px;font-weight:800'>الإجمالي</td>"
+                      f"<td style='padding:5px 8px;text-align:left;font-weight:800'>{money(data['government_fees'])}</td></tr>")
+
+        month_rows = "".join(
+            "<tr>"
+            f"<td style='padding:5px 6px'>{m['month']:02d}</td>"
+            f"<td style='padding:5px 6px'>{'مُرحَّل' if m['posted'] else 'معاينة (لم يُرحَّل)'}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{money(m['gross_salary'])}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{m['present_days']}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{m['absent_days']}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{money(m['absence_deduction'])}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{money(m['other_deductions'])}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{money(m['bonuses'])}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{money(m['advances_recovered'])}</td>"
+            f"<td style='padding:5px 6px;text-align:left;font-weight:700'>{money(m['net_salary'])}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{money(m['madad_portion'])}</td>"
+            f"<td style='padding:5px 6px;text-align:left'>{money(m['cash_portion'])}</td>"
+            "</tr>"
+            for m in data['months']
+        ) or ("<tr><td colspan='12' style='padding:12px;text-align:center;color:#64748b'>"
+              "لا توجد بيانات رواتب لهذا الموظف في هذه الفترة</td></tr>")
+
+        def total_row(label, value, bold=True, color=None):
+            style = "font-weight:800;" if bold else ""
+            if color:
+                style += f"color:{color};"
+            return (f"<tr><td style='padding:6px 10px;{style}'>{label}</td>"
+                    f"<td style='padding:6px 10px;text-align:left;{style}'>{money(value)}</td></tr>")
+
+        def count_row(label, value):
+            return (f"<tr><td style='padding:6px 10px;'>{label}</td>"
+                    f"<td style='padding:6px 10px;text-align:left;'>{int(value)}</td></tr>")
+
+        return f"""
+        <div dir="rtl" style="font-family:'Segoe UI',Tahoma,sans-serif; color:#1f2937;">
+          <table width="100%"><tr>
+            <td style="vertical-align:top;width:106px;">{photo_html}</td>
+            <td style="vertical-align:top;">
+              <h2 style="color:#1f3b57;margin:0 0 4px;">{emp['name']}</h2>
+              <div style="color:#64748b;">{emp['job_title'] or ''} — {emp['branch_name'] or ''}</div>
+              <div style="color:#334155;margin-top:6px;">رقم الإقامة: <b>{emp['iqama_no'] or '-'}</b>
+                &nbsp;|&nbsp; تاريخ الانتهاء: <b>{emp['iqama_expiry'] or '-'}</b></div>
+            </td>
+          </tr></table>
+          <div style="color:#94a3b8;font-size:11px;margin:8px 0 14px;">
+            تقرير عن {period_label} - تم إنشاؤه في {datetime.now().strftime('%Y-%m-%d %H:%M')}
+          </div>
+
+          <h3 style="color:#1f3b57;">الوثائق</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;">
+            <tr style="background:#1f3b57;color:white;">
+              <th style="padding:6px 8px;">الوثيقة</th><th style="padding:6px 8px;">الرقم</th>
+              <th style="padding:6px 8px;">تاريخ الانتهاء</th>
+            </tr>
+            {documents_rows}
+          </table>
+
+          <h3 style="color:#1f3b57;">الرسوم الحكومية المسجلة</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;">
+            {fees_rows}
+          </table>
+
+          <h3 style="color:#1f3b57;">الرواتب والحضور خلال الفترة</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:11px;">
+            <tr style="background:#1f3b57;color:white;">
+              <th style="padding:6px 6px;">الشهر</th><th style="padding:6px 6px;">الحالة</th>
+              <th style="padding:6px 6px;">الراتب الإجمالي</th><th style="padding:6px 6px;">أيام الحضور</th>
+              <th style="padding:6px 6px;">أيام الغياب</th><th style="padding:6px 6px;">خصم الغياب</th>
+              <th style="padding:6px 6px;">خصومات أخرى</th><th style="padding:6px 6px;">مكافآت</th>
+              <th style="padding:6px 6px;">سلف مستردة</th><th style="padding:6px 6px;">الصافي</th>
+              <th style="padding:6px 6px;">مدد (بنكي)</th><th style="padding:6px 6px;">نقدي</th>
+            </tr>
+            {month_rows}
+          </table>
+
+          <h3 style="color:#1f3b57;">إجمالي الفترة</h3>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;">
+            {total_row("إجمالي الراتب المستحق", totals['gross_salary'], bold=False)}
+            {total_row("إجمالي خصم الغياب", totals['absence_deduction'], bold=False)}
+            {total_row("إجمالي خصومات أخرى", totals['other_deductions'], bold=False)}
+            {total_row("إجمالي المكافآت", totals['bonuses'], bold=False)}
+            {total_row("إجمالي سلف مستردة", totals['advances_recovered'], bold=False)}
+            {total_row("إجمالي صافي الرواتب المدفوعة", totals['net_salary'])}
+            {total_row("منها عن طريق مدد (بنكي)", totals['madad_portion'], bold=False)}
+            {total_row("منها نقداً", totals['cash_portion'], bold=False)}
+            {count_row("إجمالي أيام الحضور", totals['present_days'])}
+            {count_row("إجمالي أيام الغياب", totals['absent_days'])}
+            {total_row("إجمالي الرسوم الحكومية المسجلة", data['government_fees'], bold=False)}
+            {total_row("إجمالي ما دفعته المؤسسة للموظف (رواتب + رسوم حكومية)", data['paid_total'], color="#16a34a")}
+          </table>
+        </div>
+        """
+
+    def preview_employee_report(self):
+        try:
+            self.report_viewer.setHtml(self.current_employee_report_html())
+        except Exception as exc:
+            QMessageBox.critical(self, "خطأ", str(exc))
+
+    def _employee_report_document(self):
+        doc = QTextDocument()
+        doc.setHtml(self.current_employee_report_html())
+        return doc
+
+    def save_employee_report_pdf(self):
+        if self.report_employee_picker.currentData() is None:
+            QMessageBox.warning(self, "تنبيه", "لا يوجد موظف لعرض تقريره")
+            return
+        default = f"تقرير-{self.report_employee_picker.currentText()}.pdf"
+        path, _ = QFileDialog.getSaveFileName(self, "حفظ تقرير الموظف PDF", default, "PDF (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        try:
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+            printer.setOutputFileName(path)
+            self._employee_report_document().print(printer)
+            QMessageBox.information(self, "تم", f"تم حفظ التقرير في:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "خطأ", str(exc))
+
+    def print_employee_report(self):
+        try:
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            dialog = QPrintDialog(printer, self)
+            if dialog.exec() == QPrintDialog.DialogCode.Accepted:
+                self._employee_report_document().print(printer)
+        except Exception as exc:
+            QMessageBox.critical(self, "خطأ", str(exc))
 
     def refresh_on_show(self):
         self.load_employees()
