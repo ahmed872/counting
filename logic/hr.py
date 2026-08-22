@@ -28,9 +28,11 @@ class HRLogic:
             SELECT id, name, 'تصريح عمل' as doc_type, work_permit_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_permit_expiry IS NOT NULL AND work_permit_expiry <= ?
             UNION
             SELECT id, name, 'البطاقة الصحية' as doc_type, work_card_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_card_expiry IS NOT NULL AND work_card_expiry <= ?
+            UNION
+            SELECT id, name, 'التأمين الطبي' as doc_type, medical_insurance_expiry as expiry_date FROM employees WHERE is_active = 1 AND medical_insurance_expiry IS NOT NULL AND medical_insurance_expiry <= ?
             ORDER BY expiry_date
         """
-        return self.db.fetch_all(query, (alert_date, alert_date, alert_date, alert_date))
+        return self.db.fetch_all(query, (alert_date, alert_date, alert_date, alert_date, alert_date))
 
     def record_attendance(self, employee_id, date, status):
         """One record per employee per day: re-recording the same day corrects it

@@ -206,6 +206,41 @@ def main():
     check("HR: photo, مدد, medical insurance, and government fees save/edit/validate correctly",
           hr_extra_fields_save_edit_and_validate)
 
+    def medical_insurance_expiry_raises_a_document_alert():
+        """The existing alert list already covers iqama/passport/work
+        permit/work card - a medical insurance that is about to expire must
+        raise the same kind of alert, not go unnoticed until it has already
+        lapsed."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("عامل تأمين طبي اختبار")
+        hr.job_input.setText("عامل")
+        hr.salary_input.setText("2000")
+        hr.allowance_input.setText("0")
+        # Every other date field defaults to today, which is itself within
+        # the 30-day alert window - pushed years out so only the medical
+        # insurance expiry set below is the one alert this employee raises.
+        far_future = QDate.currentDate().addYears(5)
+        hr.iqama_expiry.setDate(far_future)
+        hr.passport_expiry.setDate(far_future)
+        hr.work_permit_expiry.setDate(far_future)
+        hr.work_card_expiry.setDate(far_future)
+        soon = QDate.currentDate().addDays(10)
+        hr.medical_insurance_expiry.setDate(soon)
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name = 'عامل تأمين طبي اختبار'")["id"]
+
+        alerts = window.hr_logic.get_document_alerts()
+        mine = [a for a in alerts if a['id'] == emp_id]
+        assert len(mine) == 1, f"expected exactly one alert for this employee, got {len(mine)}"
+        assert mine[0]['doc_type'] == 'التأمين الطبي', mine[0]['doc_type']
+        assert mine[0]['expiry_date'] == soon.toString("yyyy-MM-dd"), mine[0]['expiry_date']
+
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+    check("HR: an expiring medical insurance raises a document alert",
+          medical_insurance_expiry_raises_a_document_alert)
+
     def new_employee_button_actually_clears_the_form():
         """The same broken clear made this button feel useless: in the common
         case (already adding a new employee, picker already on index 0), the
