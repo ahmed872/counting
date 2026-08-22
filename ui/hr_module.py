@@ -295,10 +295,11 @@ class HRModule(QWidget):
         payroll_tab_layout.addWidget(self.payroll_status_label)
 
         self.payroll_table = QTableWidget()
-        self.payroll_table.setColumnCount(10)
+        self.payroll_table.setColumnCount(12)
         self.payroll_table.setHorizontalHeaderLabels([
             "العامل", "الفرع", "الراتب الإجمالي", "أيام الغياب", "أيام الحضور",
-            "خصم الغياب", "خصومات أخرى", "مكافآت", "سلف مستردة", "الصافي المستحق"
+            "خصم الغياب", "خصومات أخرى", "مكافآت", "سلف مستردة", "الصافي المستحق",
+            "مدد (بنكي)", "نقدي"
         ])
         self.payroll_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.payroll_table.verticalHeader().setVisible(False)
@@ -804,6 +805,8 @@ class HRModule(QWidget):
             self.payroll_table.setItem(row, 7, money_item(item['bonuses'], bold=False))
             self.payroll_table.setItem(row, 8, money_item(item['advances_recovered'], bold=False))
             self.payroll_table.setItem(row, 9, money_item(item['net_salary'], bold=True))
+            self.payroll_table.setItem(row, 10, money_item(item['madad_portion'], bold=False))
+            self.payroll_table.setItem(row, 11, money_item(item['cash_portion'], bold=False))
 
         self.absent_card.value_label.setText(str(total_absent))
         fit_table_height(self.payroll_table)

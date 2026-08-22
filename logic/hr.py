@@ -84,6 +84,7 @@ class HRLogic:
                 e.job_title,
                 e.base_salary,
                 e.allowances,
+                e.madad_salary,
                 b.name as branch_name,
                 COALESCE(SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END), 0) as absent_days,
                 COALESCE(SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END), 0) as present_days
@@ -147,6 +148,13 @@ class HRLogic:
             advances_recovered = min(outstanding_advances, expense_amount)
             net_salary = expense_amount - advances_recovered
 
+            # مدد never pays out more than the employee actually receives
+            # this month: an absence/deduction-heavy month can bring net_salary
+            # below the registered مدد figure, and the rest of it simply isn't
+            # there to transfer - the employee still gets it, just as cash.
+            madad_portion = min(row['madad_salary'] or 0, net_salary)
+            cash_portion = net_salary - madad_portion
+
             payroll.append({
                 'id': row['id'],
                 'name': row['name'],
@@ -163,6 +171,8 @@ class HRLogic:
                 'advances_outstanding_after': outstanding_advances - advances_recovered,
                 'expense_amount': expense_amount,
                 'net_salary': net_salary,
+                'madad_portion': madad_portion,
+                'cash_portion': cash_portion,
             })
         return payroll
 
@@ -200,6 +210,8 @@ class HRLogic:
             'bonuses': row['bonuses'],
             'advances_recovered': row['advances_recovered'],
             'net_salary': row['net_salary'],
+            'madad_portion': row['madad_portion'] or 0,
+            'cash_portion': row['cash_portion'] or 0,
         } for row in rows]
 
     def post_payroll(self, month, year, paid_now=True):
@@ -231,6 +243,8 @@ class HRLogic:
         total_expense = sum(p['expense_amount'] for p in payroll)
         total_net_paid = sum(p['net_salary'] for p in payroll)
         total_advances_recovered = sum(p['advances_recovered'] for p in payroll)
+        total_madad = sum(p['madad_portion'] for p in payroll)
+        total_cash = sum(p['cash_portion'] for p in payroll)
 
         if not payroll or total_expense == 0:
             raise ValueError("لا يوجد بيانات رواتب لهذا الشهر")
@@ -240,8 +254,20 @@ class HRLogic:
         journal_items = [{'account_code': '5100', 'debit': total_expense, 'credit': 0}]
         if total_advances_recovered:
             journal_items.append({'account_code': '1300', 'debit': 0, 'credit': total_advances_recovered})
-        credit_account = '1000' if paid_now else '2200'
-        journal_items.append({'account_code': credit_account, 'debit': 0, 'credit': total_net_paid})
+        if paid_now:
+            # Money actually leaves through two different channels: مدد goes
+            # out of the bank (1001), the rest in cash (1000) - not lumped
+            # into one line, since the bank and cash balances must each
+            # match what really moved through them.
+            if total_madad:
+                journal_items.append({'account_code': '1001', 'debit': 0, 'credit': total_madad})
+            if total_cash:
+                journal_items.append({'account_code': '1000', 'debit': 0, 'credit': total_cash})
+        elif total_net_paid:
+            # Not yet paid: it is simply owed, regardless of which channel
+            # will eventually settle it - that split only matters once the
+            # money actually moves (see pay_accrued_wages).
+            journal_items.append({'account_code': '2200', 'debit': 0, 'credit': total_net_paid})
         description = (f"صرف رواتب شهر {month:02d}/{year}" if paid_now
                        else f"استحقاق رواتب شهر {month:02d}/{year} (لم تُدفع بعد)")
 
@@ -258,10 +284,11 @@ class HRLogic:
                 cursor.execute(
                     """INSERT INTO payroll_run_items
                        (run_id, employee_id, gross_salary, absence_deduction, other_deductions, bonuses,
-                        advances_recovered, net_salary, absent_days, present_days)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        advances_recovered, net_salary, absent_days, present_days, madad_portion, cash_portion)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (run_id, p['id'], p['gross_salary'], p['absence_deduction'], p['other_deductions'],
-                     p['bonuses'], p['advances_recovered'], p['net_salary'], p['absent_days'], p['present_days'])
+                     p['bonuses'], p['advances_recovered'], p['net_salary'], p['absent_days'], p['present_days'],
+                     p['madad_portion'], p['cash_portion'])
                 )
                 # Apply the recovered amount to the oldest outstanding
                 # advances first, and only as far as it actually reaches. A

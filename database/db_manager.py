@@ -85,6 +85,16 @@ class DBManager:
         if 'notes' not in attendance_columns:
             cursor.execute("ALTER TABLE attendance ADD COLUMN notes TEXT")
 
+        # Splits each posted month's net pay the same way it was actually
+        # disbursed: part through مدد (bank, account 1001) and the rest in
+        # cash (1000) - see HRLogic.post_payroll. A posted month is a frozen
+        # snapshot, so this has to live on the item row itself, not be
+        # recomputed later from the employee's *current* مدد setting.
+        payroll_item_columns = table_columns('payroll_run_items')
+        for column_name in ('madad_portion', 'cash_portion'):
+            if column_name not in payroll_item_columns:
+                cursor.execute(f"ALTER TABLE payroll_run_items ADD COLUMN {column_name} REAL DEFAULT 0")
+
         purchases_columns = table_columns('purchases') if self.table_exists(cursor, 'purchases') else set()
         if 'purchases' in self.get_existing_tables(cursor):
             if 'category' not in purchases_columns:

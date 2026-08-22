@@ -270,6 +270,65 @@ def main():
         for row in db.fetch_all("SELECT id FROM journal_entries WHERE id > ?", (marker,)):
             db.delete_journal_entry(row["id"])
 
+    def payroll_splits_net_pay_between_madad_and_cash():
+        """مدد is the slice of an employee's pay the institution transfers
+        through the official مدد bank system - registered with GOSI, and so
+        never bigger than what the employee actually earns. post_payroll
+        must credit it to the bank (1001) separately from cash (1000), not
+        lump everyone's net pay into one cash line the way it used to."""
+        hr = window.hr
+        month, year = 7, 2031   # a month nothing else in this suite posts to
+        assert not window.hr_logic.is_payroll_posted(month, year), \
+            "test setup collision - this month/year is already posted by another test"
+
+        hr.clear_employee_form()
+        hr.name_input.setText("عامل مدد اختبار")
+        hr.job_input.setText("عامل")
+        hr.salary_input.setText("3000")
+        hr.allowance_input.setText("0")
+        hr.madad_input.setText("800")
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name = 'عامل مدد اختبار'")["id"]
+
+        preview = window.hr_logic.get_monthly_payroll(month, year)
+        expected_madad = sum(p['madad_portion'] for p in preview)
+        expected_cash = sum(p['cash_portion'] for p in preview)
+        mine = next(p for p in preview if p['id'] == emp_id)
+        assert abs(mine['madad_portion'] - 800) < 0.01, mine['madad_portion']
+        assert abs(mine['cash_portion'] - 2200) < 0.01, mine['cash_portion']
+
+        marker = newest_journal_entry_id()
+        window.hr_logic.post_payroll(month, year)
+
+        madad_credit = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1001' AND entry_id > ?", (marker,))["v"]
+        cash_credit = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1000' AND entry_id > ?", (marker,))["v"]
+        assert abs(madad_credit - expected_madad) < 0.01, (madad_credit, expected_madad)
+        assert abs(cash_credit - expected_cash) < 0.01, (cash_credit, expected_cash)
+
+        posted = window.hr_logic.get_posted_payroll(month, year)
+        mine_posted = next(p for p in posted if p['id'] == emp_id)
+        assert abs(mine_posted['madad_portion'] - 800) < 0.01, mine_posted['madad_portion']
+        assert abs(mine_posted['cash_portion'] - 2200) < 0.01, mine_posted['cash_portion']
+
+        # Undo the posting itself before removing the employee - deleting the
+        # employee first would violate the foreign key that
+        # payroll_run_items still holds against it. A temporary test
+        # employee left active would otherwise silently join every other
+        # month's payroll math in the rest of this suite.
+        run_id = db.fetch_one(
+            "SELECT id FROM payroll_runs WHERE month=? AND year=?", (month, year))["id"]
+        db.execute_query("DELETE FROM payroll_run_items WHERE run_id = ?", (run_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE id = ?", (run_id,))
+        delete_journal_entries_created_after(marker)
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+    check("HR: post_payroll splits net pay between مدد (bank) and cash, and the split matches the ledger",
+          payroll_splits_net_pay_between_madad_and_cash)
+
     def payroll_posting_rolls_back_completely_on_a_failure_before_the_journal():
         """post_payroll() used to be several independent commits - the
         payroll_runs header, one payroll_run_items row per employee, any

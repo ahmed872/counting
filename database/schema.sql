@@ -281,6 +281,8 @@ CREATE TABLE IF NOT EXISTS payroll_run_items (
     bonuses REAL DEFAULT 0,
     advances_recovered REAL DEFAULT 0,
     net_salary REAL DEFAULT 0,
+    madad_portion REAL DEFAULT 0,
+    cash_portion REAL DEFAULT 0,
     FOREIGN KEY (run_id) REFERENCES payroll_runs(id),
     FOREIGN KEY (employee_id) REFERENCES employees(id)
 );
