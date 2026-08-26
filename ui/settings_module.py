@@ -550,9 +550,39 @@ class SettingsModule(QWidget):
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
 
+    def _looks_like_a_real_backup(self, path):
+        """A quick, read-only sanity check before this file replaces the live
+        database - picking the wrong file (or a renamed unrelated .db) used
+        to overwrite everything with no warning at all, recoverable only by
+        knowing to go dig out the automatic safety copy afterward."""
+        import sqlite3
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.Error:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('journal_entries', 'journal_items', 'chart_of_accounts', 'sales')"
+            )
+            found = {row[0] for row in cursor.fetchall()}
+        except sqlite3.Error:
+            return False
+        finally:
+            conn.close()
+        return {'journal_entries', 'journal_items', 'chart_of_accounts'} <= found
+
     def restore(self):
         path, _ = QFileDialog.getOpenFileName(self, "اختر نسخة احتياطية", "", "قاعدة بيانات (*.db)")
         if not path:
+            return
+        if not self._looks_like_a_real_backup(path):
+            QMessageBox.critical(
+                self, "ملف غير صالح",
+                "الملف المختار ليس نسخة قاعدة بيانات صحيحة لهذا البرنامج.\n"
+                "لم يتم تغيير أي شيء في بياناتك الحالية.",
+            )
             return
         answer = QMessageBox.question(
             self, "تأكيد الاستعادة",

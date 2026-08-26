@@ -1826,6 +1826,66 @@ def main():
     check("the backup button writes a real, independent, valid SQLite snapshot",
           backup_produces_a_real_independent_snapshot)
 
+    def restore_refuses_a_file_that_is_not_a_real_backup():
+        """Picking the wrong file - a stray .db that is not this program's
+        database at all - used to overwrite every bit of live data with no
+        warning, recoverable only by knowing to dig up the automatic safety
+        copy made a moment too late. The file is now checked before
+        anything about the live database is touched at all."""
+        import sqlite3
+        from ui.settings_module import SettingsModule
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db)
+
+        bogus_path = os.path.join(tempfile.gettempdir(), "_erp_bogus_backup.db")
+        conn = sqlite3.connect(bogus_path)
+        conn.execute("CREATE TABLE unrelated_stuff (id INTEGER)")
+        conn.commit()
+        conn.close()
+
+        live_size_before = os.path.getsize(db.db_path)
+        db_dir = os.path.dirname(db.db_path)
+        safety_files_before = {f for f in os.listdir(db_dir) if ".before-restore-" in f}
+
+        asked = []
+        original_question = QMessageBox.question
+        original_get_open = QFileDialog.getOpenFileName
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(1) or QMessageBox.StandardButton.Yes)
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (bogus_path, ""))
+        try:
+            settings.restore()
+            assert not asked, "the confirm-restore question was reached for a file that is not a real backup"
+            assert os.path.getsize(db.db_path) == live_size_before, \
+                "the live database was modified even though the chosen file was not a real backup"
+            safety_files_after = {f for f in os.listdir(db_dir) if ".before-restore-" in f}
+            assert safety_files_after == safety_files_before, \
+                "a safety copy was made even though the restore never actually happened"
+        finally:
+            QFileDialog.getOpenFileName = original_get_open
+            QMessageBox.question = original_question
+            os.remove(bogus_path)
+    check("restoring refuses a file that is not a real backup of this program's database",
+          restore_refuses_a_file_that_is_not_a_real_backup)
+
+    def accounting_and_reports_periods_agree():
+        """"شهري"/"سنوي" on شاشة المحاسبة used to mean a rolling last-30/365-day
+        window, while the identically labelled choice on شاشة التقارير
+        already meant the calendar month/year - the same word on two
+        screens silently returned two different date ranges, and could
+        show two different totals for what looked like the same period."""
+        goto("accounting")
+        acc_page = window.accounting
+        goto("reports")
+        rep_page = window.reports
+        for label in ("شهري", "سنوي"):
+            acc_page.period_input.setCurrentText(label)
+            rep_page.period_input.setCurrentText(label)
+            assert acc_page.resolve_period() == rep_page.resolve_period(), \
+                f"{label}: accounting={acc_page.resolve_period()} reports={rep_page.resolve_period()}"
+    check("the accounting page and the reports page agree on what \"شهري\"/\"سنوي\" mean",
+          accounting_and_reports_periods_agree)
+
     def backup_never_regresses_to_a_raw_file_copy():
         """The functional check above (a real, valid, independent snapshot)
         cannot by itself tell a proper SQLite backup from a plain
