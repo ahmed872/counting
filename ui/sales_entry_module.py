@@ -327,8 +327,11 @@ class SalesEntryModule(QWidget):
         return widget
 
     def save_sales_return(self):
+        branch_id = self.return_branch_input.currentData()
+        if branch_id is None:
+            QMessageBox.warning(self, "تنبيه", "اختر الفرع أولاً")
+            return
         try:
-            branch_id = self.return_branch_input.currentData()
             total = parse_money(self.return_amount_input.text(), "المبلغ المسترد",
                                 allow_blank=False, allow_zero=False)
         except ValueError as exc:
@@ -484,8 +487,12 @@ class SalesEntryModule(QWidget):
                 self.db.delete_journal_entry_on_cursor(cursor, entry_id)
 
     def save_daily_sales(self):
+        branch_id = self.branch_input.currentData()
+        if branch_id is None:
+            QMessageBox.warning(self, "تنبيه", "اختر الفرع أولاً")
+            return
+
         try:
-            branch_id = self.branch_input.currentData()
             date_str = self.date_input.date().toString("yyyy-MM-dd")
 
             channel_totals = {

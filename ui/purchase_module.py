@@ -241,12 +241,28 @@ class PurchaseModule(QWidget):
         return widget
 
     def refresh_on_show(self):
+        # A branch added after this page was first built (e.g. from
+        # Settings, in a different tab) used to never appear in either
+        # branch dropdown here for the rest of the session - every invoice
+        # or return for that branch had no way to be assigned to it until
+        # the app was restarted.
+        self.load_branches()
+
         selected_supplier = self.supplier_input.currentData()
         self.load_suppliers()
         if selected_supplier is not None:
             idx = self.supplier_input.findData(selected_supplier)
             if idx >= 0:
                 self.supplier_input.setCurrentIndex(idx)
+
+        selected_return_branch = self.return_branch_input.currentData()
+        self.return_branch_input.clear()
+        for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.return_branch_input.addItem(row['name'], row['id'])
+        if selected_return_branch is not None:
+            idx = self.return_branch_input.findData(selected_return_branch)
+            if idx >= 0:
+                self.return_branch_input.setCurrentIndex(idx)
 
         selected_return_supplier = self.return_supplier_input.currentData()
         self.return_supplier_input.clear()
@@ -258,9 +274,16 @@ class PurchaseModule(QWidget):
                 self.return_supplier_input.setCurrentIndex(idx)
 
     def load_branches(self):
+        # Preserves whatever was already picked - this also runs from
+        # refresh_on_show(), not just at construction.
+        current = self.branch_input.currentData()
         self.branch_input.clear()
         for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.branch_input.addItem(row['name'], row['id'])
+        if current is not None:
+            index = self.branch_input.findData(current)
+            if index >= 0:
+                self.branch_input.setCurrentIndex(index)
 
     def load_suppliers(self):
         self.supplier_input.clear()
@@ -281,6 +304,8 @@ class PurchaseModule(QWidget):
     def save_purchase(self):
         try:
             branch_id = self.branch_input.currentData()
+            if branch_id is None:
+                raise ValueError("اختر الفرع أولاً")
             category = self.category_input.currentData()
             supplier_id = self.supplier_input.currentData()
             description = self.description_input.text().strip()
@@ -377,6 +402,8 @@ class PurchaseModule(QWidget):
     def save_purchase_return(self):
         try:
             branch_id = self.return_branch_input.currentData()
+            if branch_id is None:
+                raise ValueError("اختر الفرع أولاً")
             supplier_id = self.return_supplier_input.currentData()
             amount_text = self.return_amount_input.text().strip()
             if not amount_text:

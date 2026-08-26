@@ -2185,6 +2185,102 @@ def main():
     check("HR: a whole-year employee report never counts a month that has not happened yet",
           employee_year_report_excludes_months_that_have_not_happened_yet)
 
+    def new_branch_becomes_selectable_in_hr_and_purchases_without_a_restart():
+        """A 90-day usage simulation with two branches caught this: HR's and
+        Purchases' branch dropdowns were only ever populated once, at
+        construction time. A branch added later (from Settings, in a
+        different tab) never appeared in either one for the rest of the
+        session - not even after leaving that page and coming back, which
+        is exactly when a real user expects a stale list to catch up.
+        Sales and Reports already got this right; HR and Purchases did not."""
+        branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)", ("فرع اختبار التحديث", ""))
+        hr = window.hr
+        purchases = window.purchases
+        assert hr.branch_input.findData(branch_id) < 0, \
+            "sanity check: the new branch should not be in HR's dropdown yet"
+        assert purchases.branch_input.findData(branch_id) < 0, \
+            "sanity check: the new branch should not be in Purchases' dropdown yet"
+
+        hr.refresh_on_show()
+        purchases.refresh_on_show()
+
+        assert hr.branch_input.findData(branch_id) >= 0, \
+            "HR's employee-form branch dropdown did not pick up a branch added after it was built"
+        assert purchases.branch_input.findData(branch_id) >= 0, \
+            "Purchases' invoice branch dropdown did not pick up a branch added after it was built"
+        assert purchases.return_branch_input.findData(branch_id) >= 0, \
+            "Purchases' return branch dropdown did not pick up a branch added after it was built"
+    check("HR and Purchases pick up a branch added after the page was already built",
+          new_branch_becomes_selectable_in_hr_and_purchases_without_a_restart)
+
+    def saving_without_a_branch_selected_is_refused_everywhere():
+        """Nothing validated that a branch was actually chosen before saving
+        - reachable through the stale-dropdown bug above (deselecting to -1
+        once the previously-picked branch no longer resolves), and every
+        one of these forms would then insert a row with branch_id = NULL
+        with no error at all. For daily sales that is worse than it sounds:
+        the existing 'this day is already recorded, replace it?' check
+        matches on branch_id, and SQL's NULL never equals NULL - so a
+        NULL-branch day could never be detected as a re-save and would
+        double up every time it was saved again, completely silently."""
+        s = window.sales
+        s.branch_input.setCurrentIndex(-1)
+        s.date_input.setDate(QDate(2026, 1, 10))
+        s.cash_input.setText("500")
+        s.network_input.setText("0")
+        s.transfer_input.setText("0")
+        s.delivery_input.setText("0")
+        s.shortage_input.setText("")
+        before = db.fetch_one("SELECT COUNT(*) c FROM sales WHERE branch_id IS NULL")["c"]
+        s.save_daily_sales()
+        after = db.fetch_one("SELECT COUNT(*) c FROM sales WHERE branch_id IS NULL")["c"]
+        assert after == before, "daily sales saved with no branch selected, inserting a NULL branch_id"
+
+        s.return_branch_input.setCurrentIndex(-1)
+        s.return_amount_input.setText("50")
+        before = db.fetch_one("SELECT COUNT(*) c FROM sales_returns WHERE branch_id IS NULL")["c"]
+        s.save_sales_return()
+        after = db.fetch_one("SELECT COUNT(*) c FROM sales_returns WHERE branch_id IS NULL")["c"]
+        assert after == before, "a sales return saved with no branch selected"
+
+        purchases = window.purchases
+        purchases.branch_input.setCurrentIndex(-1)
+        purchases.amount_input.setText("500")
+        purchases.description_input.setText("فاتورة بدون فرع")
+        before = db.fetch_one("SELECT COUNT(*) c FROM purchases WHERE branch_id IS NULL")["c"]
+        purchases.save_purchase()
+        after = db.fetch_one("SELECT COUNT(*) c FROM purchases WHERE branch_id IS NULL")["c"]
+        assert after == before, "a purchase saved with no branch selected"
+
+        purchases.return_branch_input.setCurrentIndex(-1)
+        purchases.return_amount_input.setText("50")
+        before = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns WHERE branch_id IS NULL")["c"]
+        purchases.save_purchase_return()
+        after = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns WHERE branch_id IS NULL")["c"]
+        assert after == before, "a purchase return saved with no branch selected"
+
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.branch_input.setCurrentIndex(-1)
+        hr.name_input.setText("موظف بدون فرع - اختبار")
+        hr.salary_input.setText("3000")
+        hr.allowance_input.setText("0")
+        hr.save_employee()
+        ghost = db.fetch_one("SELECT id FROM employees WHERE name = ?", ("موظف بدون فرع - اختبار",))
+        assert ghost is None, "an employee was saved with no branch selected (branch_id = NULL)"
+
+        # Every branch picker touched above was deliberately left deselected
+        # (-1) by this test, not by the app - put them back so no later
+        # test in this shared run inherits a blank branch picker.
+        for combo in (s.branch_input, s.return_branch_input, purchases.branch_input,
+                      purchases.return_branch_input, hr.branch_input):
+            if combo.count():
+                combo.setCurrentIndex(0)
+        hr.clear_employee_form()
+    check("sales, purchases, and adding an employee all refuse to save with no branch selected",
+          saving_without_a_branch_selected_is_refused_everywhere)
+
     # ---------------- UI regressions ----------------
     print("\n[ui]")
 

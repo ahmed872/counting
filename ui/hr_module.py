@@ -491,9 +491,18 @@ class HRModule(QWidget):
         self._set_photo_preview(None)
 
     def load_branch_options(self):
+        # Preserves whatever was already picked - this now also runs from
+        # refresh_on_show(), not just at construction, so a branch typed
+        # into the middle of an in-progress "add employee" form must not
+        # get silently reset out from under the person filling it in.
+        current = self.branch_input.currentData()
         self.branch_input.clear()
         for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
             self.branch_input.addItem(row["name"], row["id"])
+        if current is not None:
+            index = self.branch_input.findData(current)
+            if index >= 0:
+                self.branch_input.setCurrentIndex(index)
 
     def _apply_field_widths(self, widgets=None):
         fields = widgets or [
@@ -608,6 +617,9 @@ class HRModule(QWidget):
             return
         job = self.job_input.text().strip()
         branch_id = self.branch_input.currentData()
+        if branch_id is None:
+            QMessageBox.warning(self, "تنبيه", "اختر الفرع أولاً")
+            return
         try:
             salary = parse_money(self.salary_input.text(), "الراتب الأساسي")
             allowance = parse_money(self.allowance_input.text(), "البدلات")
@@ -1134,5 +1146,10 @@ class HRModule(QWidget):
             QMessageBox.critical(self, "خطأ", str(exc))
 
     def refresh_on_show(self):
+        # A branch added after this page was first built (e.g. from
+        # Settings, in a different tab) used to never appear here for the
+        # rest of the session - every new/edited employee for that branch
+        # had no way to be assigned to it until the app was restarted.
+        self.load_branch_options()
         self.load_employees()
         self.refresh_payroll()
