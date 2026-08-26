@@ -1032,6 +1032,92 @@ def main():
         delete_journal_entries_created_after(journal_marker)
     check("a loan received and partly repaid matches account 2300 exactly", loan_received_and_repaid)
 
+    def backdated_entries_use_the_chosen_date_not_today():
+        """Suppliers, customers, loans, prepaid expenses, and settling
+        accrued wages all used to stamp datetime.now() no matter what -
+        there was no way to enter a transaction a few days late without it
+        landing in the wrong month's period report. Each now has its own
+        date field, capped at today like sales/purchases already were."""
+        journal_marker = newest_journal_entry_id()
+        past = QDate(2025, 3, 15)
+        past_str = "2025-03-15"
+
+        goto("suppliers")
+        s = window.suppliers
+        s.name_input.setText("مورد بتاريخ سابق")
+        s.opening_balance_input.setText("500")
+        s.opening_balance_date.setDate(past)
+        s.add_supplier()
+        supplier_id = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد بتاريخ سابق'")["id"]
+        supplier_journal = db.fetch_one(
+            "SELECT date FROM journal_entries WHERE id > ? AND description LIKE 'رصيد افتتاحي لمورد%' "
+            "ORDER BY id DESC LIMIT 1", (journal_marker,))
+        assert supplier_journal["date"] == past_str, \
+            f"supplier opening balance used {supplier_journal['date']}, not the chosen {past_str}"
+
+        goto("other_balances")
+        ob = window.other_balances
+        ob.lender_input.setText("مُقرض بتاريخ سابق")
+        ob.loan_amount_input.setText("2000")
+        ob.loan_date_input.setDate(past)
+        ob.record_new_loan()
+        loan = db.fetch_one("SELECT id, date FROM loans WHERE lender_name='مُقرض بتاريخ سابق'")
+        assert loan["date"] == past_str, f"loan date was {loan['date']}, not the chosen {past_str}"
+
+        ob.prepaid_desc_input.setText("مصروف بتاريخ سابق")
+        ob.prepaid_amount_input.setText("1000")
+        ob.prepaid_date_input.setDate(past)
+        ob.record_new_prepaid()
+        prepaid = db.fetch_one("SELECT id, date FROM prepaid_expenses WHERE description='مصروف بتاريخ سابق'")
+        assert prepaid["date"] == past_str, f"prepaid expense date was {prepaid['date']}, not {past_str}"
+
+        db.execute_query("DELETE FROM suppliers WHERE id = ?", (supplier_id,))
+        db.execute_query("DELETE FROM loans WHERE id = ?", (loan["id"],))
+        db.execute_query("DELETE FROM prepaid_expenses WHERE id = ?", (prepaid["id"],))
+        delete_journal_entries_created_after(journal_marker)
+    check("suppliers, loans, and prepaid expenses record the date actually chosen, not today",
+          backdated_entries_use_the_chosen_date_not_today)
+
+    def cash_overdraw_asks_before_going_through():
+        """Nothing anywhere warned that a cash/bank outflow would push that
+        account negative - a loan repayment, a prepaid expense, a supplier
+        payment could all quietly overdraw the till or the bank with no
+        feedback at all. The loan granted here is deliberately far bigger
+        than the repayment attempted against it, so only the new overdraw
+        warning can fire - not the separate 'repaying more than is owed'
+        question, which this is checked to be independent of."""
+        journal_marker = newest_journal_entry_id()
+        asked = []
+        original = QMessageBox.question
+        goto("other_balances")
+        ob = window.other_balances
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+        ob.lender_input.setText("مُقرض اختبار السحب على المكشوف")
+        ob.loan_amount_input.setText("9999000")
+        ob.loan_method_input.setCurrentIndex(ob.loan_method_input.findData("Bank"))
+        ob.record_new_loan()
+        loan_id = db.fetch_one(
+            "SELECT id FROM loans WHERE lender_name='مُقرض اختبار السحب على المكشوف'")["id"]
+
+        try:
+            QMessageBox.question = staticmethod(
+                lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No)
+            ob.selected_loan_id = loan_id
+            ob.loan_payment_amount.setText("9000000")
+            ob.loan_payment_method.setCurrentIndex(ob.loan_payment_method.findData("Cash"))
+            before = db.fetch_one("SELECT COUNT(*) c FROM loan_payments")["c"]
+            ob.record_loan_payment()
+            assert asked, "a cash outflow far bigger than the cash balance went through with no warning"
+            after = db.fetch_one("SELECT COUNT(*) c FROM loan_payments")["c"]
+            assert after == before, "answering no still recorded the overdrawing payment"
+        finally:
+            QMessageBox.question = original
+            db.execute_query("DELETE FROM loan_payments WHERE loan_id = ?", (loan_id,))
+            db.execute_query("DELETE FROM loans WHERE id = ?", (loan_id,))
+            delete_journal_entries_created_after(journal_marker)
+    check("a cash/bank outflow that would overdraw the account asks before going through",
+          cash_overdraw_asks_before_going_through)
+
     def prepaid_expense_release_matches_target_account():
         """A prepaid expense parks the full amount in 1500 on entry; each
         release moves only the released slice into the real expense account,

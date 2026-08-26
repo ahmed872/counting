@@ -1,6 +1,4 @@
-from datetime import datetime
-
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -9,6 +7,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QComboBox,
+    QDateEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -19,7 +18,7 @@ from PyQt6.QtWidgets import (
 
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height
+from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height, warn_if_would_overdraw
 from logic.money import parse_money
 
 PREPAID_TARGET_LABELS = [
@@ -75,6 +74,9 @@ class OtherBalancesModule(QWidget):
         self.loan_method_input = QComboBox()
         self.loan_method_input.addItem("نقدي", "Cash")
         self.loan_method_input.addItem("تحويل بنكي", "Bank")
+        self.loan_date_input = QDateEdit(QDate.currentDate())
+        self.loan_date_input.setCalendarPopup(True)
+        self.loan_date_input.setMaximumDate(QDate.currentDate())
         self.loan_notes_input = QLineEdit()
 
         new_loan_box = QGroupBox("تسجيل قرض جديد")
@@ -86,6 +88,7 @@ class OtherBalancesModule(QWidget):
             ("اسم المُقرض (بنك / فرد)", self.lender_input),
             ("المبلغ", self.loan_amount_input),
             ("طريقة الاستلام", self.loan_method_input),
+            ("التاريخ", self.loan_date_input),
             ("ملاحظات", self.loan_notes_input),
             (None, new_loan_btn),
         ], columns=2, field_min_width=130))
@@ -113,6 +116,9 @@ class OtherBalancesModule(QWidget):
         self.loan_payment_method = QComboBox()
         self.loan_payment_method.addItem("نقدي", "Cash")
         self.loan_payment_method.addItem("تحويل بنكي", "Bank")
+        self.loan_payment_date = QDateEdit(QDate.currentDate())
+        self.loan_payment_date.setCalendarPopup(True)
+        self.loan_payment_date.setMaximumDate(QDate.currentDate())
 
         pay_loan_box = QGroupBox("تسجيل سداد للقرض المحدد أعلاه")
         pay_loan_outer = QVBoxLayout(pay_loan_box)
@@ -122,6 +128,7 @@ class OtherBalancesModule(QWidget):
         pay_loan_outer.addWidget(compact_form([
             ("المبلغ", self.loan_payment_amount),
             ("طريقة السداد", self.loan_payment_method),
+            ("التاريخ", self.loan_payment_date),
             (None, pay_loan_btn),
         ], columns=2, field_min_width=130))
         layout.addWidget(pin_height(pay_loan_box))
@@ -145,7 +152,7 @@ class OtherBalancesModule(QWidget):
 
         method = self.loan_method_input.currentData()
         notes = self.loan_notes_input.text().strip()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.loan_date_input.date().toString("yyyy-MM-dd")
         cash_account = '1000' if method == 'Cash' else '1001'
 
         items = [
@@ -163,6 +170,7 @@ class OtherBalancesModule(QWidget):
         self.lender_input.clear()
         self.loan_amount_input.clear()
         self.loan_notes_input.clear()
+        self.loan_date_input.setDate(QDate.currentDate())
         self.load_loans()
 
     def load_loans(self):
@@ -207,8 +215,10 @@ class OtherBalancesModule(QWidget):
                 return
 
         method = self.loan_payment_method.currentData()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.loan_payment_date.date().toString("yyyy-MM-dd")
         cash_account = '1000' if method == 'Cash' else '1001'
+        if not warn_if_would_overdraw(self, self.accounting, cash_account, amount):
+            return
 
         items = [
             {'account_code': '2300', 'debit': amount, 'credit': 0},
@@ -223,6 +233,7 @@ class OtherBalancesModule(QWidget):
 
         QMessageBox.information(self, "نجاح", "تم تسجيل سداد القرض")
         self.loan_payment_amount.clear()
+        self.loan_payment_date.setDate(QDate.currentDate())
         self.load_loans()
 
     # ---------------- Prepaid expenses ----------------
@@ -239,6 +250,9 @@ class OtherBalancesModule(QWidget):
         self.prepaid_method_input = QComboBox()
         self.prepaid_method_input.addItem("نقدي", "Cash")
         self.prepaid_method_input.addItem("تحويل بنكي", "Bank")
+        self.prepaid_date_input = QDateEdit(QDate.currentDate())
+        self.prepaid_date_input.setCalendarPopup(True)
+        self.prepaid_date_input.setMaximumDate(QDate.currentDate())
         self.prepaid_target_input = QComboBox()
         for code, label in PREPAID_TARGET_LABELS:
             self.prepaid_target_input.addItem(label, code)
@@ -252,6 +266,7 @@ class OtherBalancesModule(QWidget):
             ("البيان", self.prepaid_desc_input),
             ("المبلغ المدفوع", self.prepaid_amount_input),
             ("طريقة الدفع", self.prepaid_method_input),
+            ("التاريخ", self.prepaid_date_input),
             ("نوع المصروف عند التوزيع", self.prepaid_target_input),
             (None, new_prepaid_btn),
         ], columns=2, field_min_width=140))
@@ -277,6 +292,9 @@ class OtherBalancesModule(QWidget):
 
         self.release_amount_input = QLineEdit()
         self.release_amount_input.setPlaceholderText("0.00")
+        self.release_date_input = QDateEdit(QDate.currentDate())
+        self.release_date_input.setCalendarPopup(True)
+        self.release_date_input.setMaximumDate(QDate.currentDate())
 
         release_box = QGroupBox("توزيع جزء من المصروف المقدم المحدد أعلاه على الشهر الحالي")
         release_outer = QVBoxLayout(release_box)
@@ -285,6 +303,7 @@ class OtherBalancesModule(QWidget):
         release_btn.clicked.connect(self.release_prepaid)
         release_outer.addWidget(compact_form([
             ("المبلغ", self.release_amount_input),
+            ("التاريخ", self.release_date_input),
             (None, release_btn),
         ], columns=2, field_min_width=150))
         layout.addWidget(pin_height(release_box))
@@ -308,8 +327,10 @@ class OtherBalancesModule(QWidget):
 
         method = self.prepaid_method_input.currentData()
         target_code = self.prepaid_target_input.currentData()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.prepaid_date_input.date().toString("yyyy-MM-dd")
         cash_account = '1000' if method == 'Cash' else '1001'
+        if not warn_if_would_overdraw(self, self.accounting, cash_account, amount):
+            return
 
         items = [
             {'account_code': '1500', 'debit': amount, 'credit': 0},
@@ -326,6 +347,7 @@ class OtherBalancesModule(QWidget):
         QMessageBox.information(self, "نجاح", "تم تسجيل المصروف المقدم")
         self.prepaid_desc_input.clear()
         self.prepaid_amount_input.clear()
+        self.prepaid_date_input.setDate(QDate.currentDate())
         self.load_prepaid()
 
     def load_prepaid(self):
@@ -371,7 +393,7 @@ class OtherBalancesModule(QWidget):
                                 f"المتبقي من هذا المصروف {money(remaining)} ريال فقط، لا يمكن توزيع أكثر منه.")
             return
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.release_date_input.date().toString("yyyy-MM-dd")
         items = [
             {'account_code': row['target_account_code'], 'debit': amount, 'credit': 0},
             {'account_code': '1500', 'debit': 0, 'credit': amount},
@@ -391,6 +413,7 @@ class OtherBalancesModule(QWidget):
 
         QMessageBox.information(self, "نجاح", "تم توزيع المبلغ على المصروف")
         self.release_amount_input.clear()
+        self.release_date_input.setDate(QDate.currentDate())
         self.load_prepaid()
 
     def refresh_on_show(self):

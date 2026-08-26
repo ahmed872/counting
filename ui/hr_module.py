@@ -8,7 +8,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
 from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtGui import QPixmap, QTextDocument
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
-from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height
+from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height, warn_if_would_overdraw
 from ui.formatting import money_item, money
 from logic.money import parse_money
 from logic.accounting import AccountingLogic
@@ -347,12 +347,16 @@ class HRModule(QWidget):
         self.accrued_pay_method = QComboBox()
         self.accrued_pay_method.addItem("نقدي", "Cash")
         self.accrued_pay_method.addItem("تحويل بنكي", "Bank")
+        self.accrued_pay_date = QDateEdit(QDate.currentDate())
+        self.accrued_pay_date.setCalendarPopup(True)
+        self.accrued_pay_date.setMaximumDate(QDate.currentDate())
         accrued_pay_btn = QPushButton("تسجيل السداد")
         accrued_pay_btn.setMaximumWidth(220)
         accrued_pay_btn.clicked.connect(self.pay_accrued_wages)
         accrued_layout.addRow("الرصيد المستحق حالياً:", self.accrued_balance_label)
         accrued_layout.addRow("المبلغ:", self.accrued_pay_amount)
         accrued_layout.addRow("طريقة السداد:", self.accrued_pay_method)
+        accrued_layout.addRow("التاريخ:", self.accrued_pay_date)
         accrued_layout.addRow(accrued_pay_btn)
         payroll_tab_layout.addWidget(accrued_box)
         payroll_tab_layout.addStretch()
@@ -811,7 +815,9 @@ class HRModule(QWidget):
 
         method = self.accrued_pay_method.currentData()
         cash_account = '1000' if method == 'Cash' else '1001'
-        timestamp = QDate.currentDate().toString("yyyy-MM-dd")
+        timestamp = self.accrued_pay_date.date().toString("yyyy-MM-dd")
+        if not warn_if_would_overdraw(self, self.accounting, cash_account, amount):
+            return
 
         items = [
             {'account_code': '2200', 'debit': amount, 'credit': 0},

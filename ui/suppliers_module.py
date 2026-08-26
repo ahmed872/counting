@@ -1,6 +1,4 @@
-from datetime import datetime
-
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -9,6 +7,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QComboBox,
+    QDateEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -19,7 +18,7 @@ from PyQt6.QtWidgets import (
 
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height
+from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height, warn_if_would_overdraw
 from logic.money import parse_money
 
 
@@ -54,6 +53,9 @@ class SuppliersModule(QWidget):
         self.phone_input = QLineEdit()
         self.opening_balance_input = QLineEdit()
         self.opening_balance_input.setPlaceholderText("0.00")
+        self.opening_balance_date = QDateEdit(QDate.currentDate())
+        self.opening_balance_date.setCalendarPopup(True)
+        self.opening_balance_date.setMaximumDate(QDate.currentDate())
         self.name_input.returnPressed.connect(self.add_supplier)
 
         form_box = QGroupBox("إضافة مورد جديد")
@@ -68,6 +70,7 @@ class SuppliersModule(QWidget):
             ("الرقم الضريبي", self.tax_id_input),
             ("رقم الجوال", self.phone_input),
             ("رصيد افتتاحي", self.opening_balance_input),
+            ("تاريخ الرصيد الافتتاحي", self.opening_balance_date),
             (None, add_btn),
         ], columns=2, field_min_width=130))
         list_layout.addWidget(pin_height(form_box))
@@ -139,6 +142,9 @@ class SuppliersModule(QWidget):
         self.payment_method = QComboBox()
         self.payment_method.addItem("نقدي", "Cash")
         self.payment_method.addItem("تحويل بنكي", "Bank")
+        self.payment_date = QDateEdit(QDate.currentDate())
+        self.payment_date.setCalendarPopup(True)
+        self.payment_date.setMaximumDate(QDate.currentDate())
         self.payment_notes = QLineEdit()
         self.payment_amount.returnPressed.connect(self.record_payment)
 
@@ -152,6 +158,7 @@ class SuppliersModule(QWidget):
         payment_outer.addWidget(compact_form([
             ("المبلغ", self.payment_amount),
             ("طريقة السداد", self.payment_method),
+            ("التاريخ", self.payment_date),
             ("ملاحظات", self.payment_notes),
             (None, pay_btn),
         ], columns=2, field_min_width=150))
@@ -195,7 +202,7 @@ class SuppliersModule(QWidget):
         # could leave a supplier whose own statement (which reads
         # opening_balance straight off this row) shows a balance the
         # general ledger and trial balance never received.
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.opening_balance_date.date().toString("yyyy-MM-dd")
         with self.db.transaction() as cursor:
             cursor.execute(
                 "INSERT INTO suppliers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
@@ -214,6 +221,7 @@ class SuppliersModule(QWidget):
         self.tax_id_input.clear()
         self.phone_input.clear()
         self.opening_balance_input.clear()
+        self.opening_balance_date.setDate(QDate.currentDate())
         self.load_suppliers()
 
     def load_suppliers(self):
@@ -362,9 +370,11 @@ class SuppliersModule(QWidget):
 
         method = self.payment_method.currentData()
         notes = self.payment_notes.text().strip()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.payment_date.date().toString("yyyy-MM-dd")
 
         cash_account = '1000' if method == 'Cash' else '1001'
+        if not warn_if_would_overdraw(self, self.accounting, cash_account, amount):
+            return
         items = [
             {'account_code': '2000', 'debit': amount, 'credit': 0},
             {'account_code': cash_account, 'debit': 0, 'credit': amount},
@@ -381,6 +391,7 @@ class SuppliersModule(QWidget):
         QMessageBox.information(self, "نجاح", "تم تسجيل السداد وتحديث رصيد المورد")
         self.payment_amount.clear()
         self.payment_notes.clear()
+        self.payment_date.setDate(QDate.currentDate())
         self.load_suppliers()
         self.refresh_statement()
 

@@ -315,3 +315,40 @@ def collapse_when_short(page, toggle_button, min_height=660):
 
     page.resizeEvent = resizeEvent
     return page
+
+
+CASH_BANK_LABELS = {"1000": "الخزينة (كاش)", "1001": "البنك"}
+
+
+def warn_if_would_overdraw(parent, accounting, account_code, amount):
+    """Asks before letting a cash/bank outflow push that account negative -
+    the same "are you sure?" shape already used for paying a supplier or
+    collecting from a customer more than they owe. Every cash/bank-affecting
+    screen used to post straight through with no feedback at all: nothing
+    anywhere stopped a purchase, a loan repayment, or a prepaid expense from
+    quietly overdrawing the till or the bank account.
+
+    Returns True to proceed (either the balance holds, or the user confirmed
+    anyway - real cash on hand can be more than what has been entered so
+    far), False to abort.
+    """
+    from PyQt6.QtWidgets import QMessageBox
+    from ui.formatting import money
+
+    # get_account_balance() reads credit-minus-debit, the natural direction
+    # for a liability - 1000/1001 are Assets, so the true, debit-positive
+    # balance is the negative of that.
+    current = accounting.get_account_balance(account_code) * -1
+    remaining = current - amount
+    if remaining >= -0.01:
+        return True
+
+    label = CASH_BANK_LABELS.get(account_code, account_code)
+    answer = QMessageBox.question(
+        parent, "الرصيد قد لا يكفي",
+        f"رصيد {label} المسجَّل حالياً {money(current)} ريال فقط، وهذه العملية بمبلغ "
+        f"{money(amount)} ريال ستجعله بالسالب ({money(remaining)} ريال).\n\n"
+        "لو كان المتاح فعلياً أكبر مما هو مسجَّل هنا اضغط نعم للمتابعة.\n"
+        "لو كان هذا خطأ في المبلغ أو طريقة الدفع اضغط لا.",
+    )
+    return answer == QMessageBox.StandardButton.Yes
