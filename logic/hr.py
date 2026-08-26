@@ -231,6 +231,7 @@ class HRLogic:
             return None
 
         months = [month] if month else list(range(1, 13))
+        today = datetime.now().date()
         by_month = []
         totals = {
             'gross_salary': 0, 'absence_deduction': 0, 'other_deductions': 0,
@@ -238,12 +239,19 @@ class HRLogic:
             'madad_portion': 0, 'cash_portion': 0, 'present_days': 0, 'absent_days': 0,
         }
         for m in months:
-            rows = self.get_posted_payroll(m, year) if self.is_payroll_posted(m, year) \
-                else self.get_monthly_payroll(m, year)
+            posted = self.is_payroll_posted(m, year)
+            # A whole-year report asked for mid-year must not count months
+            # that have not happened yet as if they were already paid - a
+            # live preview only makes sense for the current month and
+            # earlier ones, which is also the only case get_monthly_payroll
+            # was ever meant to answer elsewhere in this app.
+            if not posted and (year, m) > (today.year, today.month):
+                continue
+            rows = self.get_posted_payroll(m, year) if posted else self.get_monthly_payroll(m, year)
             row = next((r for r in rows if r['id'] == employee_id), None)
             if not row:
                 continue
-            by_month.append({'month': m, 'posted': self.is_payroll_posted(m, year), **row})
+            by_month.append({'month': m, 'posted': posted, **row})
             for key in totals:
                 totals[key] += row[key]
 

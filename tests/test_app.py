@@ -2164,6 +2164,27 @@ def main():
     check("HR: the per-employee report shows documents, government fees, and the full salary breakdown",
           employee_report_shows_everything_about_one_person)
 
+    def employee_year_report_excludes_months_that_have_not_happened_yet():
+        """get_employee_report() used to sum a live payroll preview for
+        every month 1-12 when asked for a whole year, which meant asking in
+        (say) August for an employee's year already counted September
+        through December as if they had been paid - months that had not
+        even started yet. A 90-day usage simulation caught this: an
+        employee's yearly total came out roughly 4x too high. Only months
+        up to and including the real current month may ever appear."""
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
+        current_month = QDate.currentDate().month()
+        report = window.hr_logic.get_employee_report(emp_id, QDate.currentDate().year())
+        months_seen = [m['month'] for m in report['months']]
+        assert months_seen, "sanity check: expected at least one month of data for a long-standing employee"
+        assert max(months_seen) <= current_month, \
+            f"report counted a month that has not happened yet: {months_seen}, current month is {current_month}"
+        if current_month < 12:
+            assert (current_month + 1) not in months_seen, \
+                "report counted next month's salary before next month has even started"
+    check("HR: a whole-year employee report never counts a month that has not happened yet",
+          employee_year_report_excludes_months_that_have_not_happened_yet)
+
     # ---------------- UI regressions ----------------
     print("\n[ui]")
 
