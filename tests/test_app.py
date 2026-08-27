@@ -4247,6 +4247,70 @@ def main():
     check("the daily auto-backup takes at most one real snapshot per day",
           daily_auto_backup_takes_at_most_one_snapshot_a_day)
 
+    def factory_reset_wipes_business_data_but_keeps_the_licence():
+        """"بدء من جديد" in Settings: for handing the same activated copy to
+        someone else, or clearing out data entered while learning the
+        program before it goes live for real. Must wipe every business
+        record back to a fresh install, while the licence/device/trial
+        state - the one thing that must never be lost by a data reset -
+        survives untouched, and a safety copy of the old data is taken
+        first so the reset itself is recoverable from."""
+        from database.db_manager import DBManager
+        from logic.reset import factory_reset
+
+        workdir = tempfile.mkdtemp(prefix="_erp_reset_")
+        db_path = os.path.join(workdir, "restaurant_erp.db")
+        try:
+            fresh_db = DBManager(db_path)
+            fresh_db.execute_query(
+                "INSERT INTO branches (name, location) VALUES ('فرع تجريبي','هنا')")
+            fresh_db.execute_query(
+                "INSERT INTO employees (name, job_title, base_salary, allowances, "
+                "branch_id) VALUES ('موظف تجريبي','نادل',4000,0,1)")
+            fresh_db.set_setting("licence_key", "ABCD-EFGH-IJKL-MNOP")
+            fresh_db.set_setting("device_code", "DEVICETEST123")
+            fresh_db.set_setting("trial_extra_days", "15")
+            fresh_db.set_setting("company_name", "مطعم تجريبي")
+
+            branches_before = fresh_db.fetch_one("SELECT COUNT(*) c FROM branches")["c"]
+            assert branches_before >= 2, "seed data did not actually get in"
+
+            safety_path = factory_reset(fresh_db)
+            assert os.path.exists(safety_path), "no safety backup was written"
+            import sqlite3
+            safety_conn = sqlite3.connect(safety_path)
+            try:
+                count = safety_conn.execute(
+                    "SELECT COUNT(*) FROM employees WHERE name='موظف تجريبي'").fetchone()[0]
+            finally:
+                safety_conn.close()
+            assert count == 1, "the safety backup does not contain the pre-reset data"
+
+            after_db = DBManager(db_path)
+            assert after_db.fetch_one(
+                "SELECT COUNT(*) c FROM employees")["c"] == 0, \
+                "employees were not wiped by the reset"
+            assert after_db.fetch_one("SELECT COUNT(*) c FROM branches")["c"] < branches_before, \
+                "branches were not reset back to the seeded defaults"
+            assert after_db.get_setting("company_name") is None, \
+                "company name (business data) survived the reset"
+
+            assert after_db.get_setting("licence_key") == "ABCD-EFGH-IJKL-MNOP", \
+                "the paid activation was lost by a data reset"
+            assert after_db.get_setting("device_code") == "DEVICETEST123", \
+                "the device code was lost by a data reset"
+            assert after_db.get_setting("trial_extra_days") == "15", \
+                "a previously-granted trial extension was lost by a data reset"
+
+            reset_actions = [r["action"] for r in after_db.fetch_all(
+                "SELECT action FROM audit_log")]
+            assert reset_actions == ["factory_reset"], \
+                f"expected the reset itself to be the only, first audit entry, got {reset_actions}"
+        finally:
+            shutil.rmtree(workdir, ignore_errors=True)
+    check("\"بدء من جديد\" wipes business data but keeps the licence, and takes a safety copy first",
+          factory_reset_wipes_business_data_but_keeps_the_licence)
+
     def the_icon_is_real_and_usable():
         """The shortcut icon is the first thing the customer sees, before the
         program has run at all.

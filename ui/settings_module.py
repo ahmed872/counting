@@ -67,6 +67,7 @@ class SettingsModule(QWidget):
         if self.current_user.get("role") == ROLE_ADMIN:
             layout.addWidget(self.build_users_box())
             layout.addWidget(self.build_audit_log_box())
+            layout.addWidget(self.build_reset_box())
         layout.addStretch()
 
         self.load_all()
@@ -105,6 +106,7 @@ class SettingsModule(QWidget):
         "prepaid_released": "إطفاء مصروف مقدم",
         "licence_activated": "تفعيل البرنامج",
         "licence_extended": "تمديد فترة التجربة",
+        "factory_reset": "بدء من جديد (حذف كل البيانات)",
     }
 
     def build_audit_log_box(self):
@@ -571,6 +573,60 @@ class SettingsModule(QWidget):
         key_row.addWidget(self.activate_btn)
         outer.addLayout(key_row)
         return box
+
+    # ---------------- factory reset ----------------
+
+    def build_reset_box(self):
+        """For handing the same installed, already-activated copy to someone
+        else, or clearing out data entered while learning the program before
+        it goes live for real - wipes every business record, keeps the
+        licence. Deliberately its own box, separate from النسخ الاحتياطي,
+        so it never reads as one more backup-related button."""
+        box = QGroupBox("بدء من جديد")
+        outer = QVBoxLayout(box)
+        note = QLabel(
+            "يحذف كل البيانات نهائياً: المبيعات والمشتريات والموظفين والموردين "
+            "والعملاء والقروض والمصروفات المقدمة وسجل التدقيق - ويرجع البرنامج "
+            "فاضياً كأول تشغيل. تفعيل البرنامج (أو مدة التجربة المتبقية) يبقى "
+            "كما هو ولا يتأثر. يؤخذ نسخة احتياطية من البيانات الحالية تلقائياً "
+            "قبل الحذف، تحسباً."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#64748b;")
+        outer.addWidget(note)
+
+        reset_btn = QPushButton("بدء من جديد (حذف كل البيانات)")
+        reset_btn.setMaximumWidth(280)
+        reset_btn.setStyleSheet(
+            "QPushButton { background-color:#dc2626; border:1px solid #b91c1c; }"
+            "QPushButton:hover { background-color:#b91c1c; border:1px solid #991b1b; }"
+        )
+        reset_btn.clicked.connect(self.factory_reset)
+        outer.addWidget(reset_btn)
+        return box
+
+    def factory_reset(self):
+        answer = QMessageBox.question(
+            self, "تأكيد البدء من جديد",
+            "سيتم حذف كل البيانات الحالية نهائياً ولا يمكن التراجع عن هذا من "
+            "داخل البرنامج (المبيعات، المشتريات، الموظفون، الموردون، العملاء، "
+            "القروض، المصروفات المقدمة، سجل التدقيق).\n\n"
+            "سيتم حفظ نسخة من البيانات الحالية بجانبها احتياطياً قبل الحذف.\n"
+            "تفعيل البرنامج لن يتأثر.\n\nمتابعة؟",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            from logic.reset import factory_reset
+            safety = factory_reset(self.db)
+            QMessageBox.information(
+                self, "تم",
+                "تم حذف كل البيانات والبدء من جديد.\n"
+                f"تم حفظ نسخة من البيانات القديمة في:\n{safety}\n\n"
+                "أغلق البرنامج وافتحه من جديد لعرض البيانات الفارغة.",
+            )
+        except Exception as exc:
+            QMessageBox.critical(self, "خطأ", str(exc))
 
     def copy_device_code(self):
         from PyQt6.QtWidgets import QApplication
