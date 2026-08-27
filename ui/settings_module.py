@@ -489,20 +489,34 @@ class SettingsModule(QWidget):
         QMessageBox.information(self, "تم", "تم نسخ رقم الجهاز. أرسله لمزوّد البرنامج.")
 
     def apply_licence_key(self):
-        from logic.licence import activate
-        if activate(self.db, self.licence_key_input.text().strip()):
+        from logic.licence import activate, apply_extension
+        typed = self.licence_key_input.text().strip()
+        if activate(self.db, typed):
             QMessageBox.information(
                 self, "تم التفعيل",
                 "تم تفعيل البرنامج بنجاح.\nكل بياناتك كما هي، والبرنامج يعمل الآن بلا مدة.",
             )
             self.licence_key_input.clear()
             self.load_licence()
-        else:
-            QMessageBox.warning(
-                self, "مفتاح غير صحيح",
-                "هذا المفتاح لا يخص هذا الجهاز.\n"
-                "تأكد أنك أرسلت رقم الجهاز الظاهر أعلاه، وأن المفتاح كما وصلك تماماً.",
-            )
+            return
+
+        if apply_extension(self.db, typed) is not None:
+            from logic.trial import TrialManager
+            allowed, days_left, _ = TrialManager(self.db).check()
+            if allowed:
+                QMessageBox.information(
+                    self, "تم التمديد",
+                    f"تم تمديد فترة التجربة.\nالأيام المتبقية الآن: {days_left}.",
+                )
+                self.licence_key_input.clear()
+                self.load_licence()
+                return
+
+        QMessageBox.warning(
+            self, "مفتاح غير صحيح",
+            "هذا المفتاح لا يخص هذا الجهاز.\n"
+            "تأكد أنك أرسلت رقم الجهاز الظاهر أعلاه، وأن المفتاح كما وصلك تماماً.",
+        )
 
     def load_licence(self):
         from logic.licence import device_code, is_activated
@@ -513,11 +527,13 @@ class SettingsModule(QWidget):
             self.licence_key_input.setEnabled(False)
             self.activate_btn.setEnabled(False)
         else:
-            from logic.trial import TRIAL_DAYS
+            from logic.trial import TRIAL_DAYS, get_extra_days
+            total_days = TRIAL_DAYS + get_extra_days(self.db)
             self.licence_status.setText(
-                f"الحالة: نسخة تجريبية ({TRIAL_DAYS} يوماً). "
+                f"الحالة: نسخة تجريبية ({total_days} يوماً). "
                 "لتفعيلها بشكل دائم أرسل رقم الجهاز أدناه لمزوّد البرنامج، "
-                "ثم اكتب المفتاح الذي يصلك."
+                "ثم اكتب المفتاح الذي يصلك. يمكن أيضاً إدخال كود تمديد للتجربة "
+                "إن وصلك واحد بدلاً من مفتاح التفعيل الدائم."
             )
             self.licence_status.setStyleSheet("font-weight:800; color:#b45309;")
             self.licence_key_input.setEnabled(True)

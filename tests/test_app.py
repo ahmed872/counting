@@ -3509,6 +3509,117 @@ def main():
     check("the expiry screen is where the key is entered",
           the_expiry_screen_can_actually_activate)
 
+    def extension_code_adds_days_without_full_activation():
+        """A customer still deciding, whose trial runs out mid-negotiation,
+        needs a goodwill "a few more days" - without minting a full,
+        permanent key for someone who has not paid yet. The extension is
+        cumulative and cannot go backwards (replaying an older/smaller code
+        is a harmless no-op), is bound to the one device like an activation
+        key already is, and - like a full activation - clears any tamper
+        flag rather than leaving a legitimate extension stuck behind it."""
+        import datetime as dt
+        import tempfile
+        import logic.trial as trial
+        import logic.licence as licence
+
+        sandbox = tempfile.mkdtemp(prefix="_erp_extension_")
+        saved = (os.environ.get("XDG_CONFIG_HOME"), os.environ.get("APPDATA"))
+        os.environ["XDG_CONFIG_HOME"] = sandbox
+        os.environ.pop("APPDATA", None)
+        real_date = dt.date
+        ext_db_path = DB_PATH.replace(".db", "_extension.db")
+
+        class FrozenDate(real_date):
+            offset = 0
+
+            @classmethod
+            def today(cls):
+                return real_date.today() + dt.timedelta(days=cls.offset)
+
+        trial.date = FrozenDate
+        try:
+            if os.path.exists(ext_db_path):
+                os.remove(ext_db_path)
+            fresh = DBManager(ext_db_path)
+
+            FrozenDate.offset = 0
+            assert trial.TrialManager(fresh).check()[0], "day one was not allowed"
+
+            FrozenDate.offset = trial.TRIAL_DAYS + 1
+            allowed, _, _ = trial.TrialManager(fresh).check()
+            assert not allowed, "the trial did not expire on schedule"
+
+            code = licence.device_code(fresh)
+
+            # Wrong device, and a device-shaped-but-wrong code, must not work.
+            assert licence.apply_extension(fresh, licence.extension_key_for_device("ZZZZ2345", 10)) is None
+            assert licence.apply_extension(fresh, "not shaped like an extension code at all") is None
+            assert trial.get_extra_days(fresh) == 0
+
+            # The real extension for this device unlocks it again.
+            ext_key = licence.extension_key_for_device(code, 10)
+            assert licence.apply_extension(fresh, ext_key) == 10
+            allowed, days_left, _ = trial.TrialManager(fresh).check()
+            assert allowed and days_left == 9, (allowed, days_left)   # 20+10 days, 1 already elapsed
+            assert not licence.is_activated(fresh), \
+                "an extension code must not fully activate the program"
+
+            # Replaying a smaller extension is a no-op, never a rollback.
+            smaller = licence.extension_key_for_device(code, 3)
+            assert licence.apply_extension(fresh, smaller) == 10
+            assert trial.get_extra_days(fresh) == 10
+
+            # A bigger one still on top later adds more.
+            bigger = licence.extension_key_for_device(code, 25)
+            assert licence.apply_extension(fresh, bigger) == 25
+            allowed, days_left, _ = trial.TrialManager(fresh).check()
+            assert allowed and days_left == 24, (allowed, days_left)
+
+            # An extension also clears a tampered flag, the same way a full
+            # activation key already bypasses tamper detection entirely.
+            fresh.set_setting("trial_tampered", "1")
+            FrozenDate.offset = trial.TRIAL_DAYS + 1
+            allowed, _, message = trial.TrialManager(fresh).check()
+            assert not allowed and "تغيير في تاريخ" in message, \
+                "sanity check: tampering should block access before the extension clears it"
+            licence.apply_extension(fresh, licence.extension_key_for_device(code, 40))
+            allowed, days_left, _ = trial.TrialManager(fresh).check()
+            assert allowed, "a valid extension did not clear the tamper flag"
+        finally:
+            trial.date = real_date
+            for name, value in zip(("XDG_CONFIG_HOME", "APPDATA"), saved):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            if os.path.exists(ext_db_path):
+                os.remove(ext_db_path)
+            shutil.rmtree(sandbox, ignore_errors=True)
+    check("a trial extension code adds days without granting full activation",
+          extension_code_adds_days_without_full_activation)
+
+    def expiry_screen_accepts_an_extension_code_too():
+        """The same box that takes a permanent activation key must also take
+        a goodwill extension code, without mistaking one for the other."""
+        from ui.activation_dialog import ActivationDialog
+        import logic.licence as licence
+
+        dialog = ActivationDialog(db, "انتهت المدة")
+        try:
+            code = licence.device_code(db)
+            ext_key = licence.extension_key_for_device(code, 5)
+            dialog.key_field.setText(ext_key)
+            dialog.try_activate()
+            assert not dialog.activated, \
+                "an extension code must not be treated as a full activation"
+            assert dialog.extended_days_left is not None, \
+                "a valid extension code was not recognised at all"
+            assert dialog.extended_days_left > 0, dialog.extended_days_left
+        finally:
+            dialog.deleteLater()
+    check("the expiry screen accepts a trial-extension code without fully activating",
+          expiry_screen_accepts_an_extension_code_too)
+
     def arabic_day_counts_agree():
         """"20 أيام" is broken Arabic. Numbers 11 and up take the singular."""
         from logic.trial import arabic_days

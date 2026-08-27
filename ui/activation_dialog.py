@@ -22,7 +22,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
 )
 
-from logic.licence import activate, device_code
+from logic.licence import activate, apply_extension, device_code
 
 
 class ActivationDialog(QDialog):
@@ -30,6 +30,10 @@ class ActivationDialog(QDialog):
         super().__init__(parent)
         self.db = db
         self.activated = False
+        # Set instead of self.activated when what came in was a goodwill
+        # trial-extension code, not a full permanent key - the caller needs
+        # to tell the two apart to know how many days are left to show.
+        self.extended_days_left = None
         self.setWindowTitle("تفعيل البرنامج")
         from logic.paths import set_window_icon
         set_window_icon(self)
@@ -142,6 +146,18 @@ class ActivationDialog(QDialog):
             )
             self.accept()
             return
+
+        if apply_extension(self.db, typed) is not None:
+            from logic.trial import TrialManager
+            allowed, days_left, _ = TrialManager(self.db).check()
+            if allowed:
+                self.extended_days_left = days_left
+                QMessageBox.information(
+                    self, "تم التمديد",
+                    f"تم تمديد فترة التجربة.\n\nالأيام المتبقية الآن: {days_left}.",
+                )
+                self.accept()
+                return
 
         self.show_status(
             "المفتاح غير صحيح لهذا الجهاز.\n"

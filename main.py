@@ -110,6 +110,8 @@ def enforce_trial(db):
     dialog.exec()
     if dialog.activated:
         return None
+    if dialog.extended_days_left is not None:
+        return dialog.extended_days_left
     sys.exit(0)
 
 

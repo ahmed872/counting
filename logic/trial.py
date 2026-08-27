@@ -21,6 +21,7 @@ TRIAL_DAYS = 20
 _INSTALL_KEY = "trial_install_date"
 _LAST_RUN_KEY = "trial_last_run"
 _TAMPER_KEY = "trial_tampered"
+_EXTRA_DAYS_KEY = "trial_extra_days"
 
 
 def arabic_days(count):
@@ -75,6 +76,41 @@ def _parse(value):
         return None
 
 
+def get_extra_days(db):
+    """Extra trial days granted by the seller on top of TRIAL_DAYS - a
+    goodwill extension for a customer still deciding, without minting a
+    full permanent key. Same dual-store, take-the-larger-value shape as
+    everything else here, so clearing one store cannot roll it back."""
+    marker = _read_marker()
+    db_value = db.get_setting(_EXTRA_DAYS_KEY)
+    file_value = marker.get("extra_days")
+    values = []
+    for v in (db_value, file_value):
+        try:
+            if v not in (None, ""):
+                values.append(int(v))
+        except (TypeError, ValueError):
+            pass
+    return max(values, default=0)
+
+
+def grant_extension(db, total_extra_days):
+    """Records the new cumulative extra-days total for this device - never
+    lower than whatever was already granted, so replaying an older/smaller
+    extension code is a harmless no-op rather than a rollback. Also clears
+    any tamper flag: the seller issuing this is vouching for the device
+    going forward, the same way a full activation key already bypasses
+    tamper detection entirely (see is_activated)."""
+    new_total = max(get_extra_days(db), int(total_extra_days))
+    db.set_setting(_EXTRA_DAYS_KEY, new_total)
+    db.set_setting(_TAMPER_KEY, "0")
+    marker = _read_marker()
+    marker["extra_days"] = new_total
+    marker["tampered"] = False
+    _write_marker(marker)
+    return new_total
+
+
 class TrialManager:
     def __init__(self, db, trial_days=TRIAL_DAYS):
         self.db = db
@@ -106,11 +142,16 @@ class TrialManager:
         self.db.set_setting(_LAST_RUN_KEY, max(today, last_run or today).isoformat())
         if tampered:
             self.db.set_setting(_TAMPER_KEY, "1")
-        _write_marker({
-            "install": install.isoformat(),
-            "last_run": max(today, last_run or today).isoformat(),
-            "tampered": tampered,
-        })
+        # Merge into the marker already read above, not a fresh dict - this
+        # runs on every startup while still on trial, and a bare
+        # _write_marker({...}) here used to silently discard whatever else
+        # already lived in the file (the device code, an activation key, an
+        # extension grant) every single time, surviving only by accident
+        # wherever a caller also kept its own copy in the database.
+        marker["install"] = install.isoformat()
+        marker["last_run"] = max(today, last_run or today).isoformat()
+        marker["tampered"] = tampered
+        _write_marker(marker)
 
         if tampered:
             return False, 0, (
@@ -119,12 +160,13 @@ class TrialManager:
                 "يرجى التواصل مع مزوّد البرنامج."
             )
 
-        expiry = install + timedelta(days=self.trial_days)
+        extra_days = get_extra_days(self.db)
+        expiry = install + timedelta(days=self.trial_days + extra_days)
         days_left = (expiry - today).days
 
         if days_left <= 0:
             return False, 0, (
-                f"انتهت مدة النسخة التجريبية ({arabic_days(self.trial_days)}).\n\n"
+                f"انتهت مدة النسخة التجريبية ({arabic_days(self.trial_days + extra_days)}).\n\n"
                 "بياناتك محفوظة ولم تُحذف.\n"
                 "للحصول على النسخة الكاملة يرجى التواصل مع مزوّد البرنامج."
             )

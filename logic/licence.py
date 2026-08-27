@@ -152,3 +152,56 @@ def activate(db, key):
     marker["licence"] = cleaned
     _write_marker(marker)
     return True
+
+
+# A goodwill extension of the trial - a few more days for a customer still
+# deciding, without minting a full permanent key. Shaped differently from an
+# activation key (an "EXTn-" prefix carrying the day count in plain sight) so
+# the two can never be confused for one another, and so the app can recover
+# the day count directly from the text instead of having to guess it.
+_EXTENSION_RE = re.compile(r"^EXT-?(\d{1,4})[\s\-]+(.+)$", re.IGNORECASE)
+
+
+def extension_key_for_device(code, extra_days, secret=None):
+    """The one valid extension code granting exactly `extra_days` total extra
+    trial days to this device. Like key_for_device, used by both sides."""
+    digest = hmac.new(
+        (secret or SECRET).encode("utf-8"),
+        f"RESTAURANT-ERP-EXT-v1:{code}:{int(extra_days)}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return f"EXT{int(extra_days)}-{_group(_encode(digest, 12))}"
+
+
+def parse_extension_key(text):
+    """(extra_days, signature) if the text is shaped like an extension code
+    at all (regardless of whether it actually verifies), else None - lets a
+    caller tell "not an extension code" apart from "an extension code, but
+    the wrong one for this device"."""
+    match = _EXTENSION_RE.match(str(text or "").strip())
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2)
+
+
+def is_valid_extension(code, extra_days, key, secret=None):
+    expected = extension_key_for_device(code, extra_days, secret)
+    _, expected_signature = parse_extension_key(expected)
+    supplied = normalise_key(key)
+    if not supplied:
+        return False
+    return hmac.compare_digest(normalise_key(expected_signature), supplied)
+
+
+def apply_extension(db, text):
+    """Returns the new cumulative extra-days total on success, or None if
+    `text` does not parse as an extension code, or does not verify for this
+    device."""
+    parsed = parse_extension_key(text)
+    if parsed is None:
+        return None
+    extra_days, signature = parsed
+    if not is_valid_extension(device_code(db), extra_days, signature):
+        return None
+    from logic.trial import grant_extension
+    return grant_extension(db, extra_days)
