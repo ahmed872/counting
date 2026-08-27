@@ -76,6 +76,13 @@ class DBManager:
             'medical_insurance_fee': 'REAL DEFAULT 0',
             'health_certificate_fee': 'REAL DEFAULT 0',
             'fees_journal_entry_id': 'INTEGER',
+            # NULL means "unknown / already here before this column existed" -
+            # every employee added before this update keeps working exactly as
+            # it always did, with no month excluded on their account. Only an
+            # employee hired *after* this column exists gets a real value, and
+            # only then does get_monthly_payroll start excluding the months
+            # before it - see the comment there for why that matters.
+            'hire_date': 'DATE',
         }
         for column_name, column_type in employee_additions.items():
             if column_name not in employee_columns:

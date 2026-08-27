@@ -81,10 +81,14 @@ def _drop(entry):
     if "/translations/" in name or name.startswith("PyQt6/Qt6/translations"):
         return True
 
-    # Image formats. The only image the program loads is its own PNG icon, and
-    # ICO is kept because that is what the window icon may be read from.
+    # Image formats. PNG and BMP decode without any plugin at all (built
+    # into QtGui directly), but employee photos can be picked as JPEG, GIF
+    # or WEBP too (see HRModule.pick_employee_photo) - those genuinely need
+    # their plugin present, or QPixmap.loadFromData() silently fails and the
+    # photo looks "rejected" even though the file dialog offered it. Only
+    # the formats this program has no path to loading at all get dropped.
     if "imageformats/" in name and stem in (
-        "qjpeg", "qgif", "qtiff", "qwebp", "qicns", "qtga", "qwbmp", "qpdf", "qsvg"
+        "qtiff", "qicns", "qtga", "qwbmp", "qpdf", "qsvg"
     ):
         return True
 

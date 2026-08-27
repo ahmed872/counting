@@ -4,9 +4,10 @@ from datetime import datetime
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QTableWidgetItem, QPushButton, QFormLayout, QLineEdit,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
-                             QGroupBox, QTabWidget, QFileDialog, QTextBrowser)
+                             QGroupBox, QTabWidget, QFileDialog, QTextBrowser,
+                             QDialog, QCheckBox)
 from PyQt6.QtCore import QDate, Qt
-from PyQt6.QtGui import QPixmap, QTextDocument
+from PyQt6.QtGui import QPixmap, QTextDocument, QPageLayout
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height, warn_if_would_overdraw
 from ui.formatting import money_item, money
@@ -73,6 +74,20 @@ class HRModule(QWidget):
         self.job_input = QLineEdit()
         self.branch_input = QComboBox()
         self.load_branch_options()
+        # Whether the employee actually worked a given past month matters for
+        # payroll: without this, a whole-year report run the month someone
+        # is hired summed a live salary preview for every earlier month too,
+        # as if they had been on payroll all along. "غير معروف" is the
+        # default and is what every employee added before this field existed
+        # keeps forever - only a real date here starts excluding months
+        # before it.
+        self.hire_date = QDateEdit(QDate.currentDate())
+        self.hire_date.setCalendarPopup(True)
+        self.hire_date.setMaximumDate(QDate.currentDate())
+        self.hire_date_unknown = QCheckBox("غير معروف (موظف قديم)")
+        self.hire_date_unknown.toggled.connect(
+            lambda checked: self.hire_date.setEnabled(not checked))
+        self.hire_date_unknown.setChecked(True)
         self.salary_input = QLineEdit()
         self.allowance_input = QLineEdit()
         self.iqama_input = QLineEdit()
@@ -109,6 +124,7 @@ class HRModule(QWidget):
         self.photo_preview.setStyleSheet(
             "QLabel { border:1px solid #cbd5e1; border-radius:6px; background:#f8fafc; "
             "color:#94a3b8; font-size:11px; }")
+        self.photo_preview.mousePressEvent = self._photo_preview_clicked
         self.photo_pick_btn = QPushButton("اختيار صورة...")
         self.photo_pick_btn.clicked.connect(self.pick_employee_photo)
         self.photo_clear_btn = QPushButton("إزالة الصورة")
@@ -124,9 +140,18 @@ class HRModule(QWidget):
         employee_form.setSpacing(16)
         employee_form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.DontWrapRows)
 
+        hire_date_row = QHBoxLayout()
+        hire_date_row.setSpacing(10)
+        hire_date_row.addWidget(self.hire_date)
+        hire_date_row.addWidget(self.hire_date_unknown)
+        hire_date_row.addStretch()
+        hire_date_wrapper = QWidget()
+        hire_date_wrapper.setLayout(hire_date_row)
+
         employee_form.addRow("الاسم:", self.name_input)
         employee_form.addRow("الوظيفة:", self.job_input)
         employee_form.addRow("الفرع:", self.branch_input)
+        employee_form.addRow("تاريخ التعيين:", hire_date_wrapper)
         employee_form.addRow("الراتب الأساسي:", self.salary_input)
         employee_form.addRow("البدلات:", self.allowance_input)
         employee_form.addRow("رقم الإقامة وتاريخ الانتهاء:", self._document_row(self.iqama_input, self.iqama_expiry))
@@ -393,6 +418,16 @@ class HRModule(QWidget):
         self.table.setMinimumHeight(90)
         employees_box = QGroupBox("قائمة العاملين والوثائق")
         employees_box_layout = QVBoxLayout(employees_box)
+        list_buttons_row = QHBoxLayout()
+        list_buttons_row.setSpacing(10)
+        list_buttons_row.addStretch()
+        list_pdf_btn = QPushButton("حفظ PDF")
+        list_pdf_btn.clicked.connect(self.save_employee_list_pdf)
+        list_print_btn = QPushButton("طباعة القائمة")
+        list_print_btn.clicked.connect(self.print_employee_list)
+        list_buttons_row.addWidget(list_pdf_btn)
+        list_buttons_row.addWidget(list_print_btn)
+        employees_box_layout.addLayout(list_buttons_row)
         employees_box_layout.addWidget(self.table)
         # pin_height - see the note on payroll_box above for why a bare
         # addWidget (with or without a layout stretch factor) was not
@@ -473,19 +508,59 @@ class HRModule(QWidget):
 
     def _set_photo_preview(self, photo_bytes):
         self._photo_bytes = photo_bytes
+        # Kept alongside the raw bytes rather than re-decoded on demand:
+        # decoding the same bytes a second time (once here, again when the
+        # enlarged view opens) was observed to occasionally fail even though
+        # the first decode succeeded - a Qt/plugin oddity under repeated
+        # loadFromData() calls, not anything wrong with the bytes. Decoding
+        # once and reusing the QPixmap sidesteps it entirely.
+        self._photo_pixmap = None
         if photo_bytes:
             pixmap = QPixmap()
             if pixmap.loadFromData(photo_bytes):
+                self._photo_pixmap = pixmap
                 self.photo_preview.setPixmap(pixmap.scaled(
                     PHOTO_PREVIEW_SIZE, PHOTO_PREVIEW_SIZE,
                     Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+                self.photo_preview.setCursor(Qt.CursorShape.PointingHandCursor)
                 return
         self.photo_preview.setPixmap(QPixmap())
         self.photo_preview.setText("لا توجد\nصورة")
+        self.photo_preview.setCursor(Qt.CursorShape.ArrowCursor)
+
+    def _photo_preview_clicked(self, event):
+        if self._photo_pixmap is not None:
+            self.show_photo_full_size()
+
+    def show_photo_full_size(self):
+        """The 72x72 preview is too small to tell two workers apart by face -
+        this opens the same photo at a size actually meant for looking at,
+        as a dialog owned by this window rather than an independent one that
+        could end up stranded behind or away from the main window."""
+        if self._photo_pixmap is None:
+            return
+        pixmap = self._photo_pixmap
+        max_side = 640
+        if pixmap.width() > max_side or pixmap.height() > max_side:
+            pixmap = pixmap.scaled(
+                max_side, max_side,
+                Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+        dialog = QDialog(self)
+        dialog.setWindowTitle("صورة الموظف")
+        layout = QVBoxLayout(dialog)
+        image_label = QLabel()
+        image_label.setPixmap(pixmap)
+        image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(image_label)
+        close_btn = QPushButton("إغلاق")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        dialog.exec()
 
     def pick_employee_photo(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "اختيار صورة الموظف", "", "صور (*.png *.jpg *.jpeg *.bmp)")
+            self, "اختيار صورة الموظف", "",
+            "صور (*.png *.jpg *.jpeg *.jfif *.bmp *.gif *.webp)")
         if not path:
             return
         with open(path, "rb") as f:
@@ -513,6 +588,7 @@ class HRModule(QWidget):
             self.name_input,
             self.job_input,
             self.branch_input,
+            self.hire_date,
             self.salary_input,
             self.allowance_input,
             self.iqama_input,
@@ -547,6 +623,16 @@ class HRModule(QWidget):
                       self.medical_insurance_fee_input, self.health_certificate_fee_input):
             field.clear()
         self.medical_insurance_expiry.setDate(QDate.currentDate())
+        # Defaults to "غير معروف" rather than to today: adding someone to
+        # the system is not always the day they were actually hired - a
+        # first-time setup enters staff who have already worked here for
+        # months, and defaulting to today for all of them would wrongly wipe
+        # their past payroll out of any year report. Excluding earlier
+        # months is something the person adding them has to ask for
+        # explicitly, by unchecking this and picking the real date - not
+        # something that happens to them by not noticing a checkbox.
+        self.hire_date_unknown.setChecked(True)
+        self.hire_date.setDate(QDate.currentDate())
         self._set_photo_preview(None)
         self.save_btn.setText("إضافة موظف")
         self.deactivate_btn.setEnabled(False)
@@ -602,6 +688,11 @@ class HRModule(QWidget):
         self.medical_insurance_fee_input.setText(str(emp["medical_insurance_fee"] or 0))
         self.health_certificate_fee_input.setText(str(emp["health_certificate_fee"] or 0))
         self._set_photo_preview(emp["photo"])
+        if emp["hire_date"]:
+            self.hire_date_unknown.setChecked(False)
+            self.hire_date.setDate(QDate.fromString(str(emp["hire_date"]), "yyyy-MM-dd"))
+        else:
+            self.hire_date_unknown.setChecked(True)
         for value, widget in (
             (emp["iqama_expiry"], self.iqama_expiry),
             (emp["passport_expiry"], self.passport_expiry),
@@ -644,8 +735,11 @@ class HRModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "قيمة (مدد) لا يمكن أن تتجاوز إجمالي الراتب الأساسي والبدلات")
             return
 
+        hire_date = (None if self.hire_date_unknown.isChecked()
+                     else self.hire_date.date().toString("yyyy-MM-dd"))
+
         values = (
-            name, job, branch_id, salary, allowance,
+            name, job, branch_id, hire_date, salary, allowance,
             self.iqama_input.text().strip(), self.iqama_expiry.date().toString("yyyy-MM-dd"),
             self.passport_input.text().strip(), self.passport_expiry.date().toString("yyyy-MM-dd"),
             self.work_permit_input.text().strip(), self.work_permit_expiry.date().toString("yyyy-MM-dd"),
@@ -658,18 +752,18 @@ class HRModule(QWidget):
         emp_id = self.editing_employee_id
         if emp_id is None:
             self.db.execute_query(
-                """INSERT INTO employees (name, job_title, branch_id, base_salary, allowances,
+                """INSERT INTO employees (name, job_title, branch_id, hire_date, base_salary, allowances,
                    iqama_no, iqama_expiry, passport_no, passport_expiry,
                    work_permit_no, work_permit_expiry, work_card_no, work_card_expiry,
                    medical_insurance_no, medical_insurance_expiry, madad_salary,
                    passport_fee, labor_office_fee, medical_insurance_fee, health_certificate_fee, photo)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 values,
             )
             message = "تم إضافة الموظف بنجاح"
         else:
             self.db.execute_query(
-                """UPDATE employees SET name=?, job_title=?, branch_id=?, base_salary=?, allowances=?,
+                """UPDATE employees SET name=?, job_title=?, branch_id=?, hire_date=?, base_salary=?, allowances=?,
                    iqama_no=?, iqama_expiry=?, passport_no=?, passport_expiry=?,
                    work_permit_no=?, work_permit_expiry=?, work_card_no=?, work_card_expiry=?,
                    medical_insurance_no=?, medical_insurance_expiry=?, madad_salary=?,
@@ -1024,18 +1118,18 @@ class HRModule(QWidget):
 
         month_rows = "".join(
             "<tr>"
-            f"<td style='padding:5px 6px'>{m['month']:02d}</td>"
-            f"<td style='padding:5px 6px'>{'مُرحَّل' if m['posted'] else 'معاينة (لم يُرحَّل)'}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{money(m['gross_salary'])}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{m['present_days']}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{m['absent_days']}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{money(m['absence_deduction'])}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{money(m['other_deductions'])}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{money(m['bonuses'])}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{money(m['advances_recovered'])}</td>"
-            f"<td style='padding:5px 6px;text-align:left;font-weight:700'>{money(m['net_salary'])}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{money(m['madad_portion'])}</td>"
-            f"<td style='padding:5px 6px;text-align:left'>{money(m['cash_portion'])}</td>"
+            f"<td style='padding:6px 6px'>{m['month']:02d}</td>"
+            f"<td style='padding:6px 6px'>{'مُرحَّل' if m['posted'] else 'معاينة (لم يُرحَّل)'}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{money(m['gross_salary'])}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{m['present_days']}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{m['absent_days']}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{money(m['absence_deduction'])}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{money(m['other_deductions'])}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{money(m['bonuses'])}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{money(m['advances_recovered'])}</td>"
+            f"<td style='padding:6px 6px;text-align:left;font-weight:700'>{money(m['net_salary'])}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{money(m['madad_portion'])}</td>"
+            f"<td style='padding:6px 6px;text-align:left'>{money(m['cash_portion'])}</td>"
             "</tr>"
             for m in data['months']
         ) or ("<tr><td colspan='12' style='padding:12px;text-align:center;color:#64748b'>"
@@ -1082,14 +1176,14 @@ class HRModule(QWidget):
           </table>
 
           <h3 style="color:#1f3b57;">الرواتب والحضور خلال الفترة</h3>
-          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:11px;">
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:13px;">
             <tr style="background:#1f3b57;color:white;">
-              <th style="padding:6px 6px;">الشهر</th><th style="padding:6px 6px;">الحالة</th>
-              <th style="padding:6px 6px;">الراتب الإجمالي</th><th style="padding:6px 6px;">أيام الحضور</th>
-              <th style="padding:6px 6px;">أيام الغياب</th><th style="padding:6px 6px;">خصم الغياب</th>
-              <th style="padding:6px 6px;">خصومات أخرى</th><th style="padding:6px 6px;">مكافآت</th>
-              <th style="padding:6px 6px;">سلف مستردة</th><th style="padding:6px 6px;">الصافي</th>
-              <th style="padding:6px 6px;">مدد (بنكي)</th><th style="padding:6px 6px;">نقدي</th>
+              <th style="padding:7px 6px;">الشهر</th><th style="padding:7px 6px;">الحالة</th>
+              <th style="padding:7px 6px;">الراتب الإجمالي</th><th style="padding:7px 6px;">أيام الحضور</th>
+              <th style="padding:7px 6px;">أيام الغياب</th><th style="padding:7px 6px;">خصم الغياب</th>
+              <th style="padding:7px 6px;">خصومات أخرى</th><th style="padding:7px 6px;">مكافآت</th>
+              <th style="padding:7px 6px;">سلف مستردة</th><th style="padding:7px 6px;">الصافي</th>
+              <th style="padding:7px 6px;">مدد (بنكي)</th><th style="padding:7px 6px;">نقدي</th>
             </tr>
             {month_rows}
           </table>
@@ -1148,6 +1242,84 @@ class HRModule(QWidget):
             dialog = QPrintDialog(printer, self)
             if dialog.exec() == QPrintDialog.DialogCode.Accepted:
                 self._employee_report_document().print(printer)
+        except Exception as exc:
+            QMessageBox.critical(self, "خطأ", str(exc))
+
+    def build_employee_list_html(self):
+        """The full قائمة العاملين table, unabridged - the on-screen table
+        only shows every field via its own horizontal scrollbar, which a
+        printed page cannot do. Landscape and every column spelled out in
+        full, not clipped to whatever fit the screen."""
+        employees = self.db.fetch_all(
+            """SELECT e.*, b.name as branch_name FROM employees e
+               JOIN branches b ON e.branch_id = b.id
+               WHERE e.is_active = 1 ORDER BY e.name""")
+
+        def cell(value, align_left=False):
+            style = "padding:6px 6px;" + ("text-align:left;" if align_left else "")
+            return f"<td style='{style}'>{value if value not in (None, '') else '-'}</td>"
+
+        rows = "".join(
+            "<tr>"
+            + cell(e['name']) + cell(e['job_title']) + cell(e['branch_name'])
+            + cell(money(e['base_salary'] or 0), align_left=True)
+            + cell(money(e['allowances'] or 0), align_left=True)
+            + cell(e['iqama_no']) + cell(e['iqama_expiry'])
+            + cell(e['passport_no']) + cell(e['passport_expiry'])
+            + cell(e['work_permit_no']) + cell(e['work_permit_expiry'])
+            + cell(e['work_card_no']) + cell(e['work_card_expiry'])
+            + "</tr>"
+            for e in employees
+        ) or ("<tr><td colspan='13' style='padding:12px;text-align:center;color:#64748b'>"
+              "لا يوجد موظفون مسجلون بعد</td></tr>")
+
+        headers = ["الاسم", "الوظيفة", "الفرع", "الراتب", "البدلات", "رقم الإقامة",
+                   "انتهاء الإقامة", "رقم الجواز", "انتهاء الجواز", "رقم تصريح العمل",
+                   "انتهاء التصريح", "رقم البطاقة الصحية", "انتهاء البطاقة"]
+        header_row = "".join(f"<th style='padding:7px 6px;'>{h}</th>" for h in headers)
+
+        return f"""
+        <div dir="rtl" style="font-family:'Segoe UI',Tahoma,sans-serif; color:#1f2937;">
+          <h2 style="color:#1f3b57;margin:0 0 4px;">قائمة العاملين والوثائق</h2>
+          <div style="color:#94a3b8;font-size:11px;margin:0 0 14px;">
+            تم إنشاؤه في {datetime.now().strftime('%Y-%m-%d %H:%M')} - إجمالي {len(employees)} موظف
+          </div>
+          <table width="100%" cellspacing="0" style="border:1px solid #dde3ea;font-size:12px;">
+            <tr style="background:#1f3b57;color:white;">{header_row}</tr>
+            {rows}
+          </table>
+        </div>
+        """
+
+    def _employee_list_document(self):
+        doc = QTextDocument()
+        doc.setHtml(self.build_employee_list_html())
+        return doc
+
+    def save_employee_list_pdf(self):
+        path, _ = QFileDialog.getSaveFileName(
+            self, "حفظ قائمة العاملين PDF", "قائمة-العاملين.pdf", "PDF (*.pdf)")
+        if not path:
+            return
+        if not path.lower().endswith(".pdf"):
+            path += ".pdf"
+        try:
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+            printer.setPageOrientation(QPageLayout.Orientation.Landscape)
+            printer.setOutputFileName(path)
+            self._employee_list_document().print(printer)
+            QMessageBox.information(self, "تم", f"تم حفظ القائمة في:\n{path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "خطأ", str(exc))
+
+    def print_employee_list(self):
+        try:
+            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+            printer.setPageOrientation(QPageLayout.Orientation.Landscape)
+            dialog = QPrintDialog(printer, self)
+            if dialog.exec() == QPrintDialog.DialogCode.Accepted:
+                self._employee_list_document().print(printer)
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
 

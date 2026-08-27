@@ -95,7 +95,8 @@ class HRLogic:
             LEFT JOIN attendance a ON a.employee_id = e.id
                 AND strftime('%m', a.date) = ?
                 AND strftime('%Y', a.date) = ?
-            WHERE e.is_active = 1 OR e.terminated_date >= ?
+            WHERE (e.is_active = 1 OR e.terminated_date >= ?)
+              AND (e.hire_date IS NULL OR e.hire_date <= ?)
             GROUP BY e.id
             ORDER BY e.name
         """
@@ -105,8 +106,12 @@ class HRLogic:
         # A terminated employee still belongs in any period they were
         # actually employed during - only periods entirely after their last
         # working day should drop them. is_active alone cannot tell "gone
-        # before this month" from "gone during/after it".
-        rows = self.db.fetch_all(query, (month_str, year_str, period_start))
+        # before this month" from "gone during/after it". Symmetrically, an
+        # employee hired mid-year has no business in a month before they
+        # existed at all - without this, a whole-year report run the month
+        # someone starts summed a live "current salary" preview for every
+        # earlier month too, as if they had been paid all along.
+        rows = self.db.fetch_all(query, (month_str, year_str, period_start, period_end))
         payroll = []
         for row in rows:
             gross = (row['base_salary'] or 0) + (row['allowances'] or 0)

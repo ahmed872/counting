@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QPushButton, QDateEdit, QLabel, QScrollArea,
-    QTableWidget, QFrame,
+    QTableWidget, QFrame, QDialog,
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, QDate
@@ -205,6 +205,74 @@ def main():
         hr.clear_employee_form()
     check("HR: photo, مدد, medical insurance, and government fees save/edit/validate correctly",
           hr_extra_fields_save_edit_and_validate)
+
+    def employee_photo_can_be_opened_at_full_size():
+        """The 72x72 form preview is too small to tell two similarly-named
+        workers apart by face - asked live for a way to actually see it.
+        Clicking it must open the same photo full-size, as a dialog owned
+        by this window (not an independent one that could end up stranded
+        away from the main window). Sets _photo_pixmap directly rather than
+        going through a real loadFromData(): an earlier test's deliberately
+        malformed "fake JPEG" bytes (used only to exercise the raw-bytes
+        round trip, never actually rendered) were found to corrupt Qt's
+        image-plugin state process-wide, breaking real decodes for the rest
+        of the run - a Qt/plugin quirk with nothing to do with this feature,
+        which only cares that a click opens a dialog with whatever photo is
+        already loaded."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr._photo_bytes = b"test-bytes"
+        hr._photo_pixmap = QPixmap(4, 4)
+        hr._photo_pixmap.fill(Qt.GlobalColor.red)
+        opened = []
+        original_exec = QDialog.exec
+        QDialog.exec = lambda self: opened.append(self.parent()) or QDialog.DialogCode.Accepted
+        try:
+            hr.photo_preview.mousePressEvent(None)
+        finally:
+            QDialog.exec = original_exec
+        assert opened, "clicking the photo preview with a photo set did not open anything"
+        assert opened[0] is hr, "the enlarged photo was not shown in a dialog owned by the HR page"
+
+        opened.clear()
+        hr._set_photo_preview(None)
+        QDialog.exec = lambda self: opened.append(self.parent()) or QDialog.DialogCode.Accepted
+        try:
+            hr.photo_preview.mousePressEvent(None)
+        finally:
+            QDialog.exec = original_exec
+        assert not opened, "clicking the photo preview with no photo set should not open anything"
+        hr.clear_employee_form()
+    check("HR: the employee photo preview can be opened at full size",
+          employee_photo_can_be_opened_at_full_size)
+
+    def employee_list_report_is_not_limited_to_what_fits_on_screen():
+        """The on-screen 'قائمة العاملين والوثائق' table only shows every
+        field via its own horizontal scrollbar - asked live whether that
+        clipped view is "normal" when printed. It was not: there was no
+        print/PDF path for this table at all before this. The generated
+        report must carry every document field in full."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("موظف تقرير القائمة")
+        hr.job_input.setText("مشرف")
+        hr.salary_input.setText("4000")
+        hr.allowance_input.setText("0")
+        hr.iqama_input.setText("IQ-7777")
+        hr.passport_input.setText("PS-8888")
+        hr.work_permit_input.setText("WP-9999")
+        hr.work_card_input.setText("WC-1111")
+        hr.save_employee()
+        try:
+            html = hr.build_employee_list_html()
+            for expected in ("موظف تقرير القائمة", "IQ-7777", "PS-8888", "WP-9999", "WC-1111"):
+                assert expected in html, f"{expected!r} missing from the full employee-list report"
+        finally:
+            db.execute_query("DELETE FROM employees WHERE name='موظف تقرير القائمة'")
+            hr.clear_employee_form()
+            hr.load_employees()
+    check("HR: the full employee-list report is not limited to what fits on screen",
+          employee_list_report_is_not_limited_to_what_fits_on_screen)
 
     def medical_insurance_expiry_raises_a_document_alert():
         """The existing alert list already covers iqama/passport/work
@@ -2331,6 +2399,55 @@ def main():
     check("HR: a whole-year employee report never counts a month that has not happened yet",
           employee_year_report_excludes_months_that_have_not_happened_yet)
 
+    def new_employee_with_a_set_hire_date_is_excluded_from_earlier_months():
+        """Reported live: an employee added this month, with no attendance
+        or history before today, still showed a full salary for every month
+        back to January in her year report - get_monthly_payroll had no
+        concept of "not employed yet" at all, only "not employed any more".
+        Only employees actually given a real hire date (unchecking "غير
+        معروف" on the form) are affected by this - see the safety-net check
+        right after this one for employees left on the default."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("متأخر الانضمام")
+        hr.job_input.setText("عامل نظافة")
+        branch_id = db.fetch_one("SELECT id FROM branches ORDER BY id")["id"]
+        hr.branch_input.setCurrentIndex(hr.branch_input.findData(branch_id))
+        hr.salary_input.setText("3000")
+        hr.allowance_input.setText("0")
+        hr.hire_date_unknown.setChecked(False)
+        hr.hire_date.setDate(QDate(2026, 6, 1))
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='متأخر الانضمام'")["id"]
+        assert db.fetch_one("SELECT hire_date FROM employees WHERE id=?", (emp_id,))["hire_date"] == "2026-06-01"
+
+        may = next((p for p in window.hr_logic.get_monthly_payroll(5, 2026) if p["id"] == emp_id), None)
+        assert may is None, "an employee hired in June must not appear in May's payroll at all"
+        june = next((p for p in window.hr_logic.get_monthly_payroll(6, 2026) if p["id"] == emp_id), None)
+        assert june is not None, "an employee hired in June must appear in June's own payroll"
+
+        report = window.hr_logic.get_employee_report(emp_id, 2026)
+        months_seen = [m['month'] for m in report['months']]
+        assert months_seen, "sanity check: expected at least the hire month to show up"
+        assert all(m >= 6 for m in months_seen), \
+            f"year report counted a month before this employee was even hired: {months_seen}"
+    check("HR: a new employee's year report excludes months before their hire date",
+          new_employee_with_a_set_hire_date_is_excluded_from_earlier_months)
+
+    def employee_added_the_ordinary_way_still_counts_every_past_month():
+        """Safety net for the fix above: an employee added without ever
+        touching the new hire-date field must keep exactly the old
+        behaviour, with hire_date left NULL and no month excluded - both
+        for every employee that existed before this field did, and for the
+        common case of a first-time setup entering staff who have already
+        worked here for months. Getting the default backwards here would
+        quietly wipe real payroll history out of every year report."""
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
+        assert db.fetch_one("SELECT hire_date FROM employees WHERE id=?", (emp_id,))["hire_date"] is None, \
+            "an employee added without setting a hire date must be stored as NULL (unknown), not today"
+    check("HR: an employee added the ordinary way keeps counting every past month",
+          employee_added_the_ordinary_way_still_counts_every_past_month)
+
     def new_branch_becomes_selectable_in_hr_and_purchases_without_a_restart():
         """A 90-day usage simulation with two branches caught this: HR's and
         Purchases' branch dropdowns were only ever populated once, at
@@ -3735,6 +3852,26 @@ def main():
                      resource_path("docs", "دليل-الاستخدام.pdf")):
             assert os.path.exists(path), path
     check("the Windows build bundles every file the app loads", packaging_bundles_every_data_file)
+
+    def windows_build_does_not_strip_jpeg_image_support():
+        """The spec used to drop Qt's JPEG plugin on the theory that the
+        only image this program ever loaded was its own PNG icon - true
+        when that comment was written, false since employee photos
+        (uploadable as .jpg/.jpeg, see HRModule.pick_employee_photo) were
+        added. Losing the plugin never raises an error anywhere:
+        QPixmap.loadFromData() just silently returns False and a JPEG photo
+        looks "rejected" for no visible reason - reported live as "it only
+        accepts PNG". Nothing at the Qt level can catch that; only checking
+        the actual build spec can."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        spec = open(os.path.join(root, "packaging", "restaurant_erp.spec"), encoding="utf-8").read()
+        # Quoted, not a bare substring check - "qjpeg" legitimately appears
+        # in an unrelated comment about the plugin's file naming convention;
+        # what actually matters is whether it is listed in the drop-tuple.
+        assert '"qjpeg"' not in spec, \
+            "the Windows build strips JPEG image support again - employee photos can be .jpg/.jpeg"
+    check("packaging: the Windows build does not strip JPEG image support",
+          windows_build_does_not_strip_jpeg_image_support)
 
     def sending_a_newer_version_keeps_his_books():
         """The customer asks for a change, gets a newer copy, replaces the old
