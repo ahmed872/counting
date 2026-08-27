@@ -23,6 +23,7 @@ from ui.common_widgets import (page_header, danger_button, fill_table, compact_f
                               pin_height, collapsible,
                               collapse_when_short, fit_table_height)
 from logic.money import parse_money
+from logic.audit import AuditLogger
 
 CATEGORY_LABELS = {
     'raw_material': 'مواد خام',
@@ -32,10 +33,12 @@ CATEGORY_LABELS = {
 
 
 class PurchaseModule(QWidget):
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
+        self.current_user = current_user
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -357,6 +360,11 @@ class PurchaseModule(QWidget):
                      description, timestamp, entry_id),
                 )
 
+            self.audit.log(
+                "purchase_saved",
+                user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+                entity_type="purchase", entity_id=entry_id, branch_id=branch_id,
+                after={"date": timestamp, "amount": total, "category": category, "supplier_id": supplier_id})
             QMessageBox.information(self, "نجاح", "تم تسجيل الفاتورة بنجاح")
             self.amount_input.clear()
             self.description_input.clear()
@@ -458,6 +466,11 @@ class PurchaseModule(QWidget):
                     (branch_id, supplier_id, timestamp, amount, vat, refund_method, notes, category, entry_id),
                 )
 
+            self.audit.log(
+                "purchase_return",
+                user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+                entity_type="purchase_return", entity_id=entry_id, branch_id=branch_id,
+                after={"date": timestamp, "amount": amount, "category": category, "supplier_id": supplier_id})
             QMessageBox.information(self, "نجاح", "تم تسجيل مرتجع المشتريات")
             self.return_amount_input.clear()
             self.return_notes_input.clear()

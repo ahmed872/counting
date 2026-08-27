@@ -323,4 +323,19 @@ INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5100', 'ال
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5150', 'مصروفات مرتبطة بالمشتريات', 'Expense');
 INSERT OR IGNORE INTO chart_of_accounts (code, name, type) VALUES ('5200', 'المصاريف التشغيلية', 'Expense');
 
+-- Audit trail: who did what, and when. Read-only from the app's own side -
+-- see logic/audit.py.
+CREATE TABLE IF NOT EXISTS audit_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    username TEXT,
+    action TEXT NOT NULL,
+    entity_type TEXT,
+    entity_id INTEGER,
+    before_data TEXT,
+    after_data TEXT,
+    branch_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 

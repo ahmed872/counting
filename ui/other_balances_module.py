@@ -20,6 +20,7 @@ from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
 from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height, warn_if_would_overdraw
 from logic.money import parse_money
+from logic.audit import AuditLogger
 
 PREPAID_TARGET_LABELS = [
     ('5200', 'مصروفات تشغيلية'),
@@ -35,11 +36,13 @@ class OtherBalancesModule(QWidget):
     setup-style entries rather than daily work, so they get one shared
     screen instead of their own place in the sidebar."""
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
         self.selected_loan_id = None
+        self.current_user = current_user
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -165,7 +168,13 @@ class OtherBalancesModule(QWidget):
                 "INSERT INTO loans (lender_name, amount, date, notes, journal_entry_id) VALUES (?, ?, ?, ?, ?)",
                 (lender, amount, timestamp, notes, entry_id),
             )
+            new_loan_id = cursor.lastrowid
 
+        self.audit.log(
+            "loan_added",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="loan", entity_id=new_loan_id,
+            after={"lender": lender, "amount": amount, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل القرض")
         self.lender_input.clear()
         self.loan_amount_input.clear()
@@ -231,6 +240,11 @@ class OtherBalancesModule(QWidget):
                 (self.selected_loan_id, timestamp, amount, method, entry_id),
             )
 
+        self.audit.log(
+            "loan_payment",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="loan", entity_id=self.selected_loan_id,
+            after={"amount": amount, "method": method, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل سداد القرض")
         self.loan_payment_amount.clear()
         self.loan_payment_date.setDate(QDate.currentDate())
@@ -343,7 +357,13 @@ class OtherBalancesModule(QWidget):
                    VALUES (?, ?, ?, ?, ?)""",
                 (description, amount, timestamp, target_code, entry_id),
             )
+            new_prepaid_id = cursor.lastrowid
 
+        self.audit.log(
+            "prepaid_added",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="prepaid_expense", entity_id=new_prepaid_id,
+            after={"description": description, "amount": amount, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل المصروف المقدم")
         self.prepaid_desc_input.clear()
         self.prepaid_amount_input.clear()
@@ -411,6 +431,11 @@ class OtherBalancesModule(QWidget):
                 (amount, prepaid_id),
             )
 
+        self.audit.log(
+            "prepaid_released",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="prepaid_expense", entity_id=prepaid_id,
+            after={"amount": amount, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم توزيع المبلغ على المصروف")
         self.release_amount_input.clear()
         self.release_date_input.setDate(QDate.currentDate())

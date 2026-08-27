@@ -151,6 +151,8 @@ def activate(db, key):
     marker = _read_marker()
     marker["licence"] = cleaned
     _write_marker(marker)
+    from logic.audit import AuditLogger
+    AuditLogger(db).log("licence_activated", entity_type="licence", entity_id=code)
     return True
 
 

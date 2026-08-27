@@ -334,14 +334,14 @@ class MainWindow(QMainWindow):
 
         self.dashboard = DashboardModule(self.db)
         self.sales = SalesEntryModule(self.db, current_user=self.current_user)
-        self.hr = HRModule(self.db, self.hr_logic)
-        self.purchases = PurchaseModule(self.db)
-        self.suppliers = SuppliersModule(self.db)
-        self.customers = CustomersModule(self.db)
+        self.hr = HRModule(self.db, self.hr_logic, current_user=self.current_user)
+        self.purchases = PurchaseModule(self.db, current_user=self.current_user)
+        self.suppliers = SuppliersModule(self.db, current_user=self.current_user)
+        self.customers = CustomersModule(self.db, current_user=self.current_user)
         self.reports = ReportsModule(self.db)
         self.settings = SettingsModule(self.db, current_user=self.current_user)
         self.accounting = AccountingModule(self.db)
-        self.other_balances = OtherBalancesModule(self.db)
+        self.other_balances = OtherBalancesModule(self.db, current_user=self.current_user)
 
         # Every table on every page now sizes itself to fit all of its own
         # rows (see fit_table_height in common_widgets.py) instead of being

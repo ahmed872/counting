@@ -32,7 +32,7 @@ _BACKUP_PREFIX = "قبل-التحديث-"
 KEEP_BACKUPS = 5
 
 
-def _backup_dir(db_path):
+def backups_dir(db_path):
     folder = os.path.join(os.path.dirname(os.path.abspath(db_path)), "نسخ-احتياطية")
     os.makedirs(folder, exist_ok=True)
     return folder
@@ -108,7 +108,7 @@ def backup_before_upgrade(db_path):
     previous = _read_version(db_path) or "قديمة"
     stamp = datetime.now().strftime("%Y-%m-%d-%H%M%S")
     target = os.path.join(
-        _backup_dir(db_path), f"{_BACKUP_PREFIX}{previous}-إلى-{APP_VERSION}-{stamp}.db")
+        backups_dir(db_path), f"{_BACKUP_PREFIX}{previous}-إلى-{APP_VERSION}-{stamp}.db")
 
     try:
         shutil.copyfile(db_path, target)

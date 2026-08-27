@@ -13,6 +13,7 @@ from ui.common_widgets import create_stat_card, page_header, fill_table, fit_tab
 from ui.formatting import money_item, money
 from logic.money import parse_money
 from logic.accounting import AccountingLogic
+from logic.audit import AuditLogger
 
 PHOTO_PREVIEW_SIZE = 72
 DOC_TYPE_LABELS = {
@@ -23,11 +24,13 @@ DOC_TYPE_LABELS = {
 
 
 class HRModule(QWidget):
-    def __init__(self, db_manager, hr_logic):
+    def __init__(self, db_manager, hr_logic, current_user=None):
         super().__init__()
         self.db = db_manager
         self.hr_logic = hr_logic
         self.accounting = AccountingLogic(db_manager)
+        self.current_user = current_user
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -749,9 +752,9 @@ class HRModule(QWidget):
             self._photo_bytes,
         )
 
-        emp_id = self.editing_employee_id
-        if emp_id is None:
-            self.db.execute_query(
+        existing_id = self.editing_employee_id
+        if existing_id is None:
+            new_id = self.db.insert_and_return_id(
                 """INSERT INTO employees (name, job_title, branch_id, hire_date, base_salary, allowances,
                    iqama_no, iqama_expiry, passport_no, passport_expiry,
                    work_permit_no, work_permit_expiry, work_card_no, work_card_expiry,
@@ -761,6 +764,7 @@ class HRModule(QWidget):
                 values,
             )
             message = "تم إضافة الموظف بنجاح"
+            audit_action = "employee_created"
         else:
             self.db.execute_query(
                 """UPDATE employees SET name=?, job_title=?, branch_id=?, hire_date=?, base_salary=?, allowances=?,
@@ -769,10 +773,17 @@ class HRModule(QWidget):
                    medical_insurance_no=?, medical_insurance_expiry=?, madad_salary=?,
                    passport_fee=?, labor_office_fee=?, medical_insurance_fee=?, health_certificate_fee=?, photo=?
                    WHERE id=?""",
-                values + (emp_id,),
+                values + (existing_id,),
             )
             message = "تم حفظ التعديلات"
+            audit_action = "employee_updated"
+            new_id = existing_id
 
+        self.audit.log(
+            audit_action,
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="employee", entity_id=new_id,
+            after={"name": name, "job_title": job, "base_salary": salary, "allowances": allowance})
         QMessageBox.information(self, "نجاح", message)
         self.load_employees()
         self.clear_employee_form()
@@ -797,6 +808,10 @@ class HRModule(QWidget):
         self.db.execute_query(
             "UPDATE employees SET is_active = 0, terminated_date = ? WHERE id = ?",
             (last_day, emp_id))
+        self.audit.log(
+            "employee_deactivated",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="employee", entity_id=emp_id, after={"terminated_date": last_day})
         QMessageBox.information(self, "تم", "تم إنهاء خدمة الموظف")
         self.load_employees()
         self.clear_employee_form()
@@ -845,6 +860,10 @@ class HRModule(QWidget):
             QMessageBox.critical(self, "خطأ", str(e))
             return
 
+        self.audit.log(
+            {"Advance": "hr_advance", "Deduction": "hr_deduction", "Bonus": "hr_bonus"}.get(entry_type, entry_type),
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="employee", entity_id=employee_id, after={"amount": amount, "date": date, "notes": notes})
         QMessageBox.information(self, "نجاح", "تم تسجيل الحركة")
         self.deduction_amount.clear()
         self.deduction_notes.clear()
@@ -886,6 +905,10 @@ class HRModule(QWidget):
 
         try:
             self.hr_logic.post_payroll(month, year, paid_now=paid_now)
+            self.audit.log(
+                "payroll_posted",
+                user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+                entity_type="payroll_run", after={"month": month, "year": year, "paid_now": paid_now})
             QMessageBox.information(self, "نجاح", "تم ترحيل الرواتب إلى المحاسبة بنجاح")
         except Exception as e:
             QMessageBox.critical(self, "خطأ", str(e))
@@ -924,6 +947,11 @@ class HRModule(QWidget):
                 (timestamp, amount, method, entry_id),
             )
 
+        self.audit.log(
+            "accrued_wages_paid",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="accrued_wage_payment", entity_id=entry_id,
+            after={"amount": amount, "method": method, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل سداد الرواتب المستحقة")
         self.accrued_pay_amount.clear()
         self.refresh_payroll()

@@ -108,6 +108,9 @@ def grant_extension(db, total_extra_days):
     marker["extra_days"] = new_total
     marker["tampered"] = False
     _write_marker(marker)
+    from logic.audit import AuditLogger
+    AuditLogger(db).log("licence_extended", entity_type="licence",
+                         after={"total_extra_days": new_total})
     return new_total
 
 

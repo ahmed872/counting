@@ -28,6 +28,23 @@ APP_STYLESHEET = """
         border: 0px;
         width: 28px;
     }
+    /* Reported live as "looks suspicious, is this even a dropdown?" - once
+       ::drop-down carries its own rule, Qt stops drawing its native arrow
+       glyph unless ::down-arrow is styled too, leaving an empty 28px gap
+       that reads as a plain text box with dead space, not a selector. Drawn
+       with plain borders (a CSS triangle) rather than an image so it never
+       depends on an icon file being found or bundled. */
+    QComboBox::down-arrow {
+        image: none;
+        width: 0px;
+        height: 0px;
+        border-left: 5px solid transparent;
+        border-right: 5px solid transparent;
+        border-top: 6px solid #64748b;
+    }
+    QComboBox::down-arrow:on {
+        border-top-color: #334155;
+    }
     QComboBox QAbstractItemView {
         background-color: white;
         color: #1f2937;

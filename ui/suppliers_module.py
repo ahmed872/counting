@@ -20,14 +20,17 @@ from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
 from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height, warn_if_would_overdraw
 from logic.money import parse_money
+from logic.audit import AuditLogger
 
 
 class SuppliersModule(QWidget):
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
         self.selected_supplier_id = None
+        self.current_user = current_user
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -208,6 +211,7 @@ class SuppliersModule(QWidget):
                 "INSERT INTO suppliers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
                 (name, tax_id, opening_balance, phone),
             )
+            new_supplier_id = cursor.lastrowid
             if opening_balance:
                 items = [
                     {'account_code': '3900', 'debit': opening_balance, 'credit': 0},
@@ -216,6 +220,11 @@ class SuppliersModule(QWidget):
                 self.db.insert_journal_entry(
                     cursor, timestamp, f"رصيد افتتاحي لمورد - {name}", None, items)
 
+        self.audit.log(
+            "supplier_added",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="supplier", entity_id=new_supplier_id,
+            after={"name": name, "opening_balance": opening_balance})
         QMessageBox.information(self, "نجاح", "تم إضافة المورد بنجاح")
         self.name_input.clear()
         self.tax_id_input.clear()
@@ -388,6 +397,11 @@ class SuppliersModule(QWidget):
                 (self.selected_supplier_id, timestamp, amount, method, notes),
             )
 
+        self.audit.log(
+            "supplier_payment",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="supplier", entity_id=self.selected_supplier_id,
+            after={"amount": amount, "method": method, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل السداد وتحديث رصيد المورد")
         self.payment_amount.clear()
         self.payment_notes.clear()

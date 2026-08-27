@@ -20,17 +20,20 @@ from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
 from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height
 from logic.money import parse_money
+from logic.audit import AuditLogger
 
 
 class CustomersModule(QWidget):
     """The mirror image of SuppliersModule: a supplier is money we owe, a
     customer here is money owed to us. Same shape, opposite direction."""
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
         self.selected_customer_id = None
+        self.current_user = current_user
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -226,6 +229,7 @@ class CustomersModule(QWidget):
                 "INSERT INTO customers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
                 (name, tax_id, opening_balance, phone),
             )
+            new_customer_id = cursor.lastrowid
             if opening_balance:
                 items = [
                     {'account_code': '1400', 'debit': opening_balance, 'credit': 0},
@@ -234,6 +238,11 @@ class CustomersModule(QWidget):
                 self.db.insert_journal_entry(
                     cursor, timestamp, f"رصيد افتتاحي لعميل - {name}", None, items)
 
+        self.audit.log(
+            "customer_added",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="customer", entity_id=new_customer_id,
+            after={"name": name, "opening_balance": opening_balance})
         QMessageBox.information(self, "نجاح", "تم إضافة العميل بنجاح")
         self.name_input.clear()
         self.tax_id_input.clear()
@@ -382,6 +391,11 @@ class CustomersModule(QWidget):
                 (None, self.selected_customer_id, timestamp, amount, vat, notes, entry_id),
             )
 
+        self.audit.log(
+            "customer_credit_sale",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="customer", entity_id=self.selected_customer_id,
+            after={"amount": total, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل البيع الآجل وتحديث رصيد العميل")
         self.sale_amount.clear()
         self.sale_notes.clear()
@@ -436,6 +450,11 @@ class CustomersModule(QWidget):
                 (self.selected_customer_id, timestamp, amount, method, notes, entry_id),
             )
 
+        self.audit.log(
+            "customer_collection",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="customer", entity_id=self.selected_customer_id,
+            after={"amount": amount, "method": method, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل التحصيل وتحديث رصيد العميل")
         self.collect_amount.clear()
         self.collect_notes.clear()

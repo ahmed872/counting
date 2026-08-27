@@ -106,11 +106,15 @@ class ReportsModule(QWidget):
         pdf_btn = QPushButton("حفظ PDF")
         pdf_btn.setMinimumHeight(44)
         pdf_btn.clicked.connect(self.save_pdf)
+        excel_btn = QPushButton("حفظ Excel")
+        excel_btn.setMinimumHeight(44)
+        excel_btn.clicked.connect(self.save_excel)
         print_btn = QPushButton("طباعة")
         print_btn.setMinimumHeight(44)
         print_btn.clicked.connect(self.print_report)
         buttons.addWidget(generate_btn, 2)
         buttons.addWidget(pdf_btn, 1)
+        buttons.addWidget(excel_btn, 1)
         buttons.addWidget(print_btn, 1)
         controls_layout.addLayout(buttons)
 
@@ -159,7 +163,7 @@ class ReportsModule(QWidget):
         return (self.start_date.date().toString("yyyy-MM-dd"),
                 self.end_date.date().toString("yyyy-MM-dd"))
 
-    def current_report_html(self):
+    def _report_data(self):
         start, end = self.resolve_period()
         branch_id = self.branch_input.currentData()
         branch_name = self.branch_input.currentText()
@@ -176,6 +180,10 @@ class ReportsModule(QWidget):
             'accrued_wages': self.accounting.get_account_balance('2200'),
             'balance_sheet': self.accounting.get_balance_sheet(),
         }
+        return data, branch_name, snapshot
+
+    def current_report_html(self):
+        data, branch_name, snapshot = self._report_data()
         return self.build_html(data, self.period_input.currentText(), branch_name, snapshot)
 
     def generate_report(self):
@@ -470,6 +478,134 @@ class ReportsModule(QWidget):
             dialog = QPrintDialog(printer, self)
             if dialog.exec() == QPrintDialog.DialogCode.Accepted:
                 self._document().print(printer)
+        except Exception as exc:
+            QMessageBox.critical(self, "خطأ", str(exc))
+
+    def build_workbook(self):
+        """The same numbers as the printed report, as real spreadsheet
+        rows instead of a page of text - so they can be sorted, filtered,
+        or dropped into whatever else the owner already keeps in Excel,
+        without retyping a single figure."""
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, Alignment
+
+        d, branch_name, snapshot = self._report_data()
+        bold = Font(bold=True)
+        header_font = Font(bold=True, color="FFFFFF")
+
+        wb = Workbook()
+        wb.remove(wb.active)
+
+        def sheet(title):
+            ws = wb.create_sheet(title)
+            ws.sheet_view.rightToLeft = True
+            ws.column_dimensions['A'].width = 32
+            ws.column_dimensions['B'].width = 20
+            ws.column_dimensions['C'].width = 20
+            ws.column_dimensions['D'].width = 20
+            return ws
+
+        def header_row(ws, *labels):
+            ws.append(labels)
+            for cell in ws[ws.max_row]:
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal="center")
+
+        summary = sheet("ملخص")
+        summary.append([f"تقرير {self.period_input.currentText()}"])
+        summary["A1"].font = Font(bold=True, size=14)
+        summary.append([f"الفترة من {d['start_date']} إلى {d['end_date']}", branch_name])
+        summary.append([])
+        for section, rows in (
+            ("المبيعات (شاملة الضريبة)", [
+                ("كاش", d['sales']['Cash']['total']),
+                ("شبكة (مدى / فيزا)", d['sales']['POS']['total']),
+                ("تحويل بنكي", d['sales']['Transfer']['total']),
+                ("شركات التوصيل", d['sales']['Delivery']['total']),
+                ("إجمالي التحصيل", d['sales']['grand_total']),
+                ("مرتجعات مبيعات", d['returns']['sales_returns']),
+                ("صافي المبيعات (بدون ضريبة)", d['net_sales']),
+            ]),
+            ("المشتريات والمصروفات (بدون ضريبة)", [
+                (CATEGORY_LABELS['raw_material'], d['purchases']['raw_material']['net']),
+                (CATEGORY_LABELS['purchase_expense'], d['purchases']['purchase_expense']['net']),
+                (CATEGORY_LABELS['operating_expense'], d['purchases']['operating_expense']['net']),
+                ("مرتجعات مشتريات", d['returns']['purchase_returns']),
+            ]),
+            ("الأرباح", [
+                ("مجمل الربح", d['gross_profit']),
+                ("الرواتب والأجور", d['salaries_expense']),
+                ("المصروفات التشغيلية", d['operating_expenses']),
+                ("صافي الربح", d['net_profit']),
+            ]),
+            ("ضريبة القيمة المضافة", [
+                ("ضريبة المبيعات (مخرجات)", d['output_vat']),
+                ("ضريبة المشتريات (مدخلات)", d['input_vat']),
+                ("صافي الضريبة المستحقة", d['net_vat']),
+            ]),
+        ):
+            summary.append([section])
+            summary[f"A{summary.max_row}"].font = bold
+            for label, value in rows:
+                summary.append([label, round(value, 2)])
+            summary.append([])
+
+        daily_sales = sheet("المبيعات اليومية")
+        header_row(daily_sales, "التاريخ", "كاش", "شبكة", "تحويل", "شركات التوصيل",
+                   "إجمالي المبيعات", "ضريبة المبيعات")
+        for entry in d['daily']:
+            if entry['cash'] or entry['pos'] or entry['transfer'] or entry['delivery']:
+                daily_sales.append([entry['day'], round(entry['cash'], 2), round(entry['pos'], 2),
+                                    round(entry['transfer'], 2), round(entry['delivery'], 2),
+                                    round(entry['sales_total'], 2), round(entry['output_vat'], 2)])
+
+        daily_purchases = sheet("المشتريات اليومية")
+        header_row(daily_purchases, "التاريخ", "المشتريات", "ضريبة المشتريات")
+        for entry in d['daily']:
+            if entry['purchases']:
+                daily_purchases.append([entry['day'], round(entry['purchases'], 2), round(entry['input_vat'], 2)])
+
+        suppliers = sheet("الموردون")
+        header_row(suppliers, "المورد", "المستحق عليه")
+        for s in snapshot.get('suppliers', []):
+            if abs(s['balance']) > 0.01:
+                suppliers.append([s['name'] + (" (متوقف)" if not s['is_active'] else ""), round(s['balance'], 2)])
+
+        customers = sheet("العملاء")
+        header_row(customers, "العميل", "المستحق له")
+        for c in snapshot.get('customers', []):
+            if abs(c['balance']) > 0.01:
+                customers.append([c['name'] + (" (متوقف)" if not c['is_active'] else ""), round(c['balance'], 2)])
+
+        loans = sheet("القروض")
+        header_row(loans, "المُقرض", "تاريخ القرض", "المتبقي")
+        for l in snapshot.get('loans', []):
+            if abs(l['balance']) > 0.01:
+                loans.append([l['lender_name'], l['date'] or '', round(l['balance'], 2)])
+
+        prepaid = sheet("المصروفات المقدمة")
+        header_row(prepaid, "البيان", "المبلغ الكلي", "المتبقي")
+        for p in snapshot.get('prepaid', []):
+            if p['remaining'] > 0.01:
+                prepaid.append([p['description'], round(p['amount'], 2), round(p['remaining'], 2)])
+
+        employees = sheet("الموظفون")
+        header_row(employees, "الاسم", "الوظيفة", "الفرع", "الراتب الإجمالي")
+        for e in snapshot.get('employees', []):
+            employees.append([e['name'], e['job_title'], e['branch_name'], round(e['gross'], 2)])
+
+        return wb
+
+    def save_excel(self):
+        default = f"تقرير-{self.resolve_period()[0]}.xlsx"
+        path, _ = QFileDialog.getSaveFileName(self, "حفظ التقرير Excel", default, "Excel (*.xlsx)")
+        if not path:
+            return
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        try:
+            self.build_workbook().save(path)
+            QMessageBox.information(self, "تم", f"تم حفظ التقرير في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
 

@@ -23,6 +23,7 @@ from ui.formatting import money_item
 from ui.common_widgets import (page_header, danger_button, fill_table, pin_height,
                               collapsible, fit_table_height)
 from logic.money import parse_money
+from logic.audit import AuditLogger
 
 REFUND_METHOD_LABELS = [
     ("Cash", "نقدي"),
@@ -48,6 +49,7 @@ class SalesEntryModule(QWidget):
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
         self.current_user = current_user or {}
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def _locked_branch_id(self):
@@ -368,6 +370,11 @@ class SalesEntryModule(QWidget):
                 (branch_id, date_str, net, vat, method, notes, entry_id),
             )
 
+        self.audit.log(
+            "sales_return",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="sales_return", entity_id=entry_id, branch_id=branch_id,
+            after={"date": date_str, "amount": total, "method": method})
         QMessageBox.information(self, "تم", "تم تسجيل مرتجع المبيعات")
         self.return_amount_input.clear()
         self.return_notes_input.clear()
@@ -577,6 +584,11 @@ class SalesEntryModule(QWidget):
                     (branch_id, date_str, total, vat, method, entry_id, cashier_number, shortage),
                 )
 
+        self.audit.log(
+            "daily_sales_saved",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="sales", entity_id=entry_id, branch_id=branch_id,
+            after={"date": date_str, "revenue": revenue_credit, "vat": vat_credit, "shortage": shortage})
         QMessageBox.information(self, "تم", "تم تسجيل مبيعات اليوم وترحيلها للمحاسبة")
         self.cash_input.clear()
         self.network_input.clear()

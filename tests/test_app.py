@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QPushButton, QDateEdit, QLabel, QScrollArea,
-    QTableWidget, QFrame, QDialog,
+    QTableWidget, QFrame, QDialog, QComboBox,
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, QDate
@@ -2120,6 +2120,35 @@ def main():
     check("the printed report's own numbers add up to the profit it shows",
           printed_report_shows_the_arithmetic_it_uses)
 
+    def excel_export_carries_the_same_numbers_as_the_pdf():
+        """Added alongside the existing PDF/print buttons so the report's
+        numbers can be sorted, filtered, or reused outside the app without
+        retyping anything - a real .xlsx, not a renamed CSV, with every
+        section the printed report has as its own sheet."""
+        goto("reports")
+        d = window.accounting.accounting.get_period_report(
+            window.reports.resolve_period()[0], window.reports.resolve_period()[1],
+            window.reports.branch_input.currentData())
+        wb = window.reports.build_workbook()
+        assert "ملخص" in wb.sheetnames
+        assert "المبيعات اليومية" in wb.sheetnames
+        summary = wb["ملخص"]
+        values = [cell.value for row in summary.iter_rows() for cell in row]
+        assert any(v is not None and abs(v - round(d['net_sales'], 2)) < 0.01
+                   for v in values if isinstance(v, (int, float))), \
+            "the Excel summary sheet does not contain the same net-sales figure as the PDF/HTML report"
+
+        import tempfile as _tempfile
+        path = os.path.join(_tempfile.gettempdir(), "_erp_excel_export_test.xlsx")
+        try:
+            wb.save(path)
+            assert os.path.exists(path) and os.path.getsize(path) > 0
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+    check("the Excel export carries the same numbers as the PDF report",
+          excel_export_carries_the_same_numbers_as_the_pdf)
+
     def credit_sales_are_included_in_every_period_report_and_dashboard_figure():
         """get_period_report()/get_financial_summary() - which feed the
         dashboard, the accounting tab's income statement, and this printed
@@ -2568,6 +2597,24 @@ def main():
                     bad.append((page, btn.text()[:25], f"{ink} non-white px"))
         assert not bad, bad
     check("no button renders as a blank rectangle", all_buttons_visible)
+
+    def combo_boxes_show_a_visible_dropdown_arrow():
+        """Reported live: 'الحضور والسلف' - كان "شكلها مريب"، مش واضح إنها
+        قوائم اختيار أصلاً بدل حقول نص. Once a stylesheet touches
+        QComboBox::drop-down at all, Qt stops drawing its native arrow glyph
+        unless ::down-arrow is *also* styled - the app's own QSS did the
+        first without the second, leaving a dead 28px gap that reads exactly
+        like a plain text field with nothing in it. A pixel-render check
+        cannot tell a real arrow apart from the widget's own border (both
+        are just "some non-white pixels" near the edge), so this checks the
+        one thing that actually distinguishes them: an explicit
+        QComboBox::down-arrow rule in the stylesheet applied app-wide."""
+        from ui.theme import APP_STYLESHEET
+        assert "QComboBox::down-arrow" in APP_STYLESHEET, (
+            "QComboBox::drop-down is styled but ::down-arrow is not - "
+            "the dropdown arrow will not actually draw")
+    check("combo boxes are styled with a visible dropdown arrow, not a dead gap",
+          combo_boxes_show_a_visible_dropdown_arrow)
 
     def no_stylesheet_leak_onto_labels():
         """A bare `QFrame {...}` rule also matches QLabel (a QFrame subclass) and
@@ -3091,6 +3138,106 @@ def main():
         db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
     check("setting a new password replaces the temporary one and clears the forced-change flag",
           forced_password_change_replaces_the_temporary_one)
+
+    def sensitive_actions_are_recorded_in_the_audit_log():
+        """Who did what and when, across the whole app - login attempts
+        (success and failure), user creation/deactivation, and a sample of
+        real business actions (an employee saved, a sale, a purchase) must
+        all leave a durable, human-readable trail - and never the password
+        itself, anywhere in that trail."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+
+        before = db.fetch_one("SELECT COALESCE(MAX(id),0) m FROM audit_log")["m"]
+        uid = auth.create_user("audit_test_user", "correct-password", "viewer", "اختبار السجل",
+                                actor_user_id=1, actor_username="admin")
+        auth.authenticate("audit_test_user", "wrong-password")
+        auth.authenticate("audit_test_user", "correct-password")
+        auth.authenticate("no_such_user_at_all", "anything")
+        auth.set_active(uid, False, actor_user_id=1, actor_username="admin")
+
+        rows = db.fetch_all("SELECT * FROM audit_log WHERE id > ? ORDER BY id", (before,))
+        actions = [r["action"] for r in rows]
+        assert actions == ["user_created", "login_failed", "login_success",
+                            "login_failed", "user_deactivated"], actions
+
+        created = rows[0]
+        assert created["entity_type"] == "user" and created["entity_id"] == uid
+        assert created["username"] == "admin", "the actor, not the new account, should be logged as who created it"
+        assert "correct-password" not in (created["after_data"] or ""), \
+            "the plaintext password leaked into the audit log"
+        assert all("correct-password" not in str(dict(r)) and "wrong-password" not in str(dict(r))
+                   for r in rows), "a password leaked into the audit log somewhere"
+
+        unknown_login = rows[3]
+        assert unknown_login["user_id"] is None, \
+            "a login attempt against an unknown username should have no real user_id"
+        assert unknown_login["username"] == "no_such_user_at_all"
+
+        # The account can be fully removed afterward without the audit log
+        # blocking it or losing its own history (no FOREIGN KEY on user_id).
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+        still_there = db.fetch_one("SELECT COUNT(*) c FROM audit_log WHERE id > ?", (before,))["c"]
+        assert still_there == 5, "deleting the account deleted its audit history"
+        db.execute_query("DELETE FROM audit_log WHERE id > ?", (before,))
+    check("login attempts, user creation, and activation changes are recorded in the audit log, "
+          "never the password itself, and survive the account being removed",
+          sensitive_actions_are_recorded_in_the_audit_log)
+
+    def real_business_actions_are_recorded_in_the_audit_log():
+        """The audit log is not just for the login screen - reported live as
+        a request to know who did what across the whole program. Spot-checks
+        one real write from HR, sales, and purchases, each already exercised
+        earlier in this run, and a backup taken from Settings."""
+        before = db.fetch_one("SELECT COALESCE(MAX(id),0) m FROM audit_log")["m"]
+
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("سجل تدقيق")
+        hr.job_input.setText("عامل")
+        hr.salary_input.setText("2500")
+        hr.allowance_input.setText("0")
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='سجل تدقيق'")["id"]
+
+        s = window.sales
+        branch_id = db.fetch_one("SELECT id FROM branches ORDER BY id")["id"]
+        s.branch_input.setCurrentIndex(s.branch_input.findData(branch_id))
+        s.date_input.setDate(QDate(2025, 1, 15))
+        s.cash_input.setText("400")
+        s.network_input.setText("0")
+        s.transfer_input.setText("0")
+        s.delivery_input.setText("0")
+        s.shortage_input.setText("")
+        s.save_daily_sales()
+
+        rows = db.fetch_all(
+            "SELECT action, entity_type FROM audit_log WHERE id > ? ORDER BY id", (before,))
+        actions = {(r["action"], r["entity_type"]) for r in rows}
+        assert ("employee_created", "employee") in actions, actions
+        assert ("daily_sales_saved", "sales") in actions, actions
+
+        import tempfile as _tempfile
+        from PyQt6.QtWidgets import QFileDialog
+        backup_path = os.path.join(_tempfile.gettempdir(), "_erp_audit_test_backup.db")
+        original_getSaveFileName = QFileDialog.getSaveFileName
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            window.settings.backup()
+        finally:
+            QFileDialog.getSaveFileName = original_getSaveFileName
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+        backup_rows = db.fetch_all(
+            "SELECT action FROM audit_log WHERE id > ? ORDER BY id", (before,))
+        assert any(r["action"] == "backup_created" for r in backup_rows), \
+            "taking a backup from Settings was not recorded in the audit log"
+
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+        hr.load_employees()
+    check("real business actions (HR, sales, backups) are recorded in the audit log too",
+          real_business_actions_are_recorded_in_the_audit_log)
 
     def changing_your_own_password_needs_the_current_one():
         from logic.auth import AuthLogic
@@ -3987,6 +4134,47 @@ def main():
             shutil.rmtree(workdir, ignore_errors=True)
     check("sending a newer version keeps every number he entered",
           sending_a_newer_version_keeps_his_books)
+
+    def daily_auto_backup_takes_at_most_one_snapshot_a_day():
+        """Recovering from a mistake must not depend on someone remembering
+        to click the manual backup button - a real snapshot is taken the
+        first time the app opens on a given day, silently, and calling it
+        again the same day (opening the app twice) must be a no-op, not a
+        pile of identical files."""
+        import shutil, sqlite3
+        from logic.auto_backup import daily_auto_backup, _AUTO_PREFIX
+        from logic.upgrade import backups_dir
+
+        folder = backups_dir(db.db_path)
+        before = set(os.listdir(folder)) if os.path.exists(folder) else set()
+        try:
+            first = daily_auto_backup(db)
+            assert first is not None, "no backup was taken on the first call today"
+            assert os.path.exists(first)
+            conn = sqlite3.connect(first)
+            try:
+                tables = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+            finally:
+                conn.close()
+            assert {"journal_entries", "journal_items", "chart_of_accounts"} <= tables, \
+                "the auto-backup is not a real copy of the database"
+
+            second = daily_auto_backup(db)
+            assert second is None, "a second call the same day took another backup"
+
+            after = set(os.listdir(folder))
+            new_files = [f for f in (after - before) if f.startswith(_AUTO_PREFIX)]
+            assert len(new_files) == 1, f"expected exactly one new auto-backup, found {new_files}"
+        finally:
+            for name in set(os.listdir(folder)) - before:
+                if name.startswith(_AUTO_PREFIX):
+                    try:
+                        os.remove(os.path.join(folder, name))
+                    except OSError:
+                        pass
+    check("the daily auto-backup takes at most one real snapshot per day",
+          daily_auto_backup_takes_at_most_one_snapshot_a_day)
 
     def the_icon_is_real_and_usable():
         """The shortcut icon is the first thing the customer sees, before the
