@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QGroupBox, QTabWidget, QFileDialog, QTextBrowser,
                              QDialog, QCheckBox)
 from PyQt6.QtCore import QDate, Qt, QSizeF
-from PyQt6.QtGui import QPixmap, QTextDocument, QPageLayout, QPageSize
+from PyQt6.QtGui import QPixmap, QTextDocument, QPageLayout, QPageSize, QPdfWriter
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height, warn_if_would_overdraw
 from ui.formatting import money_item, money
@@ -1256,23 +1256,23 @@ class HRModule(QWidget):
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
         try:
-            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-            printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
             # Reported live: "حفظ PDF" produced a blank file, while printing
             # the same report and choosing "Microsoft Print to PDF" from the
-            # print dialog worked fine. The difference is a real printer:
-            # with no default printer set on Windows (common), QPrinter has
-            # nothing to source a page size from when writing straight to
-            # PdfFormat with no printer involved, and silently produces a
-            # page with degenerate geometry - nothing renders, and the file
-            # is not empty either, so this never surfaced as an error. See
-            # docs/build_manual.py, which already does exactly this for the
-            # same reason when building the shipped manual.
-            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-            printer.setOutputFileName(path)
+            # print dialog worked fine. QPrinter routes even plain PdfFormat
+            # output through Windows' own print subsystem, and a machine
+            # with no default printer configured (common) leaves it with no
+            # real device to paint through - the file still gets written
+            # (so this never surfaced as an error), just with nothing
+            # painted onto it. Setting an explicit page size on the
+            # QPrinter did not fix this - the missing piece was never the
+            # size, it was the OS-printer dependency itself. QPdfWriter is a
+            # separate, self-contained Qt class that writes a PDF directly
+            # with no OS printer involved at all, on any platform.
+            writer = QPdfWriter(path)
+            writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
             document = self._employee_report_document()
-            document.setPageSize(QSizeF(printer.pageRect(QPrinter.Unit.Point).size()))
-            document.print(printer)
+            document.setPageSize(QSizeF(writer.pageLayout().paintRectPoints().size()))
+            document.print(writer)
             QMessageBox.information(self, "تم", f"تم حفظ التقرير في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
@@ -1345,18 +1345,17 @@ class HRModule(QWidget):
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
         try:
-            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-            printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
-            # See the matching comment in save_employee_report_pdf - the
-            # same fix, with the page size read back *after* orientation is
-            # applied so the document gets the actual landscape dimensions,
-            # not the portrait ones rotated the wrong way.
-            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-            printer.setPageOrientation(QPageLayout.Orientation.Landscape)
-            printer.setOutputFileName(path)
+            # See the matching comment in save_employee_report_pdf - same
+            # fix (QPdfWriter instead of QPrinter, no OS printer involved),
+            # with the page size read back *after* orientation is applied
+            # so the document gets the actual landscape dimensions, not the
+            # portrait ones rotated the wrong way.
+            writer = QPdfWriter(path)
+            writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
+            writer.setPageOrientation(QPageLayout.Orientation.Landscape)
             document = self._employee_list_document()
-            document.setPageSize(QSizeF(printer.pageRect(QPrinter.Unit.Point).size()))
-            document.print(printer)
+            document.setPageSize(QSizeF(writer.pageLayout().paintRectPoints().size()))
+            document.print(writer)
             QMessageBox.information(self, "تم", f"تم حفظ القائمة في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))

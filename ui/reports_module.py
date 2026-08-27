@@ -1,7 +1,7 @@
 from datetime import datetime
 
 from PyQt6.QtCore import QDate, QSizeF
-from PyQt6.QtGui import QTextDocument, QPageSize
+from PyQt6.QtGui import QTextDocument, QPageSize, QPdfWriter
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from PyQt6.QtWidgets import (
     QWidget,
@@ -464,25 +464,27 @@ class ReportsModule(QWidget):
         if not path.lower().endswith(".pdf"):
             path += ".pdf"
         try:
-            printer = QPrinter(QPrinter.PrinterMode.HighResolution)
-            printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
             # Reported live: "حفظ PDF" saved a blank, empty-looking file -
             # but printing the same report and choosing "Microsoft Print to
-            # PDF" from the print dialog worked fine. The difference is a
-            # real printer: without one set as the Windows default (common -
-            # plenty of machines have none), QPrinter has nothing to source
-            # a page size from when writing straight to PdfFormat with no
-            # printer involved at all, and silently produces a page with
-            # degenerate geometry - nothing renders, but the file is not
-            # empty either, so this never showed up as an error. An explicit
-            # size removes the dependency on there being a real default
-            # printer. docs/build_manual.py already does exactly this for
-            # the shipped manual, for the same reason.
-            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-            printer.setOutputFileName(path)
+            # PDF" from the print dialog worked fine. QPrinter routes even
+            # PdfFormat output through Windows' own print subsystem, and on
+            # a machine with no default printer configured (common) that
+            # leaves it with no real device to paint through - the file
+            # still gets written (so this never showed up as an error), but
+            # nothing painted onto it. An earlier attempt fixed this by
+            # setting an explicit page size on the QPrinter, on the theory
+            # it just needed a page size to work from; that turned out not
+            # to be enough, because the missing piece was never the size,
+            # it was the OS printer dependency itself. QPdfWriter is a
+            # separate, self-contained Qt class for exactly this job - it
+            # writes a PDF directly with no OS printer involved at all, on
+            # any platform, so nothing here depends on what printers (if
+            # any) happen to be installed.
+            writer = QPdfWriter(path)
+            writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
             document = self._document()
-            document.setPageSize(QSizeF(printer.pageRect(QPrinter.Unit.Point).size()))
-            document.print(printer)
+            document.setPageSize(QSizeF(writer.pageLayout().paintRectPoints().size()))
+            document.print(writer)
             QMessageBox.information(self, "تم", f"تم حفظ التقرير في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
