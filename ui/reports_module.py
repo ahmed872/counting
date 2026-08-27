@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from PyQt6.QtCore import QDate
-from PyQt6.QtGui import QTextDocument
+from PyQt6.QtCore import QDate, QSizeF
+from PyQt6.QtGui import QTextDocument, QPageSize
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from PyQt6.QtWidgets import (
     QWidget,
@@ -466,8 +466,23 @@ class ReportsModule(QWidget):
         try:
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+            # Reported live: "حفظ PDF" saved a blank, empty-looking file -
+            # but printing the same report and choosing "Microsoft Print to
+            # PDF" from the print dialog worked fine. The difference is a
+            # real printer: without one set as the Windows default (common -
+            # plenty of machines have none), QPrinter has nothing to source
+            # a page size from when writing straight to PdfFormat with no
+            # printer involved at all, and silently produces a page with
+            # degenerate geometry - nothing renders, but the file is not
+            # empty either, so this never showed up as an error. An explicit
+            # size removes the dependency on there being a real default
+            # printer. docs/build_manual.py already does exactly this for
+            # the shipped manual, for the same reason.
+            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
             printer.setOutputFileName(path)
-            self._document().print(printer)
+            document = self._document()
+            document.setPageSize(QSizeF(printer.pageRect(QPrinter.Unit.Point).size()))
+            document.print(printer)
             QMessageBox.information(self, "تم", f"تم حفظ التقرير في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))

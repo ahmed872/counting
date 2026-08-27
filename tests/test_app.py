@@ -67,6 +67,32 @@ def is_near_white(hex_colour):
     return r > 235 and g > 235 and b > 235
 
 
+def pdf_page_has_visible_content(path, page=0):
+    """Actually renders a saved PDF's page and checks something painted on
+    it, rather than just checking the file exists / has bytes. Reported
+    live: 'حفظ PDF' saved a file that was not empty by size, but opened to a
+    totally blank page - a real printer (chosen from the print dialog, e.g.
+    Microsoft Print to PDF) worked fine, but the direct-to-PdfFormat export
+    with no printer involved silently produced degenerate page geometry
+    with no default printer configured on Windows. A file-exists/size check
+    would never catch this - only actually looking at the rendered page
+    does."""
+    from PyQt6.QtPdf import QPdfDocument
+    from PyQt6.QtCore import QSize
+    doc = QPdfDocument(None)
+    doc.load(path)
+    if doc.pageCount() <= page:
+        return False
+    image = doc.render(page, QSize(600, 850))
+    if image.isNull():
+        return False
+    for y in range(0, image.height(), 4):
+        for x in range(0, image.width(), 4):
+            if not is_near_white(image.pixelColor(x, y).name()):
+                return True
+    return False
+
+
 def main():
     if os.path.exists(DB_PATH):
         os.remove(DB_PATH)
@@ -273,6 +299,51 @@ def main():
             hr.load_employees()
     check("HR: the full employee-list report is not limited to what fits on screen",
           employee_list_report_is_not_limited_to_what_fits_on_screen)
+
+    def saved_pdfs_actually_render_visible_content():
+        """Reported live: 'حفظ PDF' in HR saved a file that was not empty by
+        size, but opened to a totally blank page - printing the same report
+        through the print dialog and choosing a real printer (e.g. Microsoft
+        Print to PDF) worked fine. The direct-to-file export had nothing to
+        source a page size from with no printer involved and no default
+        printer configured, silently producing a page with degenerate
+        geometry. Covers all three "حفظ PDF" buttons this shipped with -
+        every one shares the same fix (see the matching comments in
+        hr_module.py and reports_module.py)."""
+        import tempfile as _tempfile
+        from PyQt6.QtWidgets import QFileDialog
+        original_get_save = QFileDialog.getSaveFileName
+
+        def check_pdf(label, path, save_fn):
+            QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (path, ""))
+            try:
+                save_fn()
+            finally:
+                QFileDialog.getSaveFileName = original_get_save
+            assert os.path.exists(path), f"{label}: no file was written at all"
+            assert pdf_page_has_visible_content(path), \
+                f"{label}: the saved PDF exists but its page renders completely blank"
+            os.remove(path)
+
+        hr = window.hr
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
+        hr.report_employee_picker.setCurrentIndex(hr.report_employee_picker.findData(emp_id))
+        hr.report_period_type.setCurrentIndex(hr.report_period_type.findData("year"))
+        hr.report_year.setText(str(QDate.currentDate().year()))
+        check_pdf("employee report PDF",
+                  os.path.join(_tempfile.gettempdir(), "_erp_pdf_test_employee_report.pdf"),
+                  hr.save_employee_report_pdf)
+
+        check_pdf("employee list PDF",
+                  os.path.join(_tempfile.gettempdir(), "_erp_pdf_test_employee_list.pdf"),
+                  hr.save_employee_list_pdf)
+
+        goto("reports")
+        check_pdf("reports-module PDF",
+                  os.path.join(_tempfile.gettempdir(), "_erp_pdf_test_reports.pdf"),
+                  window.reports.save_pdf)
+    check("saved PDFs (employee report, employee list, reports module) actually render visible content, not a blank page",
+          saved_pdfs_actually_render_visible_content)
 
     def medical_insurance_expiry_raises_a_document_alert():
         """The existing alert list already covers iqama/passport/work

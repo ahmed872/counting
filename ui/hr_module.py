@@ -6,8 +6,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
                              QGroupBox, QTabWidget, QFileDialog, QTextBrowser,
                              QDialog, QCheckBox)
-from PyQt6.QtCore import QDate, Qt
-from PyQt6.QtGui import QPixmap, QTextDocument, QPageLayout
+from PyQt6.QtCore import QDate, Qt, QSizeF
+from PyQt6.QtGui import QPixmap, QTextDocument, QPageLayout, QPageSize
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height, warn_if_would_overdraw
 from ui.formatting import money_item, money
@@ -1258,8 +1258,21 @@ class HRModule(QWidget):
         try:
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+            # Reported live: "حفظ PDF" produced a blank file, while printing
+            # the same report and choosing "Microsoft Print to PDF" from the
+            # print dialog worked fine. The difference is a real printer:
+            # with no default printer set on Windows (common), QPrinter has
+            # nothing to source a page size from when writing straight to
+            # PdfFormat with no printer involved, and silently produces a
+            # page with degenerate geometry - nothing renders, and the file
+            # is not empty either, so this never surfaced as an error. See
+            # docs/build_manual.py, which already does exactly this for the
+            # same reason when building the shipped manual.
+            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
             printer.setOutputFileName(path)
-            self._employee_report_document().print(printer)
+            document = self._employee_report_document()
+            document.setPageSize(QSizeF(printer.pageRect(QPrinter.Unit.Point).size()))
+            document.print(printer)
             QMessageBox.information(self, "تم", f"تم حفظ التقرير في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
@@ -1334,9 +1347,16 @@ class HRModule(QWidget):
         try:
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
             printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+            # See the matching comment in save_employee_report_pdf - the
+            # same fix, with the page size read back *after* orientation is
+            # applied so the document gets the actual landscape dimensions,
+            # not the portrait ones rotated the wrong way.
+            printer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
             printer.setPageOrientation(QPageLayout.Orientation.Landscape)
             printer.setOutputFileName(path)
-            self._employee_list_document().print(printer)
+            document = self._employee_list_document()
+            document.setPageSize(QSizeF(printer.pageRect(QPrinter.Unit.Point).size()))
+            document.print(printer)
             QMessageBox.information(self, "تم", f"تم حفظ القائمة في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
