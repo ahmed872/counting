@@ -6,8 +6,8 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
                              QComboBox, QDateEdit, QLabel, QHeaderView, QMessageBox,
                              QGroupBox, QTabWidget, QFileDialog, QTextBrowser,
                              QDialog, QCheckBox)
-from PyQt6.QtCore import QDate, Qt, QSizeF
-from PyQt6.QtGui import QPixmap, QTextDocument, QPageLayout, QPageSize, QPdfWriter
+from PyQt6.QtCore import QDate, Qt
+from PyQt6.QtGui import QPixmap, QTextDocument, QPageLayout
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height, warn_if_would_overdraw
 from ui.formatting import money_item, money
@@ -424,11 +424,14 @@ class HRModule(QWidget):
         list_buttons_row = QHBoxLayout()
         list_buttons_row.setSpacing(10)
         list_buttons_row.addStretch()
-        list_pdf_btn = QPushButton("حفظ PDF")
-        list_pdf_btn.clicked.connect(self.save_employee_list_pdf)
+        # "حفظ PDF" (straight to file) used to sit next to طباعة here too -
+        # see the comment on print_report in ui/reports_module.py for why it
+        # was removed: two independent direct-to-PDF fixes both still saved
+        # a blank page on the one real machine that mattered, while
+        # printing and choosing a PDF-producing printer reproducibly worked.
         list_print_btn = QPushButton("طباعة القائمة")
+        list_print_btn.setToolTip("لحفظ كملف PDF: اختر Microsoft Print to PDF من قائمة الطابعات")
         list_print_btn.clicked.connect(self.print_employee_list)
-        list_buttons_row.addWidget(list_pdf_btn)
         list_buttons_row.addWidget(list_print_btn)
         employees_box_layout.addLayout(list_buttons_row)
         employees_box_layout.addWidget(self.table)
@@ -475,12 +478,10 @@ class HRModule(QWidget):
         report_buttons.setSpacing(10)
         preview_btn = QPushButton("عرض التقرير")
         preview_btn.clicked.connect(self.preview_employee_report)
-        pdf_btn = QPushButton("حفظ PDF")
-        pdf_btn.clicked.connect(self.save_employee_report_pdf)
         print_btn = QPushButton("طباعة")
+        print_btn.setToolTip("لحفظ كملف PDF: اختر Microsoft Print to PDF من قائمة الطابعات")
         print_btn.clicked.connect(self.print_employee_report)
         report_buttons.addWidget(preview_btn, 2)
-        report_buttons.addWidget(pdf_btn, 1)
         report_buttons.addWidget(print_btn, 1)
         report_form.addRow(report_buttons)
 
@@ -1245,38 +1246,6 @@ class HRModule(QWidget):
         doc.setHtml(self.current_employee_report_html())
         return doc
 
-    def save_employee_report_pdf(self):
-        if self.report_employee_picker.currentData() is None:
-            QMessageBox.warning(self, "تنبيه", "لا يوجد موظف لعرض تقريره")
-            return
-        default = f"تقرير-{self.report_employee_picker.currentText()}.pdf"
-        path, _ = QFileDialog.getSaveFileName(self, "حفظ تقرير الموظف PDF", default, "PDF (*.pdf)")
-        if not path:
-            return
-        if not path.lower().endswith(".pdf"):
-            path += ".pdf"
-        try:
-            # Reported live: "حفظ PDF" produced a blank file, while printing
-            # the same report and choosing "Microsoft Print to PDF" from the
-            # print dialog worked fine. QPrinter routes even plain PdfFormat
-            # output through Windows' own print subsystem, and a machine
-            # with no default printer configured (common) leaves it with no
-            # real device to paint through - the file still gets written
-            # (so this never surfaced as an error), just with nothing
-            # painted onto it. Setting an explicit page size on the
-            # QPrinter did not fix this - the missing piece was never the
-            # size, it was the OS-printer dependency itself. QPdfWriter is a
-            # separate, self-contained Qt class that writes a PDF directly
-            # with no OS printer involved at all, on any platform.
-            writer = QPdfWriter(path)
-            writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-            document = self._employee_report_document()
-            document.setPageSize(QSizeF(writer.pageLayout().paintRectPoints().size()))
-            document.print(writer)
-            QMessageBox.information(self, "تم", f"تم حفظ التقرير في:\n{path}")
-        except Exception as exc:
-            QMessageBox.critical(self, "خطأ", str(exc))
-
     def print_employee_report(self):
         try:
             printer = QPrinter(QPrinter.PrinterMode.HighResolution)
@@ -1336,29 +1305,6 @@ class HRModule(QWidget):
         doc = QTextDocument()
         doc.setHtml(self.build_employee_list_html())
         return doc
-
-    def save_employee_list_pdf(self):
-        path, _ = QFileDialog.getSaveFileName(
-            self, "حفظ قائمة العاملين PDF", "قائمة-العاملين.pdf", "PDF (*.pdf)")
-        if not path:
-            return
-        if not path.lower().endswith(".pdf"):
-            path += ".pdf"
-        try:
-            # See the matching comment in save_employee_report_pdf - same
-            # fix (QPdfWriter instead of QPrinter, no OS printer involved),
-            # with the page size read back *after* orientation is applied
-            # so the document gets the actual landscape dimensions, not the
-            # portrait ones rotated the wrong way.
-            writer = QPdfWriter(path)
-            writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-            writer.setPageOrientation(QPageLayout.Orientation.Landscape)
-            document = self._employee_list_document()
-            document.setPageSize(QSizeF(writer.pageLayout().paintRectPoints().size()))
-            document.print(writer)
-            QMessageBox.information(self, "تم", f"تم حفظ القائمة في:\n{path}")
-        except Exception as exc:
-            QMessageBox.critical(self, "خطأ", str(exc))
 
     def print_employee_list(self):
         try:

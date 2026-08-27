@@ -1,7 +1,7 @@
 from datetime import datetime
 
-from PyQt6.QtCore import QDate, QSizeF
-from PyQt6.QtGui import QTextDocument, QPageSize, QPdfWriter
+from PyQt6.QtCore import QDate
+from PyQt6.QtGui import QTextDocument
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
 from PyQt6.QtWidgets import (
     QWidget,
@@ -103,17 +103,24 @@ class ReportsModule(QWidget):
         generate_btn = QPushButton("عرض التقرير")
         generate_btn.setMinimumHeight(44)
         generate_btn.clicked.connect(self.generate_report)
-        pdf_btn = QPushButton("حفظ PDF")
-        pdf_btn.setMinimumHeight(44)
-        pdf_btn.clicked.connect(self.save_pdf)
         excel_btn = QPushButton("حفظ Excel")
         excel_btn.setMinimumHeight(44)
         excel_btn.clicked.connect(self.save_excel)
+        # "حفظ PDF" (straight to file, no printer involved) used to be a
+        # button here too. Reported live as still saving a blank page even
+        # after two independent fixes (an explicit QPrinter page size, then
+        # switching to QPdfWriter entirely) - both worked in every
+        # environment this was tested in except the one that matters, his
+        # real machine. Printing and choosing a PDF-producing printer (e.g.
+        # "Microsoft Print to PDF") reproducibly worked every time, so
+        # rather than keep guessing at a Windows-specific rendering
+        # difference nobody here can reproduce, PDF export now only happens
+        # through that already-proven path.
         print_btn = QPushButton("طباعة")
         print_btn.setMinimumHeight(44)
+        print_btn.setToolTip("لحفظ التقرير كملف PDF: اضغط طباعة ثم اختر Microsoft Print to PDF من قائمة الطابعات")
         print_btn.clicked.connect(self.print_report)
         buttons.addWidget(generate_btn, 2)
-        buttons.addWidget(pdf_btn, 1)
         buttons.addWidget(excel_btn, 1)
         buttons.addWidget(print_btn, 1)
         controls_layout.addLayout(buttons)
@@ -455,39 +462,6 @@ class ReportsModule(QWidget):
         doc = QTextDocument()
         doc.setHtml(self.current_report_html())
         return doc
-
-    def save_pdf(self):
-        default = f"تقرير-{self.resolve_period()[0]}.pdf"
-        path, _ = QFileDialog.getSaveFileName(self, "حفظ التقرير PDF", default, "PDF (*.pdf)")
-        if not path:
-            return
-        if not path.lower().endswith(".pdf"):
-            path += ".pdf"
-        try:
-            # Reported live: "حفظ PDF" saved a blank, empty-looking file -
-            # but printing the same report and choosing "Microsoft Print to
-            # PDF" from the print dialog worked fine. QPrinter routes even
-            # PdfFormat output through Windows' own print subsystem, and on
-            # a machine with no default printer configured (common) that
-            # leaves it with no real device to paint through - the file
-            # still gets written (so this never showed up as an error), but
-            # nothing painted onto it. An earlier attempt fixed this by
-            # setting an explicit page size on the QPrinter, on the theory
-            # it just needed a page size to work from; that turned out not
-            # to be enough, because the missing piece was never the size,
-            # it was the OS printer dependency itself. QPdfWriter is a
-            # separate, self-contained Qt class for exactly this job - it
-            # writes a PDF directly with no OS printer involved at all, on
-            # any platform, so nothing here depends on what printers (if
-            # any) happen to be installed.
-            writer = QPdfWriter(path)
-            writer.setPageSize(QPageSize(QPageSize.PageSizeId.A4))
-            document = self._document()
-            document.setPageSize(QSizeF(writer.pageLayout().paintRectPoints().size()))
-            document.print(writer)
-            QMessageBox.information(self, "تم", f"تم حفظ التقرير في:\n{path}")
-        except Exception as exc:
-            QMessageBox.critical(self, "خطأ", str(exc))
 
     def print_report(self):
         try:
