@@ -1,6 +1,4 @@
-from datetime import datetime
-
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtWidgets import (
     QWidget,
     QVBoxLayout,
@@ -9,6 +7,7 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QComboBox,
+    QDateEdit,
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
@@ -21,17 +20,20 @@ from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
 from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height
 from logic.money import parse_money
+from logic.audit import AuditLogger
 
 
 class CustomersModule(QWidget):
     """The mirror image of SuppliersModule: a supplier is money we owe, a
     customer here is money owed to us. Same shape, opposite direction."""
 
-    def __init__(self, db_manager):
+    def __init__(self, db_manager, current_user=None):
         super().__init__()
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
         self.selected_customer_id = None
+        self.current_user = current_user
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -57,6 +59,9 @@ class CustomersModule(QWidget):
         self.phone_input = QLineEdit()
         self.opening_balance_input = QLineEdit()
         self.opening_balance_input.setPlaceholderText("0.00")
+        self.opening_balance_date = QDateEdit(QDate.currentDate())
+        self.opening_balance_date.setCalendarPopup(True)
+        self.opening_balance_date.setMaximumDate(QDate.currentDate())
         self.name_input.returnPressed.connect(self.add_customer)
 
         form_box = QGroupBox("إضافة عميل جديد")
@@ -71,6 +76,7 @@ class CustomersModule(QWidget):
             ("الرقم الضريبي", self.tax_id_input),
             ("رقم الجوال", self.phone_input),
             ("رصيد افتتاحي (مستحق له علينا)", self.opening_balance_input),
+            ("تاريخ الرصيد الافتتاحي", self.opening_balance_date),
             (None, add_btn),
         ], columns=2, field_min_width=130))
         list_layout.addWidget(pin_height(form_box))
@@ -131,6 +137,9 @@ class CustomersModule(QWidget):
 
         self.sale_amount = QLineEdit()
         self.sale_amount.setPlaceholderText("0.00 شامل الضريبة")
+        self.sale_date = QDateEdit(QDate.currentDate())
+        self.sale_date.setCalendarPopup(True)
+        self.sale_date.setMaximumDate(QDate.currentDate())
         self.sale_notes = QLineEdit()
         self.sale_amount.returnPressed.connect(self.record_credit_sale)
 
@@ -143,6 +152,7 @@ class CustomersModule(QWidget):
         sale_outer.setContentsMargins(10, 6, 10, 8)
         sale_outer.addWidget(compact_form([
             ("المبلغ", self.sale_amount),
+            ("التاريخ", self.sale_date),
             ("البيان", self.sale_notes),
             (None, sale_btn),
         ], columns=2, field_min_width=150))
@@ -153,6 +163,9 @@ class CustomersModule(QWidget):
         self.collect_method = QComboBox()
         self.collect_method.addItem("نقدي", "Cash")
         self.collect_method.addItem("تحويل بنكي", "Bank")
+        self.collect_date = QDateEdit(QDate.currentDate())
+        self.collect_date.setCalendarPopup(True)
+        self.collect_date.setMaximumDate(QDate.currentDate())
         self.collect_notes = QLineEdit()
         self.collect_amount.returnPressed.connect(self.record_collection)
 
@@ -166,6 +179,7 @@ class CustomersModule(QWidget):
         collect_outer.addWidget(compact_form([
             ("المبلغ", self.collect_amount),
             ("طريقة التحصيل", self.collect_method),
+            ("التاريخ", self.collect_date),
             ("ملاحظات", self.collect_notes),
             (None, collect_btn),
         ], columns=2, field_min_width=150))
@@ -209,12 +223,13 @@ class CustomersModule(QWidget):
         # could leave a customer whose own statement (which reads
         # opening_balance straight off this row) shows a balance the
         # general ledger and trial balance never received.
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.opening_balance_date.date().toString("yyyy-MM-dd")
         with self.db.transaction() as cursor:
             cursor.execute(
                 "INSERT INTO customers (name, tax_id, opening_balance, phone) VALUES (?, ?, ?, ?)",
                 (name, tax_id, opening_balance, phone),
             )
+            new_customer_id = cursor.lastrowid
             if opening_balance:
                 items = [
                     {'account_code': '1400', 'debit': opening_balance, 'credit': 0},
@@ -223,11 +238,17 @@ class CustomersModule(QWidget):
                 self.db.insert_journal_entry(
                     cursor, timestamp, f"رصيد افتتاحي لعميل - {name}", None, items)
 
+        self.audit.log(
+            "customer_added",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="customer", entity_id=new_customer_id,
+            after={"name": name, "opening_balance": opening_balance})
         QMessageBox.information(self, "نجاح", "تم إضافة العميل بنجاح")
         self.name_input.clear()
         self.tax_id_input.clear()
         self.phone_input.clear()
         self.opening_balance_input.clear()
+        self.opening_balance_date.setDate(QDate.currentDate())
         self.load_customers()
 
     def load_customers(self):
@@ -355,7 +376,7 @@ class CustomersModule(QWidget):
 
         amount, vat = self.accounting.reverse_vat(total)
         notes = self.sale_notes.text().strip()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.sale_date.date().toString("yyyy-MM-dd")
 
         items = [
             {'account_code': '1400', 'debit': total, 'credit': 0},
@@ -370,9 +391,15 @@ class CustomersModule(QWidget):
                 (None, self.selected_customer_id, timestamp, amount, vat, notes, entry_id),
             )
 
+        self.audit.log(
+            "customer_credit_sale",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="customer", entity_id=self.selected_customer_id,
+            after={"amount": total, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل البيع الآجل وتحديث رصيد العميل")
         self.sale_amount.clear()
         self.sale_notes.clear()
+        self.sale_date.setDate(QDate.currentDate())
         self.load_customers()
         self.refresh_statement()
 
@@ -408,7 +435,7 @@ class CustomersModule(QWidget):
 
         method = self.collect_method.currentData()
         notes = self.collect_notes.text().strip()
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = self.collect_date.date().toString("yyyy-MM-dd")
 
         cash_account = '1000' if method == 'Cash' else '1001'
         items = [
@@ -423,9 +450,15 @@ class CustomersModule(QWidget):
                 (self.selected_customer_id, timestamp, amount, method, notes, entry_id),
             )
 
+        self.audit.log(
+            "customer_collection",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="customer", entity_id=self.selected_customer_id,
+            after={"amount": amount, "method": method, "date": timestamp})
         QMessageBox.information(self, "نجاح", "تم تسجيل التحصيل وتحديث رصيد العميل")
         self.collect_amount.clear()
         self.collect_notes.clear()
+        self.collect_date.setDate(QDate.currentDate())
         self.load_customers()
         self.refresh_statement()
 

@@ -287,6 +287,12 @@ class AccountingModule(QWidget):
         self.refresh_data()
 
     def resolve_period(self):
+        # "شهري"/"سنوي" here must mean the same date range as the identically
+        # named choices on شاشة التقارير (reports_module.py) - a rolling
+        # "last 30/365 days" used to answer here instead of the calendar
+        # month/year that screen returns, so the same label on two screens
+        # silently meant two different date ranges and could show two
+        # different totals for what looked like the same period.
         period = self.period_input.currentText()
         today = QDate.currentDate()
         if period == "يومي":
@@ -294,9 +300,11 @@ class AccountingModule(QWidget):
         if period == "أسبوعي":
             return today.addDays(-6).toString("yyyy-MM-dd"), today.toString("yyyy-MM-dd")
         if period == "شهري":
-            return today.addMonths(-1).addDays(1).toString("yyyy-MM-dd"), today.toString("yyyy-MM-dd")
+            first = QDate(today.year(), today.month(), 1)
+            return first.toString("yyyy-MM-dd"), first.addMonths(1).addDays(-1).toString("yyyy-MM-dd")
         if period == "سنوي":
-            return today.addYears(-1).addDays(1).toString("yyyy-MM-dd"), today.toString("yyyy-MM-dd")
+            first = QDate(today.year(), 1, 1)
+            return first.toString("yyyy-MM-dd"), QDate(today.year(), 12, 31).toString("yyyy-MM-dd")
         return self.start_date.date().toString("yyyy-MM-dd"), self.end_date.date().toString("yyyy-MM-dd")
 
     def refresh_data(self):

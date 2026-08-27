@@ -28,9 +28,11 @@ class HRLogic:
             SELECT id, name, 'تصريح عمل' as doc_type, work_permit_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_permit_expiry IS NOT NULL AND work_permit_expiry <= ?
             UNION
             SELECT id, name, 'البطاقة الصحية' as doc_type, work_card_expiry as expiry_date FROM employees WHERE is_active = 1 AND work_card_expiry IS NOT NULL AND work_card_expiry <= ?
+            UNION
+            SELECT id, name, 'التأمين الطبي' as doc_type, medical_insurance_expiry as expiry_date FROM employees WHERE is_active = 1 AND medical_insurance_expiry IS NOT NULL AND medical_insurance_expiry <= ?
             ORDER BY expiry_date
         """
-        return self.db.fetch_all(query, (alert_date, alert_date, alert_date, alert_date))
+        return self.db.fetch_all(query, (alert_date, alert_date, alert_date, alert_date, alert_date))
 
     def record_attendance(self, employee_id, date, status):
         """One record per employee per day: re-recording the same day corrects it
@@ -84,6 +86,7 @@ class HRLogic:
                 e.job_title,
                 e.base_salary,
                 e.allowances,
+                e.madad_salary,
                 b.name as branch_name,
                 COALESCE(SUM(CASE WHEN a.status = 'Absent' THEN 1 ELSE 0 END), 0) as absent_days,
                 COALESCE(SUM(CASE WHEN a.status = 'Present' THEN 1 ELSE 0 END), 0) as present_days
@@ -92,7 +95,8 @@ class HRLogic:
             LEFT JOIN attendance a ON a.employee_id = e.id
                 AND strftime('%m', a.date) = ?
                 AND strftime('%Y', a.date) = ?
-            WHERE e.is_active = 1 OR e.terminated_date >= ?
+            WHERE (e.is_active = 1 OR e.terminated_date >= ?)
+              AND (e.hire_date IS NULL OR e.hire_date <= ?)
             GROUP BY e.id
             ORDER BY e.name
         """
@@ -102,8 +106,12 @@ class HRLogic:
         # A terminated employee still belongs in any period they were
         # actually employed during - only periods entirely after their last
         # working day should drop them. is_active alone cannot tell "gone
-        # before this month" from "gone during/after it".
-        rows = self.db.fetch_all(query, (month_str, year_str, period_start))
+        # before this month" from "gone during/after it". Symmetrically, an
+        # employee hired mid-year has no business in a month before they
+        # existed at all - without this, a whole-year report run the month
+        # someone starts summed a live "current salary" preview for every
+        # earlier month too, as if they had been paid all along.
+        rows = self.db.fetch_all(query, (month_str, year_str, period_start, period_end))
         payroll = []
         for row in rows:
             gross = (row['base_salary'] or 0) + (row['allowances'] or 0)
@@ -147,6 +155,13 @@ class HRLogic:
             advances_recovered = min(outstanding_advances, expense_amount)
             net_salary = expense_amount - advances_recovered
 
+            # مدد never pays out more than the employee actually receives
+            # this month: an absence/deduction-heavy month can bring net_salary
+            # below the registered مدد figure, and the rest of it simply isn't
+            # there to transfer - the employee still gets it, just as cash.
+            madad_portion = min(row['madad_salary'] or 0, net_salary)
+            cash_portion = net_salary - madad_portion
+
             payroll.append({
                 'id': row['id'],
                 'name': row['name'],
@@ -163,6 +178,8 @@ class HRLogic:
                 'advances_outstanding_after': outstanding_advances - advances_recovered,
                 'expense_amount': expense_amount,
                 'net_salary': net_salary,
+                'madad_portion': madad_portion,
+                'cash_portion': cash_portion,
             })
         return payroll
 
@@ -200,7 +217,61 @@ class HRLogic:
             'bonuses': row['bonuses'],
             'advances_recovered': row['advances_recovered'],
             'net_salary': row['net_salary'],
+            'madad_portion': row['madad_portion'] or 0,
+            'cash_portion': row['cash_portion'] or 0,
         } for row in rows]
+
+    def get_employee_report(self, employee_id, year, month=None):
+        """Everything about one employee for one month, or a whole year -
+        documents, government fees, and every riyal of salary paid to them -
+        so answering "what did we pay/register for this person in
+        August/this year" never needs another platform. month=None means
+        the whole year: pulls the frozen posted figures for any month
+        already posted, and a live preview for the rest."""
+        emp = self.db.fetch_one(
+            """SELECT e.*, b.name as branch_name FROM employees e
+               LEFT JOIN branches b ON b.id = e.branch_id WHERE e.id = ?""",
+            (employee_id,))
+        if not emp:
+            return None
+
+        months = [month] if month else list(range(1, 13))
+        today = datetime.now().date()
+        by_month = []
+        totals = {
+            'gross_salary': 0, 'absence_deduction': 0, 'other_deductions': 0,
+            'bonuses': 0, 'advances_recovered': 0, 'net_salary': 0,
+            'madad_portion': 0, 'cash_portion': 0, 'present_days': 0, 'absent_days': 0,
+        }
+        for m in months:
+            posted = self.is_payroll_posted(m, year)
+            # A whole-year report asked for mid-year must not count months
+            # that have not happened yet as if they were already paid - a
+            # live preview only makes sense for the current month and
+            # earlier ones, which is also the only case get_monthly_payroll
+            # was ever meant to answer elsewhere in this app.
+            if not posted and (year, m) > (today.year, today.month):
+                continue
+            rows = self.get_posted_payroll(m, year) if posted else self.get_monthly_payroll(m, year)
+            row = next((r for r in rows if r['id'] == employee_id), None)
+            if not row:
+                continue
+            by_month.append({'month': m, 'posted': posted, **row})
+            for key in totals:
+                totals[key] += row[key]
+
+        government_fees = (
+            (emp['passport_fee'] or 0) + (emp['labor_office_fee'] or 0)
+            + (emp['medical_insurance_fee'] or 0) + (emp['health_certificate_fee'] or 0)
+        )
+
+        return {
+            'employee': emp,
+            'months': by_month,
+            'totals': totals,
+            'government_fees': government_fees,
+            'paid_total': totals['net_salary'] + government_fees,
+        }
 
     def post_payroll(self, month, year, paid_now=True):
         """Posts the month's payroll to the accounting journal:
@@ -231,6 +302,8 @@ class HRLogic:
         total_expense = sum(p['expense_amount'] for p in payroll)
         total_net_paid = sum(p['net_salary'] for p in payroll)
         total_advances_recovered = sum(p['advances_recovered'] for p in payroll)
+        total_madad = sum(p['madad_portion'] for p in payroll)
+        total_cash = sum(p['cash_portion'] for p in payroll)
 
         if not payroll or total_expense == 0:
             raise ValueError("لا يوجد بيانات رواتب لهذا الشهر")
@@ -240,8 +313,20 @@ class HRLogic:
         journal_items = [{'account_code': '5100', 'debit': total_expense, 'credit': 0}]
         if total_advances_recovered:
             journal_items.append({'account_code': '1300', 'debit': 0, 'credit': total_advances_recovered})
-        credit_account = '1000' if paid_now else '2200'
-        journal_items.append({'account_code': credit_account, 'debit': 0, 'credit': total_net_paid})
+        if paid_now:
+            # Money actually leaves through two different channels: مدد goes
+            # out of the bank (1001), the rest in cash (1000) - not lumped
+            # into one line, since the bank and cash balances must each
+            # match what really moved through them.
+            if total_madad:
+                journal_items.append({'account_code': '1001', 'debit': 0, 'credit': total_madad})
+            if total_cash:
+                journal_items.append({'account_code': '1000', 'debit': 0, 'credit': total_cash})
+        elif total_net_paid:
+            # Not yet paid: it is simply owed, regardless of which channel
+            # will eventually settle it - that split only matters once the
+            # money actually moves (see pay_accrued_wages).
+            journal_items.append({'account_code': '2200', 'debit': 0, 'credit': total_net_paid})
         description = (f"صرف رواتب شهر {month:02d}/{year}" if paid_now
                        else f"استحقاق رواتب شهر {month:02d}/{year} (لم تُدفع بعد)")
 
@@ -258,10 +343,11 @@ class HRLogic:
                 cursor.execute(
                     """INSERT INTO payroll_run_items
                        (run_id, employee_id, gross_salary, absence_deduction, other_deductions, bonuses,
-                        advances_recovered, net_salary, absent_days, present_days)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                        advances_recovered, net_salary, absent_days, present_days, madad_portion, cash_portion)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (run_id, p['id'], p['gross_salary'], p['absence_deduction'], p['other_deductions'],
-                     p['bonuses'], p['advances_recovered'], p['net_salary'], p['absent_days'], p['present_days'])
+                     p['bonuses'], p['advances_recovered'], p['net_salary'], p['absent_days'], p['present_days'],
+                     p['madad_portion'], p['cash_portion'])
                 )
                 # Apply the recovered amount to the oldest outstanding
                 # advances first, and only as far as it actually reaches. A

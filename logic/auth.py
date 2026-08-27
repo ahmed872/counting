@@ -19,6 +19,8 @@ import hashlib
 import hmac
 import os
 
+from logic.audit import AuditLogger
+
 ROLE_ADMIN = "admin"
 ROLE_MANAGER = "manager"
 ROLE_CASHIER = "cashier"
@@ -60,6 +62,7 @@ def _verify_password(password, password_hash, salt_hex):
 class AuthLogic:
     def __init__(self, db):
         self.db = db
+        self.audit = AuditLogger(db)
 
     def ensure_default_admins(self):
         """Seeds the two admin seats the first time the users table is
@@ -88,13 +91,17 @@ class AuthLogic:
             "SELECT * FROM users WHERE username = ? AND is_active = 1", (username,)
         )
         if row is None:
+            self.audit.log("login_failed", username=username)
             return None
         if not _verify_password(password or "", row["password_hash"], row["password_salt"]):
+            self.audit.log("login_failed", user_id=row["id"], username=username)
             return None
+        self.audit.log("login_success", user_id=row["id"], username=username)
         return self._public(row)
 
     def create_user(self, username, password, role, display_name=None,
-                     must_change_password=False, branch_id=None):
+                     must_change_password=False, branch_id=None,
+                     actor_user_id=None, actor_username=None):
         username = (username or "").strip().lower()
         if not username:
             raise ValueError("اسم المستخدم مطلوب")
@@ -119,7 +126,11 @@ class AuthLogic:
             (username, password_hash, salt, role, branch_id if role == ROLE_CASHIER else None,
              display_name or username, 1 if must_change_password else 0),
         )
-        return self.db.fetch_one("SELECT id FROM users WHERE username = ?", (username,))["id"]
+        new_id = self.db.fetch_one("SELECT id FROM users WHERE username = ?", (username,))["id"]
+        self.audit.log("user_created", user_id=actor_user_id, username=actor_username,
+                        entity_type="user", entity_id=new_id,
+                        after={"username": username, "role": role, "branch_id": branch_id})
+        return new_id
 
     def list_users(self):
         rows = self.db.fetch_all(
@@ -130,7 +141,8 @@ class AuthLogic:
         )
         return [dict(r) for r in rows]
 
-    def set_password(self, user_id, new_password, must_change_password=False):
+    def set_password(self, user_id, new_password, must_change_password=False,
+                      actor_user_id=None, actor_username=None):
         if not new_password:
             raise ValueError("كلمة المرور مطلوبة")
         password_hash, salt = _hash_password(new_password)
@@ -139,17 +151,25 @@ class AuthLogic:
             "WHERE id = ?",
             (password_hash, salt, 1 if must_change_password else 0, user_id),
         )
+        # Never the password itself - only the fact that it changed and who
+        # changed it.
+        self.audit.log("password_changed", user_id=actor_user_id, username=actor_username,
+                        entity_type="user", entity_id=user_id)
 
     def change_own_password(self, user_id, old_password, new_password):
         row = self.db.fetch_one("SELECT * FROM users WHERE id = ?", (user_id,))
         if row is None or not _verify_password(old_password or "", row["password_hash"], row["password_salt"]):
             raise ValueError("كلمة المرور الحالية غير صحيحة")
-        self.set_password(user_id, new_password, must_change_password=False)
+        self.set_password(user_id, new_password, must_change_password=False,
+                           actor_user_id=user_id, actor_username=row["username"])
 
-    def set_active(self, user_id, is_active):
+    def set_active(self, user_id, is_active, actor_user_id=None, actor_username=None):
         self.db.execute_query(
             "UPDATE users SET is_active = ? WHERE id = ?", (1 if is_active else 0, user_id)
         )
+        self.audit.log("user_activated" if is_active else "user_deactivated",
+                        user_id=actor_user_id, username=actor_username,
+                        entity_type="user", entity_id=user_id)
 
     def _public(self, row):
         return {

@@ -24,6 +24,10 @@ on:
         description: "اسم العميل (للتسجيل فقط)"
         required: false
         type: string
+      extra_days:
+        description: "اتركه فارغاً لمفتاح تفعيل دائم. لتمديد التجربة بدلاً منه، اكتب إجمالي الأيام الإضافية (فوق الـ20 يوم الأصلية) - وهو إجمالي تراكمي: لو عايز تمنحه 10 أيام تانية بعد ما كان عنده تمديد 10 قبل كده، اكتب 20 مش 10"
+        required: false
+        type: string
 
 jobs:
   key:
@@ -51,20 +55,34 @@ jobs:
           RESTAURANT_ERP_SECRET: ${{ secrets.RESTAURANT_ERP_SECRET }}
           DEVICE_CODE: ${{ inputs.device_code }}
           CUSTOMER: ${{ inputs.customer }}
+          EXTRA_DAYS: ${{ inputs.extra_days }}
         run: |
           # The device code goes in through the environment, not interpolated
           # into the command line, so whatever was pasted into the form cannot
           # be read as shell.
-          OUTPUT=$(python packaging/make_key.py "$DEVICE_CODE")
-          echo "$OUTPUT"
-          KEY=$(echo "$OUTPUT" | grep "مفتاح التفعيل" | sed 's/.*: //')
+          if [ -n "$EXTRA_DAYS" ]; then
+            OUTPUT=$(python packaging/make_key.py "$DEVICE_CODE" --extra-days "$EXTRA_DAYS")
+            echo "$OUTPUT"
+            # Anchored so this can only ever match its own labelled header
+            # line, never the closing "أرسل سطر..." sentence that also
+            # contains this phrase but with no colon straight after it.
+            KEY=$(echo "$OUTPUT" | grep "^  كود التمديد   :" | sed 's/.*: //')
+            HEADING="## كود تمديد التجربة (إجمالي $EXTRA_DAYS يوم إضافي)"
+            LABEL="**الكود — أرسل هذا السطر فقط:**"
+          else
+            OUTPUT=$(python packaging/make_key.py "$DEVICE_CODE")
+            echo "$OUTPUT"
+            KEY=$(echo "$OUTPUT" | grep "^  مفتاح التفعيل :" | sed 's/.*: //')
+            HEADING="## مفتاح التفعيل"
+            LABEL="**المفتاح — أرسل هذا السطر فقط:**"
+          fi
           {
-            echo "## مفتاح التفعيل"
+            echo "$HEADING"
             echo ""
             [ -n "$CUSTOMER" ] && echo "**العميل:** $CUSTOMER" && echo ""
             echo "**رقم الجهاز:** \`$DEVICE_CODE\`"
             echo ""
-            echo "**المفتاح — أرسل هذا السطر فقط:**"
+            echo "$LABEL"
             echo ""
             echo "\`\`\`"
             echo "$KEY"

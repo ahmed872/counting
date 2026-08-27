@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
 )
 from logic.money import parse_money
 from logic.auth import AuthLogic, ROLE_ADMIN, ROLE_CASHIER, ROLE_LABELS, ASSIGNABLE_ROLES
+from logic.audit import AuditLogger
 
 OPENING_ENTRY_KEY = "opening_balance_entry_id"
 
@@ -35,6 +36,7 @@ class SettingsModule(QWidget):
         self.db = db_manager
         self.current_user = current_user or {"role": ROLE_ADMIN}
         self.auth = AuthLogic(db_manager)
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def init_ui(self):
@@ -64,9 +66,90 @@ class SettingsModule(QWidget):
         # cover.
         if self.current_user.get("role") == ROLE_ADMIN:
             layout.addWidget(self.build_users_box())
+            layout.addWidget(self.build_audit_log_box())
         layout.addStretch()
 
         self.load_all()
+
+    # ---------------- audit log ----------------
+
+    AUDIT_ACTION_LABELS = {
+        "login_success": "تسجيل دخول ناجح",
+        "login_failed": "محاولة دخول فاشلة",
+        "user_created": "إنشاء مستخدم",
+        "user_activated": "تفعيل مستخدم",
+        "user_deactivated": "تعطيل مستخدم",
+        "password_changed": "تغيير كلمة مرور",
+        "backup_created": "أخذ نسخة احتياطية",
+        "database_restored": "استعادة نسخة احتياطية",
+        "employee_created": "إضافة موظف",
+        "employee_updated": "تعديل بيانات موظف",
+        "employee_deactivated": "إنهاء خدمة موظف",
+        "payroll_posted": "ترحيل رواتب",
+        "hr_advance": "سلفة لموظف",
+        "hr_deduction": "خصم على موظف",
+        "hr_bonus": "مكافأة لموظف",
+        "accrued_wages_paid": "سداد رواتب مستحقة",
+        "daily_sales_saved": "تسجيل مبيعات يومية",
+        "sales_return": "مرتجع مبيعات",
+        "purchase_saved": "تسجيل مشتريات",
+        "purchase_return": "مرتجع مشتريات",
+        "supplier_added": "إضافة مورد",
+        "supplier_payment": "سداد لمورد",
+        "customer_added": "إضافة عميل",
+        "customer_credit_sale": "بيع آجل لعميل",
+        "customer_collection": "تحصيل من عميل",
+        "loan_added": "تسجيل قرض",
+        "loan_payment": "سداد قرض",
+        "prepaid_added": "تسجيل مصروف مقدم",
+        "prepaid_released": "إطفاء مصروف مقدم",
+        "licence_activated": "تفعيل البرنامج",
+        "licence_extended": "تمديد فترة التجربة",
+    }
+
+    def build_audit_log_box(self):
+        """Read-only, admin-only. Not exposed anywhere a row could be edited
+        or deleted from the UI - an audit trail that can be quietly edited
+        from inside the same app it is meant to be watching is not an audit
+        trail."""
+        box = QGroupBox("سجل التدقيق (آخر العمليات)")
+        outer = QVBoxLayout(box)
+        note = QLabel(
+            "سجل بمن قام بماذا ومتى - عبر كل شاشات البرنامج. سجل للقراءة فقط، "
+            "لا يمكن تعديله أو حذف أي سطر منه من داخل البرنامج."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color:#64748b;")
+        outer.addWidget(note)
+
+        self.audit_table = QTableWidget()
+        self.audit_table.setColumnCount(4)
+        self.audit_table.setHorizontalHeaderLabels(["الوقت", "المستخدم", "العملية", "التفاصيل"])
+        self.audit_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.audit_table.verticalHeader().setVisible(False)
+        self.audit_table.setAlternatingRowColors(True)
+        self.audit_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.audit_table.setMinimumHeight(160)
+        outer.addWidget(self.audit_table)
+
+        refresh_btn = QPushButton("تحديث")
+        refresh_btn.setMaximumWidth(140)
+        refresh_btn.clicked.connect(self.load_audit_log)
+        outer.addWidget(refresh_btn)
+        return box
+
+    def load_audit_log(self):
+        rows = self.audit.recent(300)
+        self.audit_table.setRowCount(len(rows))
+        for i, r in enumerate(rows):
+            self.audit_table.setItem(i, 0, QTableWidgetItem(str(r["created_at"] or "")))
+            self.audit_table.setItem(i, 1, QTableWidgetItem(r["username"] or "—"))
+            self.audit_table.setItem(
+                i, 2, QTableWidgetItem(self.AUDIT_ACTION_LABELS.get(r["action"], r["action"])))
+            details = r["entity_type"] or ""
+            if r["entity_id"]:
+                details = f"{details} #{r['entity_id']}".strip()
+            self.audit_table.setItem(i, 3, QTableWidgetItem(details))
 
     # ---------------- users ----------------
 
@@ -154,7 +237,9 @@ class SettingsModule(QWidget):
             # A default account only ever needs to work once - the same
             # forced-change-on-first-login flow the two seed admins get.
             self.auth.create_user(username, password, role, display_name,
-                                   must_change_password=True, branch_id=branch_id)
+                                   must_change_password=True, branch_id=branch_id,
+                                   actor_user_id=self.current_user.get("id"),
+                                   actor_username=self.current_user.get("username"))
         except ValueError as exc:
             QMessageBox.warning(self, "تنبيه", str(exc))
             return
@@ -184,7 +269,9 @@ class SettingsModule(QWidget):
             QLineEdit.EchoMode.Password)
         if not ok or not new_password:
             return
-        self.auth.set_password(user_id, new_password, must_change_password=True)
+        self.auth.set_password(user_id, new_password, must_change_password=True,
+                                actor_user_id=self.current_user.get("id"),
+                                actor_username=self.current_user.get("username"))
         QMessageBox.information(self, "تم", "تم إعادة تعيين كلمة المرور.")
 
     def toggle_selected_active(self):
@@ -193,7 +280,9 @@ class SettingsModule(QWidget):
         if user_id is None:
             return
         currently_active = self.users_table.item(row, 4).data(Qt.ItemDataRole.UserRole)
-        self.auth.set_active(user_id, not currently_active)
+        self.auth.set_active(user_id, not currently_active,
+                              actor_user_id=self.current_user.get("id"),
+                              actor_username=self.current_user.get("username"))
         self.load_users()
 
     def load_users(self):
@@ -489,20 +578,34 @@ class SettingsModule(QWidget):
         QMessageBox.information(self, "تم", "تم نسخ رقم الجهاز. أرسله لمزوّد البرنامج.")
 
     def apply_licence_key(self):
-        from logic.licence import activate
-        if activate(self.db, self.licence_key_input.text().strip()):
+        from logic.licence import activate, apply_extension
+        typed = self.licence_key_input.text().strip()
+        if activate(self.db, typed):
             QMessageBox.information(
                 self, "تم التفعيل",
                 "تم تفعيل البرنامج بنجاح.\nكل بياناتك كما هي، والبرنامج يعمل الآن بلا مدة.",
             )
             self.licence_key_input.clear()
             self.load_licence()
-        else:
-            QMessageBox.warning(
-                self, "مفتاح غير صحيح",
-                "هذا المفتاح لا يخص هذا الجهاز.\n"
-                "تأكد أنك أرسلت رقم الجهاز الظاهر أعلاه، وأن المفتاح كما وصلك تماماً.",
-            )
+            return
+
+        if apply_extension(self.db, typed) is not None:
+            from logic.trial import TrialManager
+            allowed, days_left, _ = TrialManager(self.db).check()
+            if allowed:
+                QMessageBox.information(
+                    self, "تم التمديد",
+                    f"تم تمديد فترة التجربة.\nالأيام المتبقية الآن: {days_left}.",
+                )
+                self.licence_key_input.clear()
+                self.load_licence()
+                return
+
+        QMessageBox.warning(
+            self, "مفتاح غير صحيح",
+            "هذا المفتاح لا يخص هذا الجهاز.\n"
+            "تأكد أنك أرسلت رقم الجهاز الظاهر أعلاه، وأن المفتاح كما وصلك تماماً.",
+        )
 
     def load_licence(self):
         from logic.licence import device_code, is_activated
@@ -513,11 +616,13 @@ class SettingsModule(QWidget):
             self.licence_key_input.setEnabled(False)
             self.activate_btn.setEnabled(False)
         else:
-            from logic.trial import TRIAL_DAYS
+            from logic.trial import TRIAL_DAYS, get_extra_days
+            total_days = TRIAL_DAYS + get_extra_days(self.db)
             self.licence_status.setText(
-                f"الحالة: نسخة تجريبية ({TRIAL_DAYS} يوماً). "
+                f"الحالة: نسخة تجريبية ({total_days} يوماً). "
                 "لتفعيلها بشكل دائم أرسل رقم الجهاز أدناه لمزوّد البرنامج، "
-                "ثم اكتب المفتاح الذي يصلك."
+                "ثم اكتب المفتاح الذي يصلك. يمكن أيضاً إدخال كود تمديد للتجربة "
+                "إن وصلك واحد بدلاً من مفتاح التفعيل الدائم."
             )
             self.licence_status.setStyleSheet("font-weight:800; color:#b45309;")
             self.licence_key_input.setEnabled(True)
@@ -546,13 +651,45 @@ class SettingsModule(QWidget):
                     dest.close()
             finally:
                 source.close()
+            self.audit.log("backup_created", user_id=self.current_user.get("id"),
+                            username=self.current_user.get("username"))
             QMessageBox.information(self, "تم", f"تم حفظ النسخة الاحتياطية في:\n{path}")
         except Exception as exc:
             QMessageBox.critical(self, "خطأ", str(exc))
 
+    def _looks_like_a_real_backup(self, path):
+        """A quick, read-only sanity check before this file replaces the live
+        database - picking the wrong file (or a renamed unrelated .db) used
+        to overwrite everything with no warning at all, recoverable only by
+        knowing to go dig out the automatic safety copy afterward."""
+        import sqlite3
+        try:
+            conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        except sqlite3.Error:
+            return False
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name IN ('journal_entries', 'journal_items', 'chart_of_accounts', 'sales')"
+            )
+            found = {row[0] for row in cursor.fetchall()}
+        except sqlite3.Error:
+            return False
+        finally:
+            conn.close()
+        return {'journal_entries', 'journal_items', 'chart_of_accounts'} <= found
+
     def restore(self):
         path, _ = QFileDialog.getOpenFileName(self, "اختر نسخة احتياطية", "", "قاعدة بيانات (*.db)")
         if not path:
+            return
+        if not self._looks_like_a_real_backup(path):
+            QMessageBox.critical(
+                self, "ملف غير صالح",
+                "الملف المختار ليس نسخة قاعدة بيانات صحيحة لهذا البرنامج.\n"
+                "لم يتم تغيير أي شيء في بياناتك الحالية.",
+            )
             return
         answer = QMessageBox.question(
             self, "تأكيد الاستعادة",
@@ -566,6 +703,14 @@ class SettingsModule(QWidget):
             if os.path.exists(self.db.db_path):
                 shutil.copyfile(self.db.db_path, safety)
             shutil.copyfile(path, self.db.db_path)
+            # Written into the just-restored file, not the one it replaced -
+            # a real, permanent record inside the database now in use that
+            # it was restored from a backup, and when. Silently a no-op if
+            # the restored file predates this feature (see AuditLogger.log)
+            # rather than blocking the restore itself over it; the very next
+            # startup's migration adds the table and logging resumes.
+            self.audit.log("database_restored", user_id=self.current_user.get("id"),
+                            username=self.current_user.get("username"))
             QMessageBox.information(
                 self, "تم",
                 "تمت الاستعادة بنجاح.\nأغلق البرنامج وافتحه من جديد لعرض البيانات المستعادة.",
@@ -601,6 +746,7 @@ class SettingsModule(QWidget):
         self.load_branches()
         if self.current_user.get("role") == ROLE_ADMIN:
             self.load_users()
+            self.load_audit_log()
 
     def refresh_on_show(self):
         self.load_all()

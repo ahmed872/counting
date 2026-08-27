@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PyQt6.QtWidgets import (
     QApplication, QMessageBox, QPushButton, QDateEdit, QLabel, QScrollArea,
-    QTableWidget, QFrame,
+    QTableWidget, QFrame, QDialog, QComboBox,
 )
 from PyQt6.QtGui import QPixmap, QImage
 from PyQt6.QtCore import Qt, QDate
@@ -65,6 +65,32 @@ def render(widget):
 def is_near_white(hex_colour):
     r, g, b = (int(hex_colour[i:i + 2], 16) for i in (1, 3, 5))
     return r > 235 and g > 235 and b > 235
+
+
+def pdf_page_has_visible_content(path, page=0):
+    """Actually renders a saved PDF's page and checks something painted on
+    it, rather than just checking the file exists / has bytes. Reported
+    live: 'حفظ PDF' saved a file that was not empty by size, but opened to a
+    totally blank page - a real printer (chosen from the print dialog, e.g.
+    Microsoft Print to PDF) worked fine, but the direct-to-PdfFormat export
+    with no printer involved silently produced degenerate page geometry
+    with no default printer configured on Windows. A file-exists/size check
+    would never catch this - only actually looking at the rendered page
+    does."""
+    from PyQt6.QtPdf import QPdfDocument
+    from PyQt6.QtCore import QSize
+    doc = QPdfDocument(None)
+    doc.load(path)
+    if doc.pageCount() <= page:
+        return False
+    image = doc.render(page, QSize(600, 850))
+    if image.isNull():
+        return False
+    for y in range(0, image.height(), 4):
+        for x in range(0, image.width(), 4):
+            if not is_near_white(image.pixelColor(x, y).name()):
+                return True
+    return False
 
 
 def main():
@@ -151,6 +177,209 @@ def main():
     check("clicking save more than once does not duplicate the employee",
           saving_twice_does_not_duplicate_the_employee)
 
+    def hr_extra_fields_save_edit_and_validate():
+        """The client's new requests: a photo, مدد (the GOSI-registered slice
+        of salary paid via bank transfer), medical insurance number/expiry,
+        and the one-time government fees paid for the employee - all of it
+        must round-trip through add, then through edit, and مدد must never
+        be allowed to exceed what the employee actually earns."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("سعيد مدد")
+        hr.job_input.setText("عامل")
+        hr.salary_input.setText("3000")
+        hr.allowance_input.setText("0")
+        hr.medical_insurance_input.setText("MED-99")
+        hr.medical_insurance_expiry.setDate(QDate(2027, 1, 1))
+        hr.madad_input.setText("800")
+        hr.passport_fee_input.setText("100")
+        hr.labor_office_fee_input.setText("200")
+        hr.medical_insurance_fee_input.setText("150")
+        hr.health_certificate_fee_input.setText("50")
+        hr._set_photo_preview(b"\xff\xd8fake-jpeg-bytes")
+        hr.save_employee()
+
+        row = db.fetch_one("SELECT * FROM employees WHERE name = 'سعيد مدد'")
+        assert row, "employee with the new fields was not saved"
+        assert row["medical_insurance_no"] == "MED-99", row["medical_insurance_no"]
+        assert row["medical_insurance_expiry"] == "2027-01-01", row["medical_insurance_expiry"]
+        assert abs(row["madad_salary"] - 800) < 0.01, row["madad_salary"]
+        assert abs(row["passport_fee"] - 100) < 0.01, row["passport_fee"]
+        assert abs(row["labor_office_fee"] - 200) < 0.01, row["labor_office_fee"]
+        assert abs(row["medical_insurance_fee"] - 150) < 0.01, row["medical_insurance_fee"]
+        assert abs(row["health_certificate_fee"] - 50) < 0.01, row["health_certificate_fee"]
+        assert bytes(row["photo"]) == b"\xff\xd8fake-jpeg-bytes", "photo bytes were not stored"
+        emp_id = row["id"]
+
+        # Picking the employee back up must repopulate every new field, not
+        # just the ones that already existed before this feature.
+        hr.employee_picker.setCurrentIndex(hr.employee_picker.findData(emp_id))
+        assert hr.medical_insurance_input.text() == "MED-99"
+        assert hr.madad_input.text().startswith("800")
+        assert hr.passport_fee_input.text().startswith("100")
+        assert hr._photo_bytes == b"\xff\xd8fake-jpeg-bytes", "photo was not reloaded into the form"
+
+        # مدد is what GOSI has on record as this employee's salary - it
+        # cannot be larger than what he actually earns.
+        hr.madad_input.setText("5000")
+        hr.save_employee()
+        unchanged = db.fetch_one("SELECT madad_salary FROM employees WHERE id = ?", (emp_id,))
+        assert abs(unchanged["madad_salary"] - 800) < 0.01, \
+            "an impossible مدد value (bigger than the salary) was saved anyway"
+
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+    check("HR: photo, مدد, medical insurance, and government fees save/edit/validate correctly",
+          hr_extra_fields_save_edit_and_validate)
+
+    def employee_photo_can_be_opened_at_full_size():
+        """The 72x72 form preview is too small to tell two similarly-named
+        workers apart by face - asked live for a way to actually see it.
+        Clicking it must open the same photo full-size, as a dialog owned
+        by this window (not an independent one that could end up stranded
+        away from the main window). Sets _photo_pixmap directly rather than
+        going through a real loadFromData(): an earlier test's deliberately
+        malformed "fake JPEG" bytes (used only to exercise the raw-bytes
+        round trip, never actually rendered) were found to corrupt Qt's
+        image-plugin state process-wide, breaking real decodes for the rest
+        of the run - a Qt/plugin quirk with nothing to do with this feature,
+        which only cares that a click opens a dialog with whatever photo is
+        already loaded."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr._photo_bytes = b"test-bytes"
+        hr._photo_pixmap = QPixmap(4, 4)
+        hr._photo_pixmap.fill(Qt.GlobalColor.red)
+        opened = []
+        original_exec = QDialog.exec
+        QDialog.exec = lambda self: opened.append(self.parent()) or QDialog.DialogCode.Accepted
+        try:
+            hr.photo_preview.mousePressEvent(None)
+        finally:
+            QDialog.exec = original_exec
+        assert opened, "clicking the photo preview with a photo set did not open anything"
+        assert opened[0] is hr, "the enlarged photo was not shown in a dialog owned by the HR page"
+
+        opened.clear()
+        hr._set_photo_preview(None)
+        QDialog.exec = lambda self: opened.append(self.parent()) or QDialog.DialogCode.Accepted
+        try:
+            hr.photo_preview.mousePressEvent(None)
+        finally:
+            QDialog.exec = original_exec
+        assert not opened, "clicking the photo preview with no photo set should not open anything"
+        hr.clear_employee_form()
+    check("HR: the employee photo preview can be opened at full size",
+          employee_photo_can_be_opened_at_full_size)
+
+    def employee_list_report_is_not_limited_to_what_fits_on_screen():
+        """The on-screen 'قائمة العاملين والوثائق' table only shows every
+        field via its own horizontal scrollbar - asked live whether that
+        clipped view is "normal" when printed. It was not: there was no
+        print/PDF path for this table at all before this. The generated
+        report must carry every document field in full."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("موظف تقرير القائمة")
+        hr.job_input.setText("مشرف")
+        hr.salary_input.setText("4000")
+        hr.allowance_input.setText("0")
+        hr.iqama_input.setText("IQ-7777")
+        hr.passport_input.setText("PS-8888")
+        hr.work_permit_input.setText("WP-9999")
+        hr.work_card_input.setText("WC-1111")
+        hr.save_employee()
+        try:
+            html = hr.build_employee_list_html()
+            for expected in ("موظف تقرير القائمة", "IQ-7777", "PS-8888", "WP-9999", "WC-1111"):
+                assert expected in html, f"{expected!r} missing from the full employee-list report"
+        finally:
+            db.execute_query("DELETE FROM employees WHERE name='موظف تقرير القائمة'")
+            hr.clear_employee_form()
+            hr.load_employees()
+    check("HR: the full employee-list report is not limited to what fits on screen",
+          employee_list_report_is_not_limited_to_what_fits_on_screen)
+
+    def saved_pdfs_actually_render_visible_content():
+        """Reported live: 'حفظ PDF' in HR saved a file that was not empty by
+        size, but opened to a totally blank page - printing the same report
+        through the print dialog and choosing a real printer (e.g. Microsoft
+        Print to PDF) worked fine. The direct-to-file export had nothing to
+        source a page size from with no printer involved and no default
+        printer configured, silently producing a page with degenerate
+        geometry. Covers all three "حفظ PDF" buttons this shipped with -
+        every one shares the same fix (see the matching comments in
+        hr_module.py and reports_module.py)."""
+        import tempfile as _tempfile
+        from PyQt6.QtWidgets import QFileDialog
+        original_get_save = QFileDialog.getSaveFileName
+
+        def check_pdf(label, path, save_fn):
+            QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (path, ""))
+            try:
+                save_fn()
+            finally:
+                QFileDialog.getSaveFileName = original_get_save
+            assert os.path.exists(path), f"{label}: no file was written at all"
+            assert pdf_page_has_visible_content(path), \
+                f"{label}: the saved PDF exists but its page renders completely blank"
+            os.remove(path)
+
+        hr = window.hr
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
+        hr.report_employee_picker.setCurrentIndex(hr.report_employee_picker.findData(emp_id))
+        hr.report_period_type.setCurrentIndex(hr.report_period_type.findData("year"))
+        hr.report_year.setText(str(QDate.currentDate().year()))
+        check_pdf("employee report PDF",
+                  os.path.join(_tempfile.gettempdir(), "_erp_pdf_test_employee_report.pdf"),
+                  hr.save_employee_report_pdf)
+
+        check_pdf("employee list PDF",
+                  os.path.join(_tempfile.gettempdir(), "_erp_pdf_test_employee_list.pdf"),
+                  hr.save_employee_list_pdf)
+
+        goto("reports")
+        check_pdf("reports-module PDF",
+                  os.path.join(_tempfile.gettempdir(), "_erp_pdf_test_reports.pdf"),
+                  window.reports.save_pdf)
+    check("saved PDFs (employee report, employee list, reports module) actually render visible content, not a blank page",
+          saved_pdfs_actually_render_visible_content)
+
+    def medical_insurance_expiry_raises_a_document_alert():
+        """The existing alert list already covers iqama/passport/work
+        permit/work card - a medical insurance that is about to expire must
+        raise the same kind of alert, not go unnoticed until it has already
+        lapsed."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("عامل تأمين طبي اختبار")
+        hr.job_input.setText("عامل")
+        hr.salary_input.setText("2000")
+        hr.allowance_input.setText("0")
+        # Every other date field defaults to today, which is itself within
+        # the 30-day alert window - pushed years out so only the medical
+        # insurance expiry set below is the one alert this employee raises.
+        far_future = QDate.currentDate().addYears(5)
+        hr.iqama_expiry.setDate(far_future)
+        hr.passport_expiry.setDate(far_future)
+        hr.work_permit_expiry.setDate(far_future)
+        hr.work_card_expiry.setDate(far_future)
+        soon = QDate.currentDate().addDays(10)
+        hr.medical_insurance_expiry.setDate(soon)
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name = 'عامل تأمين طبي اختبار'")["id"]
+
+        alerts = window.hr_logic.get_document_alerts()
+        mine = [a for a in alerts if a['id'] == emp_id]
+        assert len(mine) == 1, f"expected exactly one alert for this employee, got {len(mine)}"
+        assert mine[0]['doc_type'] == 'التأمين الطبي', mine[0]['doc_type']
+        assert mine[0]['expiry_date'] == soon.toString("yyyy-MM-dd"), mine[0]['expiry_date']
+
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+    check("HR: an expiring medical insurance raises a document alert",
+          medical_insurance_expiry_raises_a_document_alert)
+
     def new_employee_button_actually_clears_the_form():
         """The same broken clear made this button feel useless: in the common
         case (already adding a new employee, picker already on index 0), the
@@ -214,6 +443,65 @@ def main():
         instead of guessed at by description text."""
         for row in db.fetch_all("SELECT id FROM journal_entries WHERE id > ?", (marker,)):
             db.delete_journal_entry(row["id"])
+
+    def payroll_splits_net_pay_between_madad_and_cash():
+        """مدد is the slice of an employee's pay the institution transfers
+        through the official مدد bank system - registered with GOSI, and so
+        never bigger than what the employee actually earns. post_payroll
+        must credit it to the bank (1001) separately from cash (1000), not
+        lump everyone's net pay into one cash line the way it used to."""
+        hr = window.hr
+        month, year = 7, 2031   # a month nothing else in this suite posts to
+        assert not window.hr_logic.is_payroll_posted(month, year), \
+            "test setup collision - this month/year is already posted by another test"
+
+        hr.clear_employee_form()
+        hr.name_input.setText("عامل مدد اختبار")
+        hr.job_input.setText("عامل")
+        hr.salary_input.setText("3000")
+        hr.allowance_input.setText("0")
+        hr.madad_input.setText("800")
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name = 'عامل مدد اختبار'")["id"]
+
+        preview = window.hr_logic.get_monthly_payroll(month, year)
+        expected_madad = sum(p['madad_portion'] for p in preview)
+        expected_cash = sum(p['cash_portion'] for p in preview)
+        mine = next(p for p in preview if p['id'] == emp_id)
+        assert abs(mine['madad_portion'] - 800) < 0.01, mine['madad_portion']
+        assert abs(mine['cash_portion'] - 2200) < 0.01, mine['cash_portion']
+
+        marker = newest_journal_entry_id()
+        window.hr_logic.post_payroll(month, year)
+
+        madad_credit = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1001' AND entry_id > ?", (marker,))["v"]
+        cash_credit = db.fetch_one(
+            "SELECT COALESCE(SUM(credit),0) v FROM journal_items "
+            "WHERE account_code='1000' AND entry_id > ?", (marker,))["v"]
+        assert abs(madad_credit - expected_madad) < 0.01, (madad_credit, expected_madad)
+        assert abs(cash_credit - expected_cash) < 0.01, (cash_credit, expected_cash)
+
+        posted = window.hr_logic.get_posted_payroll(month, year)
+        mine_posted = next(p for p in posted if p['id'] == emp_id)
+        assert abs(mine_posted['madad_portion'] - 800) < 0.01, mine_posted['madad_portion']
+        assert abs(mine_posted['cash_portion'] - 2200) < 0.01, mine_posted['cash_portion']
+
+        # Undo the posting itself before removing the employee - deleting the
+        # employee first would violate the foreign key that
+        # payroll_run_items still holds against it. A temporary test
+        # employee left active would otherwise silently join every other
+        # month's payroll math in the rest of this suite.
+        run_id = db.fetch_one(
+            "SELECT id FROM payroll_runs WHERE month=? AND year=?", (month, year))["id"]
+        db.execute_query("DELETE FROM payroll_run_items WHERE run_id = ?", (run_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE id = ?", (run_id,))
+        delete_journal_entries_created_after(marker)
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+    check("HR: post_payroll splits net pay between مدد (bank) and cash, and the split matches the ledger",
+          payroll_splits_net_pay_between_madad_and_cash)
 
     def payroll_posting_rolls_back_completely_on_a_failure_before_the_journal():
         """post_payroll() used to be several independent commits - the
@@ -883,6 +1171,92 @@ def main():
         delete_journal_entries_created_after(journal_marker)
     check("a loan received and partly repaid matches account 2300 exactly", loan_received_and_repaid)
 
+    def backdated_entries_use_the_chosen_date_not_today():
+        """Suppliers, customers, loans, prepaid expenses, and settling
+        accrued wages all used to stamp datetime.now() no matter what -
+        there was no way to enter a transaction a few days late without it
+        landing in the wrong month's period report. Each now has its own
+        date field, capped at today like sales/purchases already were."""
+        journal_marker = newest_journal_entry_id()
+        past = QDate(2025, 3, 15)
+        past_str = "2025-03-15"
+
+        goto("suppliers")
+        s = window.suppliers
+        s.name_input.setText("مورد بتاريخ سابق")
+        s.opening_balance_input.setText("500")
+        s.opening_balance_date.setDate(past)
+        s.add_supplier()
+        supplier_id = db.fetch_one("SELECT id FROM suppliers WHERE name='مورد بتاريخ سابق'")["id"]
+        supplier_journal = db.fetch_one(
+            "SELECT date FROM journal_entries WHERE id > ? AND description LIKE 'رصيد افتتاحي لمورد%' "
+            "ORDER BY id DESC LIMIT 1", (journal_marker,))
+        assert supplier_journal["date"] == past_str, \
+            f"supplier opening balance used {supplier_journal['date']}, not the chosen {past_str}"
+
+        goto("other_balances")
+        ob = window.other_balances
+        ob.lender_input.setText("مُقرض بتاريخ سابق")
+        ob.loan_amount_input.setText("2000")
+        ob.loan_date_input.setDate(past)
+        ob.record_new_loan()
+        loan = db.fetch_one("SELECT id, date FROM loans WHERE lender_name='مُقرض بتاريخ سابق'")
+        assert loan["date"] == past_str, f"loan date was {loan['date']}, not the chosen {past_str}"
+
+        ob.prepaid_desc_input.setText("مصروف بتاريخ سابق")
+        ob.prepaid_amount_input.setText("1000")
+        ob.prepaid_date_input.setDate(past)
+        ob.record_new_prepaid()
+        prepaid = db.fetch_one("SELECT id, date FROM prepaid_expenses WHERE description='مصروف بتاريخ سابق'")
+        assert prepaid["date"] == past_str, f"prepaid expense date was {prepaid['date']}, not {past_str}"
+
+        db.execute_query("DELETE FROM suppliers WHERE id = ?", (supplier_id,))
+        db.execute_query("DELETE FROM loans WHERE id = ?", (loan["id"],))
+        db.execute_query("DELETE FROM prepaid_expenses WHERE id = ?", (prepaid["id"],))
+        delete_journal_entries_created_after(journal_marker)
+    check("suppliers, loans, and prepaid expenses record the date actually chosen, not today",
+          backdated_entries_use_the_chosen_date_not_today)
+
+    def cash_overdraw_asks_before_going_through():
+        """Nothing anywhere warned that a cash/bank outflow would push that
+        account negative - a loan repayment, a prepaid expense, a supplier
+        payment could all quietly overdraw the till or the bank with no
+        feedback at all. The loan granted here is deliberately far bigger
+        than the repayment attempted against it, so only the new overdraw
+        warning can fire - not the separate 'repaying more than is owed'
+        question, which this is checked to be independent of."""
+        journal_marker = newest_journal_entry_id()
+        asked = []
+        original = QMessageBox.question
+        goto("other_balances")
+        ob = window.other_balances
+        QMessageBox.question = staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+        ob.lender_input.setText("مُقرض اختبار السحب على المكشوف")
+        ob.loan_amount_input.setText("9999000")
+        ob.loan_method_input.setCurrentIndex(ob.loan_method_input.findData("Bank"))
+        ob.record_new_loan()
+        loan_id = db.fetch_one(
+            "SELECT id FROM loans WHERE lender_name='مُقرض اختبار السحب على المكشوف'")["id"]
+
+        try:
+            QMessageBox.question = staticmethod(
+                lambda *a, **k: asked.append(a[1]) or QMessageBox.StandardButton.No)
+            ob.selected_loan_id = loan_id
+            ob.loan_payment_amount.setText("9000000")
+            ob.loan_payment_method.setCurrentIndex(ob.loan_payment_method.findData("Cash"))
+            before = db.fetch_one("SELECT COUNT(*) c FROM loan_payments")["c"]
+            ob.record_loan_payment()
+            assert asked, "a cash outflow far bigger than the cash balance went through with no warning"
+            after = db.fetch_one("SELECT COUNT(*) c FROM loan_payments")["c"]
+            assert after == before, "answering no still recorded the overdrawing payment"
+        finally:
+            QMessageBox.question = original
+            db.execute_query("DELETE FROM loan_payments WHERE loan_id = ?", (loan_id,))
+            db.execute_query("DELETE FROM loans WHERE id = ?", (loan_id,))
+            delete_journal_entries_created_after(journal_marker)
+    check("a cash/bank outflow that would overdraw the account asks before going through",
+          cash_overdraw_asks_before_going_through)
+
     def prepaid_expense_release_matches_target_account():
         """A prepaid expense parks the full amount in 1500 on entry; each
         release moves only the released slice into the real expense account,
@@ -1038,6 +1412,100 @@ def main():
         assert abs(row["t"] - 1725) < 0.01, row["t"]
         assert abs(row["v"] - 225) < 0.01, row["v"]   # 15% of the 1500 net
     check("daily sales split VAT out of a tax-inclusive total", daily_sales_vat)
+
+    def shortage_is_deducted_from_cash_and_from_the_days_total():
+        """عجز لموظف: a cash-register shortfall entered alongside the
+        payment channels. Requested formula: اليوم total = Cash + Network +
+        Transfer + Delivery - Shortage. Implemented by reducing the Cash
+        channel itself before it is posted, so both the reported total and
+        the actual cash debited to the books drop by the shortage - not
+        just the number shown on screen."""
+        test_branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)",
+            ("فرع اختبار العجز", ""))
+        journal_marker = newest_journal_entry_id()
+        try:
+            goto("sales")
+            s = window.sales
+            idx = s.branch_input.findData(test_branch_id)
+            assert idx >= 0, "test branch not found in the picker"
+            s.branch_input.setCurrentIndex(idx)
+            s.date_input.setDate(QDate(2026, 3, 15))
+            s.cash_input.setText("1000")
+            s.network_input.setText("300")
+            s.transfer_input.setText("0")
+            s.delivery_input.setText("0")
+            s.shortage_input.setText("200")
+            app.processEvents()
+            # 1000 + 300 - 200 = 1100
+            assert "1,100.00" in s.preview_label.text(), s.preview_label.text()
+            assert "200.00" in s.preview_label.text(), \
+                "the preview does not show the shortage that was entered"
+
+            s.save_daily_sales()
+
+            rows = db.fetch_all(
+                "SELECT payment_method, total_amount, shortage_amount FROM sales "
+                "WHERE branch_id = ? AND date = '2026-03-15'", (test_branch_id,))
+            by_method = {r["payment_method"]: r for r in rows}
+            # Cash posted net of the shortage (1000 - 200 = 800), not the
+            # 1000 that was typed in.
+            assert abs(by_method["Cash"]["total_amount"] - 800) < 0.01, by_method["Cash"]["total_amount"]
+            assert abs(by_method["POS"]["total_amount"] - 300) < 0.01, by_method["POS"]["total_amount"]
+            grand_total = sum(r["total_amount"] for r in rows)
+            assert abs(grand_total - 1100) < 0.01, grand_total
+            # Recorded for the day, not silently discarded once it has done
+            # its job of reducing the cash total.
+            assert all(abs((r["shortage_amount"] or 0) - 200) < 0.01 for r in rows), rows
+
+            entry_id = by_method["Cash"]["total_amount"] and db.fetch_one(
+                "SELECT journal_entry_id FROM sales WHERE branch_id = ? AND date = '2026-03-15' "
+                "AND payment_method = 'Cash'", (test_branch_id,))["journal_entry_id"]
+            cash_debit = db.fetch_one(
+                "SELECT SUM(debit) v FROM journal_items WHERE entry_id = ? AND account_code = '1000'",
+                (entry_id,))["v"] or 0
+            # The ledger itself reflects the reduced cash, not just the
+            # number shown in the history table - a shortage that only
+            # changed the display and left the full 1000 sitting in the
+            # cash account would be exactly the kind of silent mismatch
+            # this whole project has spent this pass hunting down.
+            assert abs(cash_debit - 800) < 0.01, cash_debit
+
+            # A shortage bigger than the cash entered makes no sense and
+            # must be refused before anything is saved.
+            s.branch_input.setCurrentIndex(idx)
+            s.date_input.setDate(QDate(2026, 3, 16))
+            s.cash_input.setText("100")
+            s.network_input.setText("0")
+            s.transfer_input.setText("0")
+            s.delivery_input.setText("0")
+            s.shortage_input.setText("500")
+            s.save_daily_sales()
+            assert not db.fetch_one(
+                "SELECT id FROM sales WHERE branch_id = ? AND date = '2026-03-16'", (test_branch_id,)), \
+                "a shortage bigger than the cash entered was accepted anyway"
+        finally:
+            # The rejected save above never reaches save_daily_sales()'s own
+            # field-clearing code (it returns early on validation failure) -
+            # cleared explicitly here so a leftover "500" in shortage_input
+            # does not silently reject every other test's own save from
+            # here on.
+            s.cash_input.clear()
+            s.network_input.clear()
+            s.transfer_input.clear()
+            s.delivery_input.clear()
+            s.shortage_input.clear()
+            for entry in db.fetch_all(
+                    "SELECT DISTINCT journal_entry_id FROM sales WHERE branch_id = ? "
+                    "AND journal_entry_id IS NOT NULL", (test_branch_id,)):
+                db.delete_journal_entry(entry["journal_entry_id"])
+            db.execute_query("DELETE FROM sales WHERE branch_id = ?", (test_branch_id,))
+            db.execute_query("DELETE FROM branches WHERE id = ?", (test_branch_id,))
+            delete_journal_entries_created_after(journal_marker)
+            goto("sales")
+            window.sales.load_history()
+    check("عجز لموظف is deducted from cash - in the preview, the saved total, and the ledger itself",
+          shortage_is_deducted_from_cash_and_from_the_days_total)
 
     def delivery_app_sales_post_to_the_bank_account_not_cash():
         """شركات التوصيل (هنقرستيشن / جاهز وغيرها) settle to the bank, never
@@ -1497,6 +1965,66 @@ def main():
     check("the backup button writes a real, independent, valid SQLite snapshot",
           backup_produces_a_real_independent_snapshot)
 
+    def restore_refuses_a_file_that_is_not_a_real_backup():
+        """Picking the wrong file - a stray .db that is not this program's
+        database at all - used to overwrite every bit of live data with no
+        warning, recoverable only by knowing to dig up the automatic safety
+        copy made a moment too late. The file is now checked before
+        anything about the live database is touched at all."""
+        import sqlite3
+        from ui.settings_module import SettingsModule
+        from PyQt6.QtWidgets import QFileDialog
+        settings = SettingsModule(db)
+
+        bogus_path = os.path.join(tempfile.gettempdir(), "_erp_bogus_backup.db")
+        conn = sqlite3.connect(bogus_path)
+        conn.execute("CREATE TABLE unrelated_stuff (id INTEGER)")
+        conn.commit()
+        conn.close()
+
+        live_size_before = os.path.getsize(db.db_path)
+        db_dir = os.path.dirname(db.db_path)
+        safety_files_before = {f for f in os.listdir(db_dir) if ".before-restore-" in f}
+
+        asked = []
+        original_question = QMessageBox.question
+        original_get_open = QFileDialog.getOpenFileName
+        QMessageBox.question = staticmethod(
+            lambda *a, **k: asked.append(1) or QMessageBox.StandardButton.Yes)
+        QFileDialog.getOpenFileName = staticmethod(lambda *a, **k: (bogus_path, ""))
+        try:
+            settings.restore()
+            assert not asked, "the confirm-restore question was reached for a file that is not a real backup"
+            assert os.path.getsize(db.db_path) == live_size_before, \
+                "the live database was modified even though the chosen file was not a real backup"
+            safety_files_after = {f for f in os.listdir(db_dir) if ".before-restore-" in f}
+            assert safety_files_after == safety_files_before, \
+                "a safety copy was made even though the restore never actually happened"
+        finally:
+            QFileDialog.getOpenFileName = original_get_open
+            QMessageBox.question = original_question
+            os.remove(bogus_path)
+    check("restoring refuses a file that is not a real backup of this program's database",
+          restore_refuses_a_file_that_is_not_a_real_backup)
+
+    def accounting_and_reports_periods_agree():
+        """"شهري"/"سنوي" on شاشة المحاسبة used to mean a rolling last-30/365-day
+        window, while the identically labelled choice on شاشة التقارير
+        already meant the calendar month/year - the same word on two
+        screens silently returned two different date ranges, and could
+        show two different totals for what looked like the same period."""
+        goto("accounting")
+        acc_page = window.accounting
+        goto("reports")
+        rep_page = window.reports
+        for label in ("شهري", "سنوي"):
+            acc_page.period_input.setCurrentText(label)
+            rep_page.period_input.setCurrentText(label)
+            assert acc_page.resolve_period() == rep_page.resolve_period(), \
+                f"{label}: accounting={acc_page.resolve_period()} reports={rep_page.resolve_period()}"
+    check("the accounting page and the reports page agree on what \"شهري\"/\"سنوي\" mean",
+          accounting_and_reports_periods_agree)
+
     def backup_never_regresses_to_a_raw_file_copy():
         """The functional check above (a real, valid, independent snapshot)
         cannot by itself tell a proper SQLite backup from a plain
@@ -1662,6 +2190,35 @@ def main():
         assert "الرواتب والأجور" in html, "the printed report does not show the salaries line it subtracts"
     check("the printed report's own numbers add up to the profit it shows",
           printed_report_shows_the_arithmetic_it_uses)
+
+    def excel_export_carries_the_same_numbers_as_the_pdf():
+        """Added alongside the existing PDF/print buttons so the report's
+        numbers can be sorted, filtered, or reused outside the app without
+        retyping anything - a real .xlsx, not a renamed CSV, with every
+        section the printed report has as its own sheet."""
+        goto("reports")
+        d = window.accounting.accounting.get_period_report(
+            window.reports.resolve_period()[0], window.reports.resolve_period()[1],
+            window.reports.branch_input.currentData())
+        wb = window.reports.build_workbook()
+        assert "ملخص" in wb.sheetnames
+        assert "المبيعات اليومية" in wb.sheetnames
+        summary = wb["ملخص"]
+        values = [cell.value for row in summary.iter_rows() for cell in row]
+        assert any(v is not None and abs(v - round(d['net_sales'], 2)) < 0.01
+                   for v in values if isinstance(v, (int, float))), \
+            "the Excel summary sheet does not contain the same net-sales figure as the PDF/HTML report"
+
+        import tempfile as _tempfile
+        path = os.path.join(_tempfile.gettempdir(), "_erp_excel_export_test.xlsx")
+        try:
+            wb.save(path)
+            assert os.path.exists(path) and os.path.getsize(path) > 0
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+    check("the Excel export carries the same numbers as the PDF report",
+          excel_export_carries_the_same_numbers_as_the_pdf)
 
     def credit_sales_are_included_in_every_period_report_and_dashboard_figure():
         """get_period_report()/get_financial_summary() - which feed the
@@ -1833,6 +2390,260 @@ def main():
         os.remove(out)
     check("report exports a real PDF", pdf_export_works)
 
+    def employee_report_shows_everything_about_one_person():
+        """The client's ask: pull up one resident employee for a given month
+        and see everything about him in one place - photo, iqama number and
+        expiry, every other document, the government fees paid for him, and
+        the full salary breakdown (including the مدد/cash split) - without
+        checking another platform."""
+        from ui.formatting import money
+        from PyQt6.QtPrintSupport import QPrinter
+        hr = window.hr
+        month, year = 8, 2032   # a month nothing else in this suite posts to
+        assert not window.hr_logic.is_payroll_posted(month, year), \
+            "test setup collision - this month/year is already posted by another test"
+
+        hr.clear_employee_form()
+        hr.name_input.setText("عامل تقرير اختبار")
+        hr.job_input.setText("سائق")
+        hr.salary_input.setText("4000")
+        hr.allowance_input.setText("500")
+        hr.iqama_input.setText("IQ-777")
+        hr.iqama_expiry.setDate(QDate(2028, 1, 1))
+        hr.madad_input.setText("1000")
+        hr.passport_fee_input.setText("120")
+        hr.labor_office_fee_input.setText("300")
+        hr.medical_insurance_fee_input.setText("180")
+        hr.health_certificate_fee_input.setText("60")
+        hr._set_photo_preview(b"\xff\xd8fake-jpeg-bytes")
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name = 'عامل تقرير اختبار'")["id"]
+
+        # One absence, so the report's salary breakdown has something in
+        # every column, not just the trivial all-zero case.
+        hr.attendance_employee.setCurrentIndex(hr.attendance_employee.findData(emp_id))
+        hr.attendance_status.setCurrentIndex(hr.attendance_status.findData("Absent"))
+        hr.attendance_date.setDate(QDate(year, month, 5))
+        hr.record_attendance()
+
+        marker = newest_journal_entry_id()
+        window.hr_logic.post_payroll(month, year)
+        expected = window.hr_logic.get_employee_report(emp_id, year, month)
+
+        hr.load_employees()
+        hr.report_employee_picker.setCurrentIndex(hr.report_employee_picker.findData(emp_id))
+        hr.report_period_type.setCurrentIndex(hr.report_period_type.findData("month"))
+        hr.report_month.setCurrentIndex(hr.report_month.findData(month))
+        hr.report_year.setText(str(year))
+        hr.preview_employee_report()
+        html = hr.report_viewer.toHtml()
+
+        assert "عامل تقرير اختبار" in html, "employee name missing from the report"
+        assert "IQ-777" in html, "iqama number missing from the report"
+        assert "2028-01-01" in html, "iqama expiry missing from the report"
+        assert money(expected['totals']['net_salary']) in html, \
+            "net salary total in the report does not match get_employee_report()"
+        assert money(expected['totals']['madad_portion']) in html, \
+            "مدد portion in the report does not match get_employee_report()"
+        assert money(expected['totals']['cash_portion']) in html, \
+            "cash portion in the report does not match get_employee_report()"
+        assert money(expected['government_fees']) in html, \
+            "government fees total in the report does not match get_employee_report()"
+        assert money(expected['paid_total']) in html, \
+            "grand total paid in the report does not match get_employee_report()"
+
+        # Photo: an <img> tag with base64 data, not silently dropped.
+        assert "data:image/png;base64," in html or "data:image/" in hr.current_employee_report_html(), \
+            "the employee's photo did not make it into the report"
+
+        out = os.path.join(tempfile.gettempdir(), "_erp_employee_report_test.pdf")
+        printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(out)
+        hr._employee_report_document().print(printer)
+        assert os.path.exists(out) and os.path.getsize(out) > 1000
+        os.remove(out)
+
+        # Undo the posting before removing the employee - payroll_run_items
+        # still holds a foreign key against it.
+        run_id = db.fetch_one(
+            "SELECT id FROM payroll_runs WHERE month=? AND year=?", (month, year))["id"]
+        db.execute_query("DELETE FROM payroll_run_items WHERE run_id = ?", (run_id,))
+        db.execute_query("DELETE FROM payroll_runs WHERE id = ?", (run_id,))
+        db.execute_query("DELETE FROM attendance WHERE employee_id = ?", (emp_id,))
+        delete_journal_entries_created_after(marker)
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+        hr.load_employees()
+    check("HR: the per-employee report shows documents, government fees, and the full salary breakdown",
+          employee_report_shows_everything_about_one_person)
+
+    def employee_year_report_excludes_months_that_have_not_happened_yet():
+        """get_employee_report() used to sum a live payroll preview for
+        every month 1-12 when asked for a whole year, which meant asking in
+        (say) August for an employee's year already counted September
+        through December as if they had been paid - months that had not
+        even started yet. A 90-day usage simulation caught this: an
+        employee's yearly total came out roughly 4x too high. Only months
+        up to and including the real current month may ever appear."""
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
+        current_month = QDate.currentDate().month()
+        report = window.hr_logic.get_employee_report(emp_id, QDate.currentDate().year())
+        months_seen = [m['month'] for m in report['months']]
+        assert months_seen, "sanity check: expected at least one month of data for a long-standing employee"
+        assert max(months_seen) <= current_month, \
+            f"report counted a month that has not happened yet: {months_seen}, current month is {current_month}"
+        if current_month < 12:
+            assert (current_month + 1) not in months_seen, \
+                "report counted next month's salary before next month has even started"
+    check("HR: a whole-year employee report never counts a month that has not happened yet",
+          employee_year_report_excludes_months_that_have_not_happened_yet)
+
+    def new_employee_with_a_set_hire_date_is_excluded_from_earlier_months():
+        """Reported live: an employee added this month, with no attendance
+        or history before today, still showed a full salary for every month
+        back to January in her year report - get_monthly_payroll had no
+        concept of "not employed yet" at all, only "not employed any more".
+        Only employees actually given a real hire date (unchecking "غير
+        معروف" on the form) are affected by this - see the safety-net check
+        right after this one for employees left on the default."""
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("متأخر الانضمام")
+        hr.job_input.setText("عامل نظافة")
+        branch_id = db.fetch_one("SELECT id FROM branches ORDER BY id")["id"]
+        hr.branch_input.setCurrentIndex(hr.branch_input.findData(branch_id))
+        hr.salary_input.setText("3000")
+        hr.allowance_input.setText("0")
+        hr.hire_date_unknown.setChecked(False)
+        hr.hire_date.setDate(QDate(2026, 6, 1))
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='متأخر الانضمام'")["id"]
+        assert db.fetch_one("SELECT hire_date FROM employees WHERE id=?", (emp_id,))["hire_date"] == "2026-06-01"
+
+        may = next((p for p in window.hr_logic.get_monthly_payroll(5, 2026) if p["id"] == emp_id), None)
+        assert may is None, "an employee hired in June must not appear in May's payroll at all"
+        june = next((p for p in window.hr_logic.get_monthly_payroll(6, 2026) if p["id"] == emp_id), None)
+        assert june is not None, "an employee hired in June must appear in June's own payroll"
+
+        report = window.hr_logic.get_employee_report(emp_id, 2026)
+        months_seen = [m['month'] for m in report['months']]
+        assert months_seen, "sanity check: expected at least the hire month to show up"
+        assert all(m >= 6 for m in months_seen), \
+            f"year report counted a month before this employee was even hired: {months_seen}"
+    check("HR: a new employee's year report excludes months before their hire date",
+          new_employee_with_a_set_hire_date_is_excluded_from_earlier_months)
+
+    def employee_added_the_ordinary_way_still_counts_every_past_month():
+        """Safety net for the fix above: an employee added without ever
+        touching the new hire-date field must keep exactly the old
+        behaviour, with hire_date left NULL and no month excluded - both
+        for every employee that existed before this field did, and for the
+        common case of a first-time setup entering staff who have already
+        worked here for months. Getting the default backwards here would
+        quietly wipe real payroll history out of every year report."""
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='خالد سعيد'")["id"]
+        assert db.fetch_one("SELECT hire_date FROM employees WHERE id=?", (emp_id,))["hire_date"] is None, \
+            "an employee added without setting a hire date must be stored as NULL (unknown), not today"
+    check("HR: an employee added the ordinary way keeps counting every past month",
+          employee_added_the_ordinary_way_still_counts_every_past_month)
+
+    def new_branch_becomes_selectable_in_hr_and_purchases_without_a_restart():
+        """A 90-day usage simulation with two branches caught this: HR's and
+        Purchases' branch dropdowns were only ever populated once, at
+        construction time. A branch added later (from Settings, in a
+        different tab) never appeared in either one for the rest of the
+        session - not even after leaving that page and coming back, which
+        is exactly when a real user expects a stale list to catch up.
+        Sales and Reports already got this right; HR and Purchases did not."""
+        branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)", ("فرع اختبار التحديث", ""))
+        hr = window.hr
+        purchases = window.purchases
+        assert hr.branch_input.findData(branch_id) < 0, \
+            "sanity check: the new branch should not be in HR's dropdown yet"
+        assert purchases.branch_input.findData(branch_id) < 0, \
+            "sanity check: the new branch should not be in Purchases' dropdown yet"
+
+        hr.refresh_on_show()
+        purchases.refresh_on_show()
+
+        assert hr.branch_input.findData(branch_id) >= 0, \
+            "HR's employee-form branch dropdown did not pick up a branch added after it was built"
+        assert purchases.branch_input.findData(branch_id) >= 0, \
+            "Purchases' invoice branch dropdown did not pick up a branch added after it was built"
+        assert purchases.return_branch_input.findData(branch_id) >= 0, \
+            "Purchases' return branch dropdown did not pick up a branch added after it was built"
+    check("HR and Purchases pick up a branch added after the page was already built",
+          new_branch_becomes_selectable_in_hr_and_purchases_without_a_restart)
+
+    def saving_without_a_branch_selected_is_refused_everywhere():
+        """Nothing validated that a branch was actually chosen before saving
+        - reachable through the stale-dropdown bug above (deselecting to -1
+        once the previously-picked branch no longer resolves), and every
+        one of these forms would then insert a row with branch_id = NULL
+        with no error at all. For daily sales that is worse than it sounds:
+        the existing 'this day is already recorded, replace it?' check
+        matches on branch_id, and SQL's NULL never equals NULL - so a
+        NULL-branch day could never be detected as a re-save and would
+        double up every time it was saved again, completely silently."""
+        s = window.sales
+        s.branch_input.setCurrentIndex(-1)
+        s.date_input.setDate(QDate(2026, 1, 10))
+        s.cash_input.setText("500")
+        s.network_input.setText("0")
+        s.transfer_input.setText("0")
+        s.delivery_input.setText("0")
+        s.shortage_input.setText("")
+        before = db.fetch_one("SELECT COUNT(*) c FROM sales WHERE branch_id IS NULL")["c"]
+        s.save_daily_sales()
+        after = db.fetch_one("SELECT COUNT(*) c FROM sales WHERE branch_id IS NULL")["c"]
+        assert after == before, "daily sales saved with no branch selected, inserting a NULL branch_id"
+
+        s.return_branch_input.setCurrentIndex(-1)
+        s.return_amount_input.setText("50")
+        before = db.fetch_one("SELECT COUNT(*) c FROM sales_returns WHERE branch_id IS NULL")["c"]
+        s.save_sales_return()
+        after = db.fetch_one("SELECT COUNT(*) c FROM sales_returns WHERE branch_id IS NULL")["c"]
+        assert after == before, "a sales return saved with no branch selected"
+
+        purchases = window.purchases
+        purchases.branch_input.setCurrentIndex(-1)
+        purchases.amount_input.setText("500")
+        purchases.description_input.setText("فاتورة بدون فرع")
+        before = db.fetch_one("SELECT COUNT(*) c FROM purchases WHERE branch_id IS NULL")["c"]
+        purchases.save_purchase()
+        after = db.fetch_one("SELECT COUNT(*) c FROM purchases WHERE branch_id IS NULL")["c"]
+        assert after == before, "a purchase saved with no branch selected"
+
+        purchases.return_branch_input.setCurrentIndex(-1)
+        purchases.return_amount_input.setText("50")
+        before = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns WHERE branch_id IS NULL")["c"]
+        purchases.save_purchase_return()
+        after = db.fetch_one("SELECT COUNT(*) c FROM purchase_returns WHERE branch_id IS NULL")["c"]
+        assert after == before, "a purchase return saved with no branch selected"
+
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.branch_input.setCurrentIndex(-1)
+        hr.name_input.setText("موظف بدون فرع - اختبار")
+        hr.salary_input.setText("3000")
+        hr.allowance_input.setText("0")
+        hr.save_employee()
+        ghost = db.fetch_one("SELECT id FROM employees WHERE name = ?", ("موظف بدون فرع - اختبار",))
+        assert ghost is None, "an employee was saved with no branch selected (branch_id = NULL)"
+
+        # Every branch picker touched above was deliberately left deselected
+        # (-1) by this test, not by the app - put them back so no later
+        # test in this shared run inherits a blank branch picker.
+        for combo in (s.branch_input, s.return_branch_input, purchases.branch_input,
+                      purchases.return_branch_input, hr.branch_input):
+            if combo.count():
+                combo.setCurrentIndex(0)
+        hr.clear_employee_form()
+    check("sales, purchases, and adding an employee all refuse to save with no branch selected",
+          saving_without_a_branch_selected_is_refused_everywhere)
+
     # ---------------- UI regressions ----------------
     print("\n[ui]")
 
@@ -1857,6 +2668,24 @@ def main():
                     bad.append((page, btn.text()[:25], f"{ink} non-white px"))
         assert not bad, bad
     check("no button renders as a blank rectangle", all_buttons_visible)
+
+    def combo_boxes_show_a_visible_dropdown_arrow():
+        """Reported live: 'الحضور والسلف' - كان "شكلها مريب"، مش واضح إنها
+        قوائم اختيار أصلاً بدل حقول نص. Once a stylesheet touches
+        QComboBox::drop-down at all, Qt stops drawing its native arrow glyph
+        unless ::down-arrow is *also* styled - the app's own QSS did the
+        first without the second, leaving a dead 28px gap that reads exactly
+        like a plain text field with nothing in it. A pixel-render check
+        cannot tell a real arrow apart from the widget's own border (both
+        are just "some non-white pixels" near the edge), so this checks the
+        one thing that actually distinguishes them: an explicit
+        QComboBox::down-arrow rule in the stylesheet applied app-wide."""
+        from ui.theme import APP_STYLESHEET
+        assert "QComboBox::down-arrow" in APP_STYLESHEET, (
+            "QComboBox::drop-down is styled but ::down-arrow is not - "
+            "the dropdown arrow will not actually draw")
+    check("combo boxes are styled with a visible dropdown arrow, not a dead gap",
+          combo_boxes_show_a_visible_dropdown_arrow)
 
     def no_stylesheet_leak_onto_labels():
         """A bare `QFrame {...}` rule also matches QLabel (a QFrame subclass) and
@@ -2380,6 +3209,106 @@ def main():
         db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
     check("setting a new password replaces the temporary one and clears the forced-change flag",
           forced_password_change_replaces_the_temporary_one)
+
+    def sensitive_actions_are_recorded_in_the_audit_log():
+        """Who did what and when, across the whole app - login attempts
+        (success and failure), user creation/deactivation, and a sample of
+        real business actions (an employee saved, a sale, a purchase) must
+        all leave a durable, human-readable trail - and never the password
+        itself, anywhere in that trail."""
+        from logic.auth import AuthLogic
+        auth = AuthLogic(db)
+
+        before = db.fetch_one("SELECT COALESCE(MAX(id),0) m FROM audit_log")["m"]
+        uid = auth.create_user("audit_test_user", "correct-password", "viewer", "اختبار السجل",
+                                actor_user_id=1, actor_username="admin")
+        auth.authenticate("audit_test_user", "wrong-password")
+        auth.authenticate("audit_test_user", "correct-password")
+        auth.authenticate("no_such_user_at_all", "anything")
+        auth.set_active(uid, False, actor_user_id=1, actor_username="admin")
+
+        rows = db.fetch_all("SELECT * FROM audit_log WHERE id > ? ORDER BY id", (before,))
+        actions = [r["action"] for r in rows]
+        assert actions == ["user_created", "login_failed", "login_success",
+                            "login_failed", "user_deactivated"], actions
+
+        created = rows[0]
+        assert created["entity_type"] == "user" and created["entity_id"] == uid
+        assert created["username"] == "admin", "the actor, not the new account, should be logged as who created it"
+        assert "correct-password" not in (created["after_data"] or ""), \
+            "the plaintext password leaked into the audit log"
+        assert all("correct-password" not in str(dict(r)) and "wrong-password" not in str(dict(r))
+                   for r in rows), "a password leaked into the audit log somewhere"
+
+        unknown_login = rows[3]
+        assert unknown_login["user_id"] is None, \
+            "a login attempt against an unknown username should have no real user_id"
+        assert unknown_login["username"] == "no_such_user_at_all"
+
+        # The account can be fully removed afterward without the audit log
+        # blocking it or losing its own history (no FOREIGN KEY on user_id).
+        db.execute_query("DELETE FROM users WHERE id = ?", (uid,))
+        still_there = db.fetch_one("SELECT COUNT(*) c FROM audit_log WHERE id > ?", (before,))["c"]
+        assert still_there == 5, "deleting the account deleted its audit history"
+        db.execute_query("DELETE FROM audit_log WHERE id > ?", (before,))
+    check("login attempts, user creation, and activation changes are recorded in the audit log, "
+          "never the password itself, and survive the account being removed",
+          sensitive_actions_are_recorded_in_the_audit_log)
+
+    def real_business_actions_are_recorded_in_the_audit_log():
+        """The audit log is not just for the login screen - reported live as
+        a request to know who did what across the whole program. Spot-checks
+        one real write from HR, sales, and purchases, each already exercised
+        earlier in this run, and a backup taken from Settings."""
+        before = db.fetch_one("SELECT COALESCE(MAX(id),0) m FROM audit_log")["m"]
+
+        hr = window.hr
+        hr.clear_employee_form()
+        hr.name_input.setText("سجل تدقيق")
+        hr.job_input.setText("عامل")
+        hr.salary_input.setText("2500")
+        hr.allowance_input.setText("0")
+        hr.save_employee()
+        emp_id = db.fetch_one("SELECT id FROM employees WHERE name='سجل تدقيق'")["id"]
+
+        s = window.sales
+        branch_id = db.fetch_one("SELECT id FROM branches ORDER BY id")["id"]
+        s.branch_input.setCurrentIndex(s.branch_input.findData(branch_id))
+        s.date_input.setDate(QDate(2025, 1, 15))
+        s.cash_input.setText("400")
+        s.network_input.setText("0")
+        s.transfer_input.setText("0")
+        s.delivery_input.setText("0")
+        s.shortage_input.setText("")
+        s.save_daily_sales()
+
+        rows = db.fetch_all(
+            "SELECT action, entity_type FROM audit_log WHERE id > ? ORDER BY id", (before,))
+        actions = {(r["action"], r["entity_type"]) for r in rows}
+        assert ("employee_created", "employee") in actions, actions
+        assert ("daily_sales_saved", "sales") in actions, actions
+
+        import tempfile as _tempfile
+        from PyQt6.QtWidgets import QFileDialog
+        backup_path = os.path.join(_tempfile.gettempdir(), "_erp_audit_test_backup.db")
+        original_getSaveFileName = QFileDialog.getSaveFileName
+        QFileDialog.getSaveFileName = staticmethod(lambda *a, **k: (backup_path, ""))
+        try:
+            window.settings.backup()
+        finally:
+            QFileDialog.getSaveFileName = original_getSaveFileName
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+        backup_rows = db.fetch_all(
+            "SELECT action FROM audit_log WHERE id > ? ORDER BY id", (before,))
+        assert any(r["action"] == "backup_created" for r in backup_rows), \
+            "taking a backup from Settings was not recorded in the audit log"
+
+        db.execute_query("DELETE FROM employees WHERE id = ?", (emp_id,))
+        hr.clear_employee_form()
+        hr.load_employees()
+    check("real business actions (HR, sales, backups) are recorded in the audit log too",
+          real_business_actions_are_recorded_in_the_audit_log)
 
     def changing_your_own_password_needs_the_current_one():
         from logic.auth import AuthLogic
@@ -2915,6 +3844,117 @@ def main():
     check("the expiry screen is where the key is entered",
           the_expiry_screen_can_actually_activate)
 
+    def extension_code_adds_days_without_full_activation():
+        """A customer still deciding, whose trial runs out mid-negotiation,
+        needs a goodwill "a few more days" - without minting a full,
+        permanent key for someone who has not paid yet. The extension is
+        cumulative and cannot go backwards (replaying an older/smaller code
+        is a harmless no-op), is bound to the one device like an activation
+        key already is, and - like a full activation - clears any tamper
+        flag rather than leaving a legitimate extension stuck behind it."""
+        import datetime as dt
+        import tempfile
+        import logic.trial as trial
+        import logic.licence as licence
+
+        sandbox = tempfile.mkdtemp(prefix="_erp_extension_")
+        saved = (os.environ.get("XDG_CONFIG_HOME"), os.environ.get("APPDATA"))
+        os.environ["XDG_CONFIG_HOME"] = sandbox
+        os.environ.pop("APPDATA", None)
+        real_date = dt.date
+        ext_db_path = DB_PATH.replace(".db", "_extension.db")
+
+        class FrozenDate(real_date):
+            offset = 0
+
+            @classmethod
+            def today(cls):
+                return real_date.today() + dt.timedelta(days=cls.offset)
+
+        trial.date = FrozenDate
+        try:
+            if os.path.exists(ext_db_path):
+                os.remove(ext_db_path)
+            fresh = DBManager(ext_db_path)
+
+            FrozenDate.offset = 0
+            assert trial.TrialManager(fresh).check()[0], "day one was not allowed"
+
+            FrozenDate.offset = trial.TRIAL_DAYS + 1
+            allowed, _, _ = trial.TrialManager(fresh).check()
+            assert not allowed, "the trial did not expire on schedule"
+
+            code = licence.device_code(fresh)
+
+            # Wrong device, and a device-shaped-but-wrong code, must not work.
+            assert licence.apply_extension(fresh, licence.extension_key_for_device("ZZZZ2345", 10)) is None
+            assert licence.apply_extension(fresh, "not shaped like an extension code at all") is None
+            assert trial.get_extra_days(fresh) == 0
+
+            # The real extension for this device unlocks it again.
+            ext_key = licence.extension_key_for_device(code, 10)
+            assert licence.apply_extension(fresh, ext_key) == 10
+            allowed, days_left, _ = trial.TrialManager(fresh).check()
+            assert allowed and days_left == 9, (allowed, days_left)   # 20+10 days, 1 already elapsed
+            assert not licence.is_activated(fresh), \
+                "an extension code must not fully activate the program"
+
+            # Replaying a smaller extension is a no-op, never a rollback.
+            smaller = licence.extension_key_for_device(code, 3)
+            assert licence.apply_extension(fresh, smaller) == 10
+            assert trial.get_extra_days(fresh) == 10
+
+            # A bigger one still on top later adds more.
+            bigger = licence.extension_key_for_device(code, 25)
+            assert licence.apply_extension(fresh, bigger) == 25
+            allowed, days_left, _ = trial.TrialManager(fresh).check()
+            assert allowed and days_left == 24, (allowed, days_left)
+
+            # An extension also clears a tampered flag, the same way a full
+            # activation key already bypasses tamper detection entirely.
+            fresh.set_setting("trial_tampered", "1")
+            FrozenDate.offset = trial.TRIAL_DAYS + 1
+            allowed, _, message = trial.TrialManager(fresh).check()
+            assert not allowed and "تغيير في تاريخ" in message, \
+                "sanity check: tampering should block access before the extension clears it"
+            licence.apply_extension(fresh, licence.extension_key_for_device(code, 40))
+            allowed, days_left, _ = trial.TrialManager(fresh).check()
+            assert allowed, "a valid extension did not clear the tamper flag"
+        finally:
+            trial.date = real_date
+            for name, value in zip(("XDG_CONFIG_HOME", "APPDATA"), saved):
+                if value is None:
+                    os.environ.pop(name, None)
+                else:
+                    os.environ[name] = value
+            if os.path.exists(ext_db_path):
+                os.remove(ext_db_path)
+            shutil.rmtree(sandbox, ignore_errors=True)
+    check("a trial extension code adds days without granting full activation",
+          extension_code_adds_days_without_full_activation)
+
+    def expiry_screen_accepts_an_extension_code_too():
+        """The same box that takes a permanent activation key must also take
+        a goodwill extension code, without mistaking one for the other."""
+        from ui.activation_dialog import ActivationDialog
+        import logic.licence as licence
+
+        dialog = ActivationDialog(db, "انتهت المدة")
+        try:
+            code = licence.device_code(db)
+            ext_key = licence.extension_key_for_device(code, 5)
+            dialog.key_field.setText(ext_key)
+            dialog.try_activate()
+            assert not dialog.activated, \
+                "an extension code must not be treated as a full activation"
+            assert dialog.extended_days_left is not None, \
+                "a valid extension code was not recognised at all"
+            assert dialog.extended_days_left > 0, dialog.extended_days_left
+        finally:
+            dialog.deleteLater()
+    check("the expiry screen accepts a trial-extension code without fully activating",
+          expiry_screen_accepts_an_extension_code_too)
+
     def arabic_day_counts_agree():
         """"20 أيام" is broken Arabic. Numbers 11 and up take the singular."""
         from logic.trial import arabic_days
@@ -3031,6 +4071,26 @@ def main():
             assert os.path.exists(path), path
     check("the Windows build bundles every file the app loads", packaging_bundles_every_data_file)
 
+    def windows_build_does_not_strip_jpeg_image_support():
+        """The spec used to drop Qt's JPEG plugin on the theory that the
+        only image this program ever loaded was its own PNG icon - true
+        when that comment was written, false since employee photos
+        (uploadable as .jpg/.jpeg, see HRModule.pick_employee_photo) were
+        added. Losing the plugin never raises an error anywhere:
+        QPixmap.loadFromData() just silently returns False and a JPEG photo
+        looks "rejected" for no visible reason - reported live as "it only
+        accepts PNG". Nothing at the Qt level can catch that; only checking
+        the actual build spec can."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        spec = open(os.path.join(root, "packaging", "restaurant_erp.spec"), encoding="utf-8").read()
+        # Quoted, not a bare substring check - "qjpeg" legitimately appears
+        # in an unrelated comment about the plugin's file naming convention;
+        # what actually matters is whether it is listed in the drop-tuple.
+        assert '"qjpeg"' not in spec, \
+            "the Windows build strips JPEG image support again - employee photos can be .jpg/.jpeg"
+    check("packaging: the Windows build does not strip JPEG image support",
+          windows_build_does_not_strip_jpeg_image_support)
+
     def sending_a_newer_version_keeps_his_books():
         """The customer asks for a change, gets a newer copy, replaces the old
         program with it - and every number he has entered is still there.
@@ -3145,6 +4205,47 @@ def main():
             shutil.rmtree(workdir, ignore_errors=True)
     check("sending a newer version keeps every number he entered",
           sending_a_newer_version_keeps_his_books)
+
+    def daily_auto_backup_takes_at_most_one_snapshot_a_day():
+        """Recovering from a mistake must not depend on someone remembering
+        to click the manual backup button - a real snapshot is taken the
+        first time the app opens on a given day, silently, and calling it
+        again the same day (opening the app twice) must be a no-op, not a
+        pile of identical files."""
+        import shutil, sqlite3
+        from logic.auto_backup import daily_auto_backup, _AUTO_PREFIX
+        from logic.upgrade import backups_dir
+
+        folder = backups_dir(db.db_path)
+        before = set(os.listdir(folder)) if os.path.exists(folder) else set()
+        try:
+            first = daily_auto_backup(db)
+            assert first is not None, "no backup was taken on the first call today"
+            assert os.path.exists(first)
+            conn = sqlite3.connect(first)
+            try:
+                tables = {r[0] for r in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+            finally:
+                conn.close()
+            assert {"journal_entries", "journal_items", "chart_of_accounts"} <= tables, \
+                "the auto-backup is not a real copy of the database"
+
+            second = daily_auto_backup(db)
+            assert second is None, "a second call the same day took another backup"
+
+            after = set(os.listdir(folder))
+            new_files = [f for f in (after - before) if f.startswith(_AUTO_PREFIX)]
+            assert len(new_files) == 1, f"expected exactly one new auto-backup, found {new_files}"
+        finally:
+            for name in set(os.listdir(folder)) - before:
+                if name.startswith(_AUTO_PREFIX):
+                    try:
+                        os.remove(os.path.join(folder, name))
+                    except OSError:
+                        pass
+    check("the daily auto-backup takes at most one real snapshot per day",
+          daily_auto_backup_takes_at_most_one_snapshot_a_day)
 
     def the_icon_is_real_and_usable():
         """The shortcut icon is the first thing the customer sees, before the

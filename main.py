@@ -110,6 +110,8 @@ def enforce_trial(db):
     dialog.exec()
     if dialog.activated:
         return None
+    if dialog.extended_days_left is not None:
+        return dialog.extended_days_left
     sys.exit(0)
 
 
@@ -174,6 +176,14 @@ def main():
     upgrade_backup = backup_before_upgrade(path)
     db = DBManager(path)
     record_version(db)
+
+    # A second, independent safety net: at most one snapshot a day, so
+    # recovering from a mistake never depends on someone having remembered
+    # to click "حفظ نسخة احتياطية" recently. Taken after the schema
+    # migrations above, unlike the upgrade backup - this one only cares
+    # about the data, not about undoing a bad migration.
+    from logic.auto_backup import daily_auto_backup
+    daily_auto_backup(db)
 
     app = QApplication(sys.argv)
     apply_theme(app)

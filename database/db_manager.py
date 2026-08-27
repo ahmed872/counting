@@ -55,7 +55,34 @@ class DBManager:
             'work_permit_no': 'TEXT',
             'work_permit_expiry': 'DATE',
             'work_card_no': 'TEXT',
-            'work_card_expiry': 'DATE'
+            'work_card_expiry': 'DATE',
+            # Client request: many workers share similar names - a photo
+            # tells them apart at a glance on the employee list/form.
+            'photo': 'BLOB',
+            # مدد: the portion of net salary the institution pays through
+            # the official مدد transfer system, registered with GOSI - see
+            # HRLogic.post_payroll for how this splits the monthly net pay
+            # between مدد (bank) and cash.
+            'madad_salary': 'REAL DEFAULT 0',
+            'medical_insurance_no': 'TEXT',
+            'medical_insurance_expiry': 'DATE',
+            # One-time government fees recorded when the employee is added
+            # - passport/iqama processing, labour office, medical
+            # insurance premium, health certificate - so a later report
+            # can show everything the institution has paid for this
+            # person without checking another platform.
+            'passport_fee': 'REAL DEFAULT 0',
+            'labor_office_fee': 'REAL DEFAULT 0',
+            'medical_insurance_fee': 'REAL DEFAULT 0',
+            'health_certificate_fee': 'REAL DEFAULT 0',
+            'fees_journal_entry_id': 'INTEGER',
+            # NULL means "unknown / already here before this column existed" -
+            # every employee added before this update keeps working exactly as
+            # it always did, with no month excluded on their account. Only an
+            # employee hired *after* this column exists gets a real value, and
+            # only then does get_monthly_payroll start excluding the months
+            # before it - see the comment there for why that matters.
+            'hire_date': 'DATE',
         }
         for column_name, column_type in employee_additions.items():
             if column_name not in employee_columns:
@@ -64,6 +91,16 @@ class DBManager:
         attendance_columns = table_columns('attendance')
         if 'notes' not in attendance_columns:
             cursor.execute("ALTER TABLE attendance ADD COLUMN notes TEXT")
+
+        # Splits each posted month's net pay the same way it was actually
+        # disbursed: part through مدد (bank, account 1001) and the rest in
+        # cash (1000) - see HRLogic.post_payroll. A posted month is a frozen
+        # snapshot, so this has to live on the item row itself, not be
+        # recomputed later from the employee's *current* مدد setting.
+        payroll_item_columns = table_columns('payroll_run_items')
+        for column_name in ('madad_portion', 'cash_portion'):
+            if column_name not in payroll_item_columns:
+                cursor.execute(f"ALTER TABLE payroll_run_items ADD COLUMN {column_name} REAL DEFAULT 0")
 
         purchases_columns = table_columns('purchases') if self.table_exists(cursor, 'purchases') else set()
         if 'purchases' in self.get_existing_tables(cursor):
@@ -157,6 +194,20 @@ class DBManager:
                 FROM sales_pre_delivery
             """)
             cursor.execute("DROP TABLE sales_pre_delivery")
+
+        # After the rebuild above, not before it - that rebuild recreates
+        # sales from a hardcoded column list of its own, which would
+        # silently drop this column (and any data already in it) if it
+        # existed before the rebuild ran.
+        if self.table_exists(cursor, 'sales') and 'shortage_amount' not in table_columns('sales'):
+            # عجز لموظف - a cash-register shortfall for the day, entered
+            # alongside the payment channels and subtracted from the cash
+            # actually recorded (see save_daily_sales in sales_entry_
+            # module.py). Stored on every row for that day/branch, the
+            # same one-value-duplicated-onto-every-row pattern
+            # cashier_number already uses, so it can be read back (MAX,
+            # not SUM) without a separate table.
+            cursor.execute("ALTER TABLE sales ADD COLUMN shortage_amount REAL DEFAULT 0")
 
         if self.table_exists(cursor, 'sales_returns') and not self._table_check_allows(cursor, 'sales_returns', 'Delivery'):
             cursor.execute("ALTER TABLE sales_returns RENAME TO sales_returns_pre_delivery")

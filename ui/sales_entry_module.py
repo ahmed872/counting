@@ -23,6 +23,7 @@ from ui.formatting import money_item
 from ui.common_widgets import (page_header, danger_button, fill_table, pin_height,
                               collapsible, fit_table_height)
 from logic.money import parse_money
+from logic.audit import AuditLogger
 
 REFUND_METHOD_LABELS = [
     ("Cash", "نقدي"),
@@ -48,6 +49,7 @@ class SalesEntryModule(QWidget):
         self.db = db_manager
         self.accounting = AccountingLogic(db_manager)
         self.current_user = current_user or {}
+        self.audit = AuditLogger(db_manager)
         self.init_ui()
 
     def _locked_branch_id(self):
@@ -136,8 +138,14 @@ class SalesEntryModule(QWidget):
         # tracked under its own label so the owner can see how much of his
         # revenue comes through delivery apps versus a direct transfer.
         self.delivery_input = self._amount_input()
+        # عجز لموظف - a shortfall found when the register is counted at the
+        # end of the day, charged against whichever employee was on the
+        # till. Subtracted from the cash channel (see save_daily_sales),
+        # so اليوم total = Cash + Network + Transfer + Delivery - Shortage,
+        # exactly as asked for - not its own payment channel.
+        self.shortage_input = self._amount_input()
 
-        # Two columns, not four side by side in one row - "شبكة (مدى /
+        # Two columns, not five side by side in one row - "شبكة (مدى /
         # فيزا)" and "شركات التوصيل" are long enough captions that four
         # of these in a single unbroken row forced the page wider than the
         # window under real Windows font metrics, at the app's own
@@ -150,6 +158,7 @@ class SalesEntryModule(QWidget):
             ("شبكة (مدى / فيزا)", self.network_input),
             ("تحويل بنكي", self.transfer_input),
             ("شركات التوصيل", self.delivery_input),
+            ("عجز لموظف (يُخصم من الكاش)", self.shortage_input),
         )):
             row, column_index = divmod(index, 2)
             column = QVBoxLayout()
@@ -174,7 +183,8 @@ class SalesEntryModule(QWidget):
             "padding:10px; font-weight:800; color:#1f3b57;"
         )
         form_outer.addWidget(self.preview_label)
-        for field in (self.cash_input, self.network_input, self.transfer_input, self.delivery_input):
+        for field in (self.cash_input, self.network_input, self.transfer_input,
+                      self.delivery_input, self.shortage_input):
             field.textChanged.connect(self.update_preview)
 
         save_btn = QPushButton("حفظ مبيعات اليوم")
@@ -199,10 +209,10 @@ class SalesEntryModule(QWidget):
         layout.addLayout(history_row)
 
         self.table = QTableWidget()
-        self.table.setColumnCount(9)
+        self.table.setColumnCount(10)
         self.table.setHorizontalHeaderLabels(
             ["التاريخ", "الفرع", "كاش", "شبكة", "تحويل بنكي", "شركات التوصيل",
-             "الإجمالي", "الضريبة", "رقم الكاشير"])
+             "الإجمالي", "الضريبة", "رقم الكاشير", "عجز لموظف"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -319,8 +329,11 @@ class SalesEntryModule(QWidget):
         return widget
 
     def save_sales_return(self):
+        branch_id = self.return_branch_input.currentData()
+        if branch_id is None:
+            QMessageBox.warning(self, "تنبيه", "اختر الفرع أولاً")
+            return
         try:
-            branch_id = self.return_branch_input.currentData()
             total = parse_money(self.return_amount_input.text(), "المبلغ المسترد",
                                 allow_blank=False, allow_zero=False)
         except ValueError as exc:
@@ -357,6 +370,11 @@ class SalesEntryModule(QWidget):
                 (branch_id, date_str, net, vat, method, notes, entry_id),
             )
 
+        self.audit.log(
+            "sales_return",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="sales_return", entity_id=entry_id, branch_id=branch_id,
+            after={"date": date_str, "amount": total, "method": method})
         QMessageBox.information(self, "تم", "تم تسجيل مرتجع المبيعات")
         self.return_amount_input.clear()
         self.return_notes_input.clear()
@@ -434,9 +452,16 @@ class SalesEntryModule(QWidget):
                 total += parse_money(field.text())
             except ValueError:
                 pass
+        try:
+            shortage = parse_money(self.shortage_input.text())
+        except ValueError:
+            shortage = 0.0
+        total = max(0.0, total - shortage)
         net, vat = self.accounting.reverse_vat(total) if total else (0.0, 0.0)
+        shortage_note = f"     |     عجز لموظف: {shortage:,.2f}" if shortage else ""
         self.preview_label.setText(
-            f"إجمالي اليوم: {total:,.2f} ريال     |     قبل الضريبة: {net:,.2f}     |     الضريبة: {vat:,.2f}"
+            f"إجمالي اليوم: {total:,.2f} ريال     |     قبل الضريبة: {net:,.2f}     |     "
+            f"الضريبة: {vat:,.2f}{shortage_note}"
         )
 
     def _parse_amount(self, line_edit):
@@ -469,8 +494,12 @@ class SalesEntryModule(QWidget):
                 self.db.delete_journal_entry_on_cursor(cursor, entry_id)
 
     def save_daily_sales(self):
+        branch_id = self.branch_input.currentData()
+        if branch_id is None:
+            QMessageBox.warning(self, "تنبيه", "اختر الفرع أولاً")
+            return
+
         try:
-            branch_id = self.branch_input.currentData()
             date_str = self.date_input.date().toString("yyyy-MM-dd")
 
             channel_totals = {
@@ -479,9 +508,20 @@ class SalesEntryModule(QWidget):
                 "Transfer": self._parse_amount(self.transfer_input),
                 "Delivery": self._parse_amount(self.delivery_input),
             }
+            shortage = self._parse_amount(self.shortage_input)
         except ValueError as e:
             QMessageBox.warning(self, "تنبيه", str(e) if str(e) else "المبالغ المدخلة غير صحيحة")
             return
+
+        if shortage > channel_totals["Cash"]:
+            QMessageBox.warning(
+                self, "تنبيه",
+                "العجز لا يمكن أن يكون أكبر من مبلغ الكاش المدخل.")
+            return
+        # عجز لموظف يُخصم من الكاش فقط - المجموع = كاش + شبكة + تحويل +
+        # شركات التوصيل - عجز، بالضبط كما طُلب. الإيراد والضريبة المسجَّلان
+        # يعكسان الكاش الفعلي المحصَّل بعد خصم العجز، لا المبلغ الكامل.
+        channel_totals["Cash"] -= shortage
 
         if all(v <= 0 for v in channel_totals.values()):
             QMessageBox.warning(self, "تنبيه", "ادخل مبلغاً واحداً على الأقل")
@@ -538,16 +578,23 @@ class SalesEntryModule(QWidget):
             for method, total, vat in saved_methods:
                 cursor.execute(
                     """INSERT INTO sales
-                       (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id, cashier_number)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (branch_id, date_str, total, vat, method, entry_id, cashier_number),
+                       (branch_id, date, total_amount, vat_amount, payment_method, journal_entry_id,
+                        cashier_number, shortage_amount)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (branch_id, date_str, total, vat, method, entry_id, cashier_number, shortage),
                 )
 
+        self.audit.log(
+            "daily_sales_saved",
+            user_id=(self.current_user or {}).get("id"), username=(self.current_user or {}).get("username"),
+            entity_type="sales", entity_id=entry_id, branch_id=branch_id,
+            after={"date": date_str, "revenue": revenue_credit, "vat": vat_credit, "shortage": shortage})
         QMessageBox.information(self, "تم", "تم تسجيل مبيعات اليوم وترحيلها للمحاسبة")
         self.cash_input.clear()
         self.network_input.clear()
         self.transfer_input.clear()
         self.delivery_input.clear()
+        self.shortage_input.clear()
         self.update_preview()
         self.load_history()
 
@@ -581,7 +628,8 @@ class SalesEntryModule(QWidget):
                 SUM(CASE WHEN s.payment_method = 'Delivery' THEN s.total_amount ELSE 0 END) as delivery_total,
                 SUM(s.total_amount) as grand_total,
                 SUM(s.vat_amount) as vat_total,
-                MAX(s.cashier_number) as cashier_number
+                MAX(s.cashier_number) as cashier_number,
+                MAX(COALESCE(s.shortage_amount, 0)) as shortage_total
             FROM sales s
             JOIN branches b ON s.branch_id = b.id
             {branch_filter}
@@ -614,6 +662,7 @@ class SalesEntryModule(QWidget):
             self.table.setItem(row, 6, money_item(r['grand_total'], bold=True))
             self.table.setItem(row, 7, money_item(r['vat_total'], bold=False))
             self.table.setItem(row, 8, QTableWidgetItem(r['cashier_number'] or ""))
+            self.table.setItem(row, 9, money_item(r['shortage_total'], blank_if_zero=True))
         fit_table_height(self.table)
 
     def refresh_on_show(self):
