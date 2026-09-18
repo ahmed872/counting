@@ -2596,6 +2596,258 @@ def main():
     check("sales, purchases, and adding an employee all refuse to save with no branch selected",
           saving_without_a_branch_selected_is_refused_everywhere)
 
+    def purchases_filters_narrow_by_branch_supplier_and_status_together():
+        """Requested live: branch/supplier/payment-status filters on the
+        purchases table, combining with AND, "كل ..." (the default) always
+        showing everything. Seeds a controlled, disjoint set of invoices
+        across two branches and two suppliers and drives the real filter
+        widgets, not the SELECT directly - the whole point is that these
+        combos actually narrow load_purchases()'s own query."""
+        branch_s = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES ('فرع فلترة س', '')")
+        branch_y = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES ('فرع فلترة ص', '')")
+        supplier_x = db.insert_and_return_id(
+            "INSERT INTO suppliers (name, opening_balance) VALUES ('مورد فلترة X', 0)")
+        supplier_other = db.insert_and_return_id(
+            "INSERT INTO suppliers (name, opening_balance) VALUES ('مورد فلترة آخر', 0)")
+        try:
+            goto("purchases")
+            p = window.purchases
+            p.refresh_on_show()
+
+            def make(branch_id, supplier_id, status, amount, marker):
+                p.branch_input.setCurrentIndex(p.branch_input.findData(branch_id))
+                p.category_input.setCurrentIndex(p.category_input.findData('raw_material'))
+                p.supplier_input.setCurrentIndex(p.supplier_input.findData(supplier_id))
+                p.description_input.setText(marker)
+                p.amount_input.setText(str(amount))
+                p.payment_status.setCurrentIndex(p.payment_status.findData(status))
+                p.save_purchase()
+
+            # Branch س: 2 من مورد X (نقدي + آجل), 1 من مورد آخر (نقدي).
+            make(branch_s, supplier_x, 'Cash', 100, 'فلترة-1')
+            make(branch_s, supplier_x, 'Credit', 200, 'فلترة-2')
+            make(branch_s, supplier_other, 'Cash', 300, 'فلترة-3')
+            # Branch ص: 1 من مورد X (نقدي).
+            make(branch_y, supplier_x, 'Cash', 400, 'فلترة-4')
+
+            def markers_shown():
+                return {p.table.item(r, 4).text() for r in range(p.table.rowCount())
+                        if p.table.item(r, 4)}
+
+            def apply(branch_id=None, supplier_id=None, status=None):
+                p.filter_branch.setCurrentIndex(
+                    0 if branch_id is None else p.filter_branch.findData(branch_id))
+                p.filter_supplier.setCurrentIndex(
+                    0 if supplier_id is None else p.filter_supplier.findData(supplier_id))
+                p.filter_status.setCurrentIndex(
+                    0 if status is None else p.filter_status.findData(status))
+
+            our_markers = {"فلترة-1", "فلترة-2", "فلترة-3", "فلترة-4"}
+
+            apply()
+            assert our_markers <= markers_shown(), "كل الفروع/الموردين/الحالات must show every invoice"
+
+            apply(branch_id=branch_s)
+            shown = markers_shown() & our_markers
+            assert shown == {"فلترة-1", "فلترة-2", "فلترة-3"}, f"branch فلترة س filter: {shown}"
+
+            apply(branch_id=branch_y)
+            shown = markers_shown() & our_markers
+            assert shown == {"فلترة-4"}, f"branch فلترة ص filter: {shown}"
+
+            apply(supplier_id=supplier_x)
+            shown = markers_shown() & our_markers
+            assert shown == {"فلترة-1", "فلترة-2", "فلترة-4"}, f"supplier X filter: {shown}"
+
+            apply(branch_id=branch_s, supplier_id=supplier_x)
+            shown = markers_shown() & our_markers
+            assert shown == {"فلترة-1", "فلترة-2"}, f"branch س + supplier X filter: {shown}"
+
+            apply(branch_id=branch_s, supplier_id=supplier_x, status='Credit')
+            shown = markers_shown() & our_markers
+            assert shown == {"فلترة-2"}, f"branch س + supplier X + آجل filter: {shown}"
+
+            p._clear_purchase_filters()
+            assert our_markers <= markers_shown(), "مسح الفلاتر did not bring everything back"
+        finally:
+            # The journal entries these purchases posted still reference
+            # branch_s/branch_y (journal_entries.branch_id), so the two test
+            # branches are left in place rather than deleted here - the
+            # same convention other tests in this file already use for
+            # branches created mid-run.
+            db.execute_query("DELETE FROM purchases WHERE description LIKE 'فلترة-%'")
+            db.execute_query("DELETE FROM suppliers WHERE id IN (?, ?)", (supplier_x, supplier_other))
+            goto("purchases")
+            window.purchases.refresh_on_show()
+    check("purchases: branch, supplier, and payment-status filters narrow the table and combine with AND",
+          purchases_filters_narrow_by_branch_supplier_and_status_together)
+
+    def sales_history_branch_filter_shows_only_the_chosen_branch():
+        """The mirror check for the المبيعات history table's new branch
+        filter - "كل الفروع" (the default) must keep showing every branch's
+        day exactly as before, and picking one branch must narrow the
+        table down to that branch's rows only, without touching what
+        actually got saved."""
+        branch_s = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES ('فرع مبيعات س', '')")
+        branch_y = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES ('فرع مبيعات ص', '')")
+        try:
+            goto("sales")
+            sales = window.sales
+            sales.refresh_on_show()
+            assert sales.history_branch_filter is not None, \
+                "an admin/manager must see the branch filter on the sales history table"
+
+            def make(branch_id, day):
+                sales.branch_input.setCurrentIndex(sales.branch_input.findData(branch_id))
+                sales.date_input.setDate(day)
+                sales.cash_input.setText("111")
+                sales.network_input.setText("0")
+                sales.transfer_input.setText("0")
+                sales.delivery_input.setText("0")
+                sales.shortage_input.setText("")
+                sales.save_daily_sales()
+
+            day_s = QDate(2026, 3, 1)
+            day_y = QDate(2026, 3, 2)
+            make(branch_s, day_s)
+            make(branch_y, day_y)
+
+            def branches_shown():
+                return {sales.table.item(r, 1).text() for r in range(sales.table.rowCount())
+                        if sales.table.item(r, 1)}
+
+            sales.history_branch_filter.setCurrentIndex(0)
+            sales.load_history()
+            shown = branches_shown()
+            assert "فرع مبيعات س" in shown and "فرع مبيعات ص" in shown, \
+                f"كل الفروع (default) must show both, got {shown}"
+
+            sales.history_branch_filter.setCurrentIndex(sales.history_branch_filter.findData(branch_s))
+            shown = branches_shown()
+            assert shown == {"فرع مبيعات س"}, f"branch س filter: {shown}"
+
+            sales.history_branch_filter.setCurrentIndex(sales.history_branch_filter.findData(branch_y))
+            shown = branches_shown()
+            assert shown == {"فرع مبيعات ص"}, f"branch ص filter: {shown}"
+
+            sales._clear_history_filter()
+            shown = branches_shown()
+            assert "فرع مبيعات س" in shown and "فرع مبيعات ص" in shown, "مسح الفلاتر did not restore both"
+        finally:
+            # branch_s/branch_y stay (their journal entries still reference
+            # them), same convention as the purchases filter test above.
+            db.execute_query("DELETE FROM sales WHERE branch_id IN (?, ?)", (branch_s, branch_y))
+            goto("sales")
+            window.sales.refresh_on_show()
+    check("sales: the branch filter shows only the chosen branch's history, "
+          "and 'كل الفروع' shows every branch",
+          sales_history_branch_filter_shows_only_the_chosen_branch)
+
+    def supplier_invoices_section_covers_cash_credit_branches_and_notes():
+        """فواتير المورد (added next to, not instead of, كشف حساب المورد -
+        see the note on load_supplier_invoices) must list every invoice
+        regardless of payment method, respect its own branch filter, show
+        each invoice's notes (or a dash when there are none), and its
+        totals must satisfy after-tax = before-tax + tax using the exact
+        figures the purchase itself was saved with."""
+        branch_s = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES ('فرع كشف س', '')")
+        branch_y = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES ('فرع كشف ص', '')")
+        supplier_id = db.insert_and_return_id(
+            "INSERT INTO suppliers (name, opening_balance) VALUES ('مورد كشف حساب اختبار', 0)")
+        from ui.formatting import money
+        try:
+            goto("purchases")
+            p = window.purchases
+            p.refresh_on_show()
+
+            def make(branch_id, status, amount, note):
+                p.branch_input.setCurrentIndex(p.branch_input.findData(branch_id))
+                p.category_input.setCurrentIndex(p.category_input.findData('raw_material'))
+                p.supplier_input.setCurrentIndex(p.supplier_input.findData(supplier_id))
+                p.description_input.setText(note)
+                p.amount_input.setText(str(amount))
+                p.payment_status.setCurrentIndex(p.payment_status.findData(status))
+                p.save_purchase()
+
+            make(branch_s, 'Cash', 100, 'فاتورة نقدية بملاحظة')
+            make(branch_s, 'Credit', 200, '')
+            make(branch_y, 'Cash', 300, 'فاتورة فرع تاني')
+
+            goto("suppliers")
+            s = window.suppliers
+            s.refresh_on_show()
+            s.selected_supplier_id = supplier_id
+            index = s.payment_supplier.findData(supplier_id)
+            assert index >= 0, "the new supplier is missing from the payment picker"
+            s.payment_supplier.setCurrentIndex(index)
+
+            def rows():
+                return [
+                    {
+                        "date": s.invoices_table.item(r, 1).text(),
+                        "branch": s.invoices_table.item(r, 2).text(),
+                        "before": s.invoices_table.item(r, 3).text(),
+                        "vat": s.invoices_table.item(r, 4).text(),
+                        "after": s.invoices_table.item(r, 5).text(),
+                        "status": s.invoices_table.item(r, 6).text(),
+                        "notes": s.invoices_table.item(r, 7).text(),
+                    }
+                    for r in range(s.invoices_table.rowCount())
+                ]
+
+            s.invoice_branch_filter.setCurrentIndex(0)
+            s.load_supplier_invoices()
+            all_rows = rows()
+            assert len(all_rows) == 3, \
+                f"expected all 3 invoices (cash + credit, both branches), got {len(all_rows)}"
+            statuses = {r["status"] for r in all_rows}
+            assert "نقدي" in statuses and "آجل (على الحساب)" in statuses, \
+                "the cash invoice or the credit invoice is missing from فواتير المورد"
+
+            with_note = next(r for r in all_rows if r["notes"] == "فاتورة نقدية بملاحظة")
+            assert with_note["before"], "an invoice with notes lost its own amount columns"
+            no_note = next(r for r in all_rows if r["before"] == money(200))
+            assert no_note["notes"] == "—", \
+                f"an invoice with no notes must show the existing dash convention, got {no_note['notes']!r}"
+
+            for r in all_rows:
+                before = float(r["before"].replace(",", ""))
+                vat = float(r["vat"].replace(",", "")) if r["vat"] else 0.0
+                after = float(r["after"].replace(",", ""))
+                assert abs((before + vat) - after) < 0.01, \
+                    f"بعد الضريبة != قبل الضريبة + الضريبة for row {r}"
+
+            s.invoice_branch_filter.setCurrentIndex(s.invoice_branch_filter.findData(branch_s))
+            s.load_supplier_invoices()
+            filtered = rows()
+            assert len(filtered) == 2 and all(r["branch"] == "فرع كشف س" for r in filtered), \
+                f"branch filter on فواتير المورد did not narrow to فرع كشف س: {filtered}"
+
+            total_before = sum(float(r["before"].replace(",", "")) for r in filtered)
+            assert abs(total_before - 300) < 0.01, \
+                f"expected 100+200=300 before tax for فرع كشف س, got {total_before}"
+
+            s._clear_invoice_branch_filter()
+            s.load_supplier_invoices()
+            assert len(rows()) == 3, "مسح الفلاتر on فواتير المورد did not restore every branch"
+        finally:
+            # branch_s/branch_y stay, same convention as the two tests above.
+            db.execute_query("DELETE FROM purchases WHERE supplier_id = ?", (supplier_id,))
+            db.execute_query("DELETE FROM suppliers WHERE id = ?", (supplier_id,))
+            goto("suppliers")
+            window.suppliers.refresh_on_show()
+            goto("purchases")
+            window.purchases.refresh_on_show()
+    check("فواتير المورد lists cash and credit invoices across branches, "
+          "with its own branch filter and notes",
+          supplier_invoices_section_covers_cash_credit_branches_and_notes)
+
     # ---------------- UI regressions ----------------
     print("\n[ui]")
 
@@ -4969,10 +5221,16 @@ def main():
         toggle.click()  # hide the form
         for _ in range(4):
             app.processEvents()
-        gap = page.table.geometry().top() - (toggle.geometry().top() + toggle.geometry().height())
+        # The branch filter row (added above the table for admins/managers)
+        # is now the last real content before the table when the form is
+        # hidden - measure from there, not from the toggle button, so this
+        # keeps checking for genuine dead space rather than flagging the
+        # filter row's own legitimate height as a regression.
+        last_widget = page.history_branch_filter or toggle
+        gap = page.table.geometry().top() - (last_widget.geometry().top() + last_widget.geometry().height())
         assert gap < 40, (
             f"hiding the entry form left a {gap}px dead gap above the table "
-            f"instead of the table sitting right under the toggle button")
+            f"instead of the table sitting right under the last widget above it")
     check("hiding the sales entry form does not leave a dead gap above the history table",
           hiding_a_form_does_not_leave_a_dead_gap_above_its_table)
 
@@ -5223,6 +5481,55 @@ def main():
             dialog.close()
     check("the login dialog groups each field tightly with its own label, not evenly spaced",
           login_dialog_groups_each_label_tightly_with_its_own_field)
+
+    def change_password_notice_is_never_clipped_after_switching_pages():
+        """Reported live: switching from the login page to the forced
+        change-password page left the temporary-password notice looking cut
+        off, overlapping the field below it. QStackedWidget's own sizeHint
+        already covers the taller of its two pages from the start in this
+        environment, but Qt itself prints "propagateSizeHints not
+        supported" on this platform plugin - a real, documented
+        cross-platform gap in re-propagating a shown top-level window's
+        size after its current page changes. The fix (self.stack.
+        currentChanged -> self.adjustSize()) is a defensive measure against
+        that whole class of platform behaviour, not something this offscreen
+        environment can force to fail beforehand - so this pins the
+        contract it guarantees: the notice's full wrapped text always fits
+        within the dialog once the change-password page is current, under
+        both the normal font and a Windows-Segoe-sized one."""
+        from PyQt6.QtGui import QFont
+        from ui.login_dialog import LoginDialog
+
+        original_font = app.font()
+        for extra_points in (0, 6):
+            bumped = QFont(original_font)
+            bumped.setPointSize(original_font.pointSize() + extra_points)
+            app.setFont(bumped)
+            try:
+                dialog = LoginDialog(db)
+                dialog.show()
+                for _ in range(2):
+                    app.processEvents()
+                dialog.stack.setCurrentIndex(1)
+                for _ in range(2):
+                    app.processEvents()
+                notice = next(
+                    l for l in dialog.stack.widget(1).findChildren(QLabel)
+                    if "مؤقتة" in l.text())
+                needed = notice.heightForWidth(notice.width())
+                assert notice.height() >= needed, (
+                    f"(font +{extra_points}pt) the notice is {notice.height()}px tall "
+                    f"but needs {needed}px for its full wrapped text - it will clip")
+                assert notice.geometry().bottom() <= dialog.stack.height(), (
+                    f"(font +{extra_points}pt) the notice's bottom "
+                    f"({notice.geometry().bottom()}px) spills past the visible "
+                    f"page area ({dialog.stack.height()}px) - it will overlap "
+                    f"the field below it")
+                dialog.close()
+            finally:
+                app.setFont(original_font)
+    check("the change-password notice is never clipped or overlapping after switching pages",
+          change_password_notice_is_never_clipped_after_switching_pages)
 
     print("\n" + "=" * 52)
     if failures:

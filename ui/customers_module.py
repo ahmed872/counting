@@ -18,7 +18,8 @@ from PyQt6.QtWidgets import (
 
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height
+from ui.common_widgets import (page_header, fill_table, compact_form, pin_height,
+                               fit_table_height, all_combo, filter_bar)
 from logic.money import parse_money
 from logic.audit import AuditLogger
 
@@ -92,6 +93,12 @@ class CustomersModule(QWidget):
         self.toggle_active_btn.clicked.connect(self.toggle_customer_active)
         list_header_row.addWidget(self.toggle_active_btn)
         list_layout.addLayout(list_header_row)
+
+        self.customer_status_filter = all_combo(
+            "كل الحالات", [("نشط", 1), ("متوقف", 0)], on_change=self.load_customers)
+        list_layout.addLayout(filter_bar(
+            [("الحالة:", self.customer_status_filter)],
+            on_clear=self._clear_customer_status_filter))
 
         self.customers_table = QTableWidget()
         self.customers_table.setColumnCount(4)
@@ -253,13 +260,21 @@ class CustomersModule(QWidget):
 
     def load_customers(self):
         balances = self.accounting.get_all_customer_balances()
+        # The collection dropdown always offers every customer, active or
+        # not - a stopped customer's balance can still be collected - so it
+        # is built from the full list, never from the status-filtered one.
         self.reload_customer_picker(balances)
+
+        status_filter = self.customer_status_filter.currentData()
+        rows = balances if status_filter is None else [
+            c for c in balances if bool(c['is_active']) == bool(status_filter)]
+
         total = 0
-        if not fill_table(self.customers_table, len(balances), "لا يوجد عملاء مسجلون بعد"):
+        if not fill_table(self.customers_table, len(rows), "لا يوجد عملاء مسجلون بعد"):
             self.total_balance_label.setText("")
             fit_table_height(self.customers_table)
             return
-        for row, c in enumerate(balances):
+        for row, c in enumerate(rows):
             total += c['balance']
             name_item = QTableWidgetItem(c['name'])
             self.customers_table.setItem(row, 0, name_item)
@@ -282,6 +297,9 @@ class CustomersModule(QWidget):
             summary = "لا يوجد مستحق على العملاء — كل الحسابات مسددة"
         self.total_balance_label.setText(summary)
         fit_table_height(self.customers_table)
+
+    def _clear_customer_status_filter(self):
+        self.customer_status_filter.setCurrentIndex(0)
 
     def reload_customer_picker(self, balances):
         previous = self.selected_customer_id

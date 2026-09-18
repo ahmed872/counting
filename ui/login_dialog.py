@@ -110,6 +110,15 @@ class LoginDialog(QDialog):
         body_layout.addWidget(self.stack)
         self.stack.addWidget(self._build_login_page())
         self.stack.addWidget(self._build_change_password_page())
+        # Reported live: the temporary-password notice looked cut off after
+        # switching from the login page to the change-password page. Some
+        # platforms do not reliably re-propagate a shown top-level window's
+        # size once its current stacked page changes (Qt itself warns
+        # "propagateSizeHints" is not supported on every platform plugin) -
+        # forcing a resize on every page switch closes that gap regardless
+        # of which platform is actually affected, with no change to the
+        # dialog's look on a platform where it was never a problem.
+        self.stack.currentChanged.connect(lambda _index: self.adjustSize())
 
         signature = QLabel("تطوير: أحمد  •  01093033884")
         signature.setAlignment(Qt.AlignmentFlag.AlignCenter)

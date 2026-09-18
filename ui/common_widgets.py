@@ -1,7 +1,7 @@
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QWidget, QPushButton,
-    QTableWidget, QSizePolicy, QScrollArea,
+    QTableWidget, QSizePolicy, QScrollArea, QComboBox,
 )
 
 
@@ -99,6 +99,55 @@ def danger_button(text):
         "QPushButton:pressed { background-color: #f8c4bf; }"
     )
     return btn
+
+
+def all_combo(label, items, on_change=None):
+    """A QComboBox for filtering a table by one column - not searching it.
+    Always starts with an "الكل"/"all" entry (data=None) so the default view
+    stays exactly what it already was (everything, unfiltered) and a filter
+    is something the user opts into, never something that hides data by
+    default. `items` is [(display_text, value), ...]; `label` is what shows
+    for the "no filter" choice, e.g. "كل الفروع" or "كل الموردين"."""
+    combo = QComboBox()
+    combo.addItem(label, None)
+    for text, value in items:
+        combo.addItem(text, value)
+    if on_change is not None:
+        combo.currentIndexChanged.connect(on_change)
+    return combo
+
+
+def filter_bar(items, on_clear=None):
+    """One filter-bar layout, used identically everywhere a table needs to
+    be narrowed down instead of searched - a row of filter dropdowns (built
+    with all_combo, so each already opens on a self-explanatory "كل ..."
+    default - "كل الفروع" already says what the dropdown is for, so it does
+    not need a second, separate label repeating the same word next to it)
+    plus an optional "مسح الفلاتر" button at the end. `items` is
+    [(label_text, combo_widget), ...] - label_text becomes the combo's
+    tooltip rather than a widget of its own, since three or four of these
+    in one row must still fit the app's own documented minimum window
+    width without a separate label each costing width for no new
+    information. The caller builds/populates each combo itself and wires
+    whatever reload it needs to its own signal - this only lays them out
+    consistently, it does not own the filtering logic (that stays with the
+    SELECT/WHERE the caller already has)."""
+    bar = QHBoxLayout()
+    bar.setSpacing(10)
+    for label_text, combo in items:
+        combo.setToolTip(label_text)
+        # Capped, not left to grow with its longest option's text - three or
+        # four of these in one row must still fit the app's own documented
+        # minimum window width without triggering a horizontal scrollbar.
+        combo.setMaximumWidth(190)
+        bar.addWidget(combo)
+    bar.addStretch()
+    if on_clear is not None:
+        clear_btn = QPushButton("مسح الفلاتر")
+        clear_btn.setMaximumWidth(140)
+        clear_btn.clicked.connect(on_clear)
+        bar.addWidget(clear_btn)
+    return bar
 
 
 def set_empty_message(table: QTableWidget, message):

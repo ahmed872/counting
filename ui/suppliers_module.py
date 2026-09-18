@@ -18,7 +18,9 @@ from PyQt6.QtWidgets import (
 
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item, money
-from ui.common_widgets import page_header, fill_table, compact_form, pin_height, fit_table_height, warn_if_would_overdraw
+from ui.common_widgets import (page_header, fill_table, compact_form, pin_height,
+                               fit_table_height, warn_if_would_overdraw, all_combo, filter_bar)
+from ui.labels import PAYMENT_STATUS_LABELS, label_for
 from logic.money import parse_money
 from logic.audit import AuditLogger
 
@@ -93,6 +95,12 @@ class SuppliersModule(QWidget):
         self.toggle_active_btn.clicked.connect(self.toggle_supplier_active)
         list_header_row.addWidget(self.toggle_active_btn)
         list_layout.addLayout(list_header_row)
+
+        self.supplier_status_filter = all_combo(
+            "كل الحالات", [("نشط", 1), ("متوقف", 0)], on_change=self.load_suppliers)
+        list_layout.addLayout(filter_bar(
+            [("الحالة:", self.supplier_status_filter)],
+            on_clear=self._clear_supplier_status_filter))
 
         self.suppliers_table = QTableWidget()
         self.suppliers_table.setColumnCount(4)
@@ -181,6 +189,50 @@ class SuppliersModule(QWidget):
         self.statement_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.statement_table.setMinimumHeight(90)
         pay_layout.addWidget(self.statement_table)
+
+        # A separate section from the account-balance ledger above on
+        # purpose: "كشف حساب المورد" tracks what is owed (only credit
+        # purchases move it - a cash purchase settles in full at once and
+        # never becomes payable), while this lists every invoice bought
+        # from the supplier regardless of how it was paid, for a full
+        # picture of the business done with them.
+        invoices_header = QHBoxLayout()
+        invoices_label = QLabel("فواتير المورد")
+        invoices_label.setStyleSheet("font-weight: 700; color: #334155;")
+        invoices_header.addWidget(invoices_label)
+        invoices_header.addStretch()
+        pay_layout.addLayout(invoices_header)
+
+        self.invoice_branch_filter = all_combo(
+            "كل الفروع",
+            [(b["name"], b["id"]) for b in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id")],
+            on_change=self.load_supplier_invoices)
+        pay_layout.addLayout(filter_bar(
+            [("الفرع:", self.invoice_branch_filter)],
+            on_clear=self._clear_invoice_branch_filter))
+
+        self.invoices_table = QTableWidget()
+        self.invoices_table.setColumnCount(8)
+        self.invoices_table.setHorizontalHeaderLabels(
+            ["رقم الفاتورة", "التاريخ", "الفرع", "قبل الضريبة", "الضريبة",
+             "بعد الضريبة", "حالة الدفع", "ملاحظات"])
+        self.invoices_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.invoices_table.verticalHeader().setVisible(False)
+        self.invoices_table.setAlternatingRowColors(True)
+        self.invoices_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.invoices_table.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.invoices_table.setMinimumHeight(90)
+        pay_layout.addWidget(self.invoices_table)
+
+        self.invoices_total_label = QLabel()
+        # Wraps rather than forcing the page wider - four summary figures
+        # concatenated in one line need more width than the app's own
+        # documented minimum window has to give.
+        self.invoices_total_label.setWordWrap(True)
+        self.invoices_total_label.setStyleSheet(
+            "font-weight:800; color:#1f3b57; padding:6px 2px;")
+        pay_layout.addWidget(self.invoices_total_label)
+
         pay_layout.addStretch()
         tabs.addTab(pay_tab, "السداد وكشف الحساب")
 
@@ -235,13 +287,22 @@ class SuppliersModule(QWidget):
 
     def load_suppliers(self):
         balances = self.accounting.get_all_supplier_balances()
+        # The payment dropdown always offers every supplier, active or not -
+        # a stopped supplier's balance can still be paid off (see the note
+        # on toggle_supplier_active) - so it is built from the full list,
+        # never from the status-filtered one below.
         self.reload_payment_picker(balances)
+
+        status_filter = self.supplier_status_filter.currentData()
+        rows = balances if status_filter is None else [
+            s for s in balances if bool(s['is_active']) == bool(status_filter)]
+
         total = 0
-        if not fill_table(self.suppliers_table, len(balances), "لا يوجد موردون مسجلون بعد"):
+        if not fill_table(self.suppliers_table, len(rows), "لا يوجد موردون مسجلون بعد"):
             self.total_balance_label.setText("")
             fit_table_height(self.suppliers_table)
             return
-        for row, s in enumerate(balances):
+        for row, s in enumerate(rows):
             total += s['balance']
             name_item = QTableWidgetItem(s['name'])
             self.suppliers_table.setItem(row, 0, name_item)
@@ -266,6 +327,9 @@ class SuppliersModule(QWidget):
             summary = "لا يوجد مستحق للموردين — كل الحسابات مسددة"
         self.total_balance_label.setText(summary)
         fit_table_height(self.suppliers_table)
+
+    def _clear_supplier_status_filter(self):
+        self.supplier_status_filter.setCurrentIndex(0)
 
     def reload_payment_picker(self, balances):
         """Refill the dropdown, keeping whoever was selected still selected.
@@ -309,6 +373,7 @@ class SuppliersModule(QWidget):
         self.selected_supplier_id = self.payment_supplier.currentData()
         self.update_payment_balance()
         self.refresh_statement()
+        self.load_supplier_invoices()
 
     def on_supplier_selected(self):
         """Selecting a row on the list tab still points the payment tab at that
@@ -327,6 +392,7 @@ class SuppliersModule(QWidget):
             self.payment_supplier.blockSignals(False)
         self.update_payment_balance()
         self.refresh_statement()
+        self.load_supplier_invoices()
 
     def refresh_statement(self):
         if not self.selected_supplier_id:
@@ -345,6 +411,61 @@ class SuppliersModule(QWidget):
             self.statement_table.setItem(row, 3, money_item(e['credit'], blank_if_zero=True))
             self.statement_table.setItem(row, 4, money_item(e['balance'], bold=True))
         fit_table_height(self.statement_table)
+
+    def load_supplier_invoices(self):
+        """Every invoice bought from the selected supplier - cash and
+        credit alike, unlike كشف حساب المورد above which only ever moves on
+        a credit purchase. Reuses the amount/vat_amount/total_amount this
+        purchase was already saved with (amount is what was entered before
+        tax, total_amount is amount+vat - see save_purchase), never
+        recomputed."""
+        if not self.selected_supplier_id:
+            self.invoices_table.setRowCount(0)
+            fit_table_height(self.invoices_table)
+            self.invoices_total_label.setText("")
+            return
+        conditions = ["p.supplier_id = ?"]
+        params = [self.selected_supplier_id]
+        branch_filter = self.invoice_branch_filter.currentData()
+        if branch_filter is not None:
+            conditions.append("p.branch_id = ?")
+            params.append(branch_filter)
+        query = f"""
+            SELECT p.*, b.name as branch_name
+            FROM purchases p
+            LEFT JOIN branches b ON p.branch_id = b.id
+            WHERE {' AND '.join(conditions)}
+            ORDER BY p.date DESC, p.id DESC
+        """
+        invoices = self.db.fetch_all(query, tuple(params))
+        if not fill_table(self.invoices_table, len(invoices), "لا توجد فواتير لهذا المورد"):
+            self.invoices_total_label.setText("")
+            fit_table_height(self.invoices_table)
+            return
+        for row, inv in enumerate(invoices):
+            self.invoices_table.setItem(row, 0, QTableWidgetItem(str(inv['id'])))
+            self.invoices_table.setItem(row, 1, QTableWidgetItem(str(inv['date'])))
+            self.invoices_table.setItem(row, 2, QTableWidgetItem(inv['branch_name'] or ""))
+            self.invoices_table.setItem(row, 3, money_item(inv['amount']))
+            self.invoices_table.setItem(row, 4, money_item(inv['vat_amount']))
+            self.invoices_table.setItem(row, 5, money_item(inv['total_amount']))
+            self.invoices_table.setItem(
+                row, 6, QTableWidgetItem(label_for(PAYMENT_STATUS_LABELS, inv['payment_status'])))
+            self.invoices_table.setItem(row, 7, QTableWidgetItem(inv['description'] or "—"))
+
+        count = len(invoices)
+        total_before = sum((inv['amount'] or 0) for inv in invoices)
+        total_vat = sum((inv['vat_amount'] or 0) for inv in invoices)
+        total_after = sum((inv['total_amount'] or 0) for inv in invoices)
+        self.invoices_total_label.setText(
+            f"عدد الفواتير: {count}     |     الإجمالي قبل الضريبة: {money(total_before)} ريال"
+            f"     |     الضريبة: {money(total_vat)} ريال"
+            f"     |     الإجمالي بعد الضريبة: {money(total_after)} ريال"
+        )
+        fit_table_height(self.invoices_table)
+
+    def _clear_invoice_branch_filter(self):
+        self.invoice_branch_filter.setCurrentIndex(0)
 
     def record_payment(self):
         if not self.selected_supplier_id:
@@ -440,3 +561,16 @@ class SuppliersModule(QWidget):
     def refresh_on_show(self):
         self.load_suppliers()
         self.refresh_statement()
+
+        selected_branch = self.invoice_branch_filter.currentData()
+        self.invoice_branch_filter.blockSignals(True)
+        self.invoice_branch_filter.clear()
+        self.invoice_branch_filter.addItem("كل الفروع", None)
+        for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.invoice_branch_filter.addItem(row['name'], row['id'])
+        if selected_branch is not None:
+            idx = self.invoice_branch_filter.findData(selected_branch)
+            if idx >= 0:
+                self.invoice_branch_filter.setCurrentIndex(idx)
+        self.invoice_branch_filter.blockSignals(False)
+        self.load_supplier_invoices()

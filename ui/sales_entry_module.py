@@ -21,7 +21,7 @@ from PyQt6.QtWidgets import (
 from logic.accounting import AccountingLogic
 from ui.formatting import money_item
 from ui.common_widgets import (page_header, danger_button, fill_table, pin_height,
-                              collapsible, fit_table_height)
+                              collapsible, fit_table_height, all_combo, filter_bar)
 from logic.money import parse_money
 from logic.audit import AuditLogger
 
@@ -207,6 +207,21 @@ class SalesEntryModule(QWidget):
         delete_btn.clicked.connect(self.delete_selected_day)
         history_row.addWidget(delete_btn)
         layout.addLayout(history_row)
+
+        # A كاشير is already forced down to their own one branch's rows by
+        # _locked_branch_id() below - offering them a dropdown to pick a
+        # branch they are not allowed to see would be a filter with no real
+        # effect at best, and a confusing dead end at worst. Nobody else
+        # is restricted, so everyone but a locked كاشير gets the filter.
+        self.history_branch_filter = None
+        if self._locked_branch_id() is None:
+            branch_choices = [(b["name"], b["id"])
+                               for b in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id")]
+            self.history_branch_filter = all_combo(
+                "كل الفروع", branch_choices, on_change=self.load_history)
+            layout.addLayout(filter_bar(
+                [("الفرع:", self.history_branch_filter)],
+                on_clear=self._clear_history_filter))
 
         self.table = QTableWidget()
         self.table.setColumnCount(10)
@@ -641,9 +656,15 @@ class SalesEntryModule(QWidget):
         # main_window.py) must not see the other branch's totals here
         # either - the entry form only stops them from *typing* a
         # different branch's sales, this is what stops them *reading* it.
-        if locked_branch is not None:
+        # Everyone else can optionally narrow the same view down with the
+        # "الفرع" filter above the table - "كل الفروع" (its default) keeps
+        # every row exactly as it always showed.
+        chosen_branch = locked_branch
+        if chosen_branch is None and self.history_branch_filter is not None:
+            chosen_branch = self.history_branch_filter.currentData()
+        if chosen_branch is not None:
             query = query.format(branch_filter="WHERE s.branch_id = ?")
-            rows = self.db.fetch_all(query, (locked_branch,))
+            rows = self.db.fetch_all(query, (chosen_branch,))
         else:
             query = query.format(branch_filter="")
             rows = self.db.fetch_all(query)
@@ -674,4 +695,22 @@ class SalesEntryModule(QWidget):
             idx = self.branch_input.findData(selected_branch)
             if idx >= 0:
                 self.branch_input.setCurrentIndex(idx)
+
+        if self.history_branch_filter is not None:
+            selected_filter = self.history_branch_filter.currentData()
+            self.history_branch_filter.blockSignals(True)
+            self.history_branch_filter.clear()
+            self.history_branch_filter.addItem("كل الفروع", None)
+            for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+                self.history_branch_filter.addItem(branch["name"], branch["id"])
+            if selected_filter is not None:
+                idx = self.history_branch_filter.findData(selected_filter)
+                if idx >= 0:
+                    self.history_branch_filter.setCurrentIndex(idx)
+            self.history_branch_filter.blockSignals(False)
+
         self.load_history()
+
+    def _clear_history_filter(self):
+        if self.history_branch_filter is not None:
+            self.history_branch_filter.setCurrentIndex(0)

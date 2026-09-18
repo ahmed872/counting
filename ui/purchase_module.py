@@ -21,7 +21,7 @@ from ui.labels import PAYMENT_STATUS_LABELS, REFUND_METHOD_LABELS, label_for
 from ui.formatting import money_item, money
 from ui.common_widgets import (page_header, danger_button, fill_table, compact_form,
                               pin_height, collapsible,
-                              collapse_when_short, fit_table_height)
+                              collapse_when_short, fit_table_height, all_combo, filter_bar)
 from logic.money import parse_money
 from logic.audit import AuditLogger
 
@@ -111,8 +111,9 @@ class PurchaseModule(QWidget):
         layout.addWidget(pin_height(form_box))
 
         self.table = QTableWidget()
-        self.table.setColumnCount(7)
-        self.table.setHorizontalHeaderLabels(["التاريخ", "النوع", "المورد", "البيان", "المبلغ", "الضريبة", "الحالة"])
+        self.table.setColumnCount(8)
+        self.table.setHorizontalHeaderLabels(
+            ["التاريخ", "الفرع", "النوع", "المورد", "البيان", "المبلغ", "الضريبة", "الحالة"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setAlternatingRowColors(True)
@@ -134,6 +135,31 @@ class PurchaseModule(QWidget):
         delete_btn.clicked.connect(self.delete_selected_purchase)
         table_header.addWidget(delete_btn)
         layout.addLayout(table_header)
+
+        # Narrows what the table below shows - never what is actually saved
+        # or what the entry form above submits against. Each defaults to
+        # "الكل"/"كل الفروع" so the view is unchanged until someone opts in,
+        # and all three combine with AND (a branch + a supplier + a status
+        # together show only invoices matching every one of them).
+        self.filter_branch = all_combo(
+            "كل الفروع",
+            [(b["name"], b["id"]) for b in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id")],
+            on_change=self.load_purchases)
+        self.filter_supplier = all_combo(
+            "كل الموردين",
+            [(s["name"], s["id"]) for s in self.db.fetch_all(
+                "SELECT id, name FROM suppliers ORDER BY name")],
+            on_change=self.load_purchases)
+        self.filter_status = all_combo(
+            "كل حالات الدفع",
+            [(label_for(PAYMENT_STATUS_LABELS, code), code) for code in ("Cash", "Credit")],
+            on_change=self.load_purchases)
+        layout.addLayout(filter_bar(
+            [("الفرع:", self.filter_branch),
+             ("المورد:", self.filter_supplier),
+             ("حالة الدفع:", self.filter_status)],
+            on_clear=self._clear_purchase_filters))
+
         layout.addWidget(self.table)
 
         self.purchases_total_label = QLabel()
@@ -162,8 +188,8 @@ class PurchaseModule(QWidget):
             QMessageBox.warning(self, "تنبيه", "اختر فاتورة من الجدول أولاً")
             return
         purchase_id, entry_id = self.table.item(row, 0).data(Qt.ItemDataRole.UserRole)
-        description = self.table.item(row, 3).text() or self.table.item(row, 1).text()
-        amount = self.table.item(row, 4).text()
+        description = self.table.item(row, 4).text() or self.table.item(row, 2).text()
+        amount = self.table.item(row, 5).text()
         answer = QMessageBox.question(
             self, "حذف فاتورة",
             f"سيتم حذف الفاتورة «{description}» بمبلغ {amount} وقيدها المحاسبي نهائياً.\n\nمتابعة؟",
@@ -276,6 +302,35 @@ class PurchaseModule(QWidget):
             if idx >= 0:
                 self.return_supplier_input.setCurrentIndex(idx)
 
+        # Same reasoning as the branch/supplier dropdowns above - a branch
+        # or supplier added after this page was first built must be
+        # filterable immediately, not just usable on a fresh app restart.
+        selected_filter_branch = self.filter_branch.currentData()
+        self.filter_branch.blockSignals(True)
+        self.filter_branch.clear()
+        self.filter_branch.addItem("كل الفروع", None)
+        for row in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.filter_branch.addItem(row['name'], row['id'])
+        if selected_filter_branch is not None:
+            idx = self.filter_branch.findData(selected_filter_branch)
+            if idx >= 0:
+                self.filter_branch.setCurrentIndex(idx)
+        self.filter_branch.blockSignals(False)
+
+        selected_filter_supplier = self.filter_supplier.currentData()
+        self.filter_supplier.blockSignals(True)
+        self.filter_supplier.clear()
+        self.filter_supplier.addItem("كل الموردين", None)
+        for s in self.db.fetch_all("SELECT id, name FROM suppliers ORDER BY name"):
+            self.filter_supplier.addItem(s['name'], s['id'])
+        if selected_filter_supplier is not None:
+            idx = self.filter_supplier.findData(selected_filter_supplier)
+            if idx >= 0:
+                self.filter_supplier.setCurrentIndex(idx)
+        self.filter_supplier.blockSignals(False)
+
+        self.load_purchases()
+
     def load_branches(self):
         # Preserves whatever was already picked - this also runs from
         # refresh_on_show(), not just at construction.
@@ -373,16 +428,34 @@ class PurchaseModule(QWidget):
             QMessageBox.critical(self, "خطأ", str(e))
 
     def load_purchases(self):
-        query = """
-            SELECT p.*, s.name as supplier_name
+        conditions = []
+        params = []
+        branch_filter = self.filter_branch.currentData()
+        if branch_filter is not None:
+            conditions.append("p.branch_id = ?")
+            params.append(branch_filter)
+        supplier_filter = self.filter_supplier.currentData()
+        if supplier_filter is not None:
+            conditions.append("p.supplier_id = ?")
+            params.append(supplier_filter)
+        status_filter = self.filter_status.currentData()
+        if status_filter is not None:
+            conditions.append("p.payment_status = ?")
+            params.append(status_filter)
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        query = f"""
+            SELECT p.*, s.name as supplier_name, b.name as branch_name
             FROM purchases p
             LEFT JOIN suppliers s ON p.supplier_id = s.id
+            LEFT JOIN branches b ON p.branch_id = b.id
+            {where_clause}
             -- id breaks ties: rows saved in the same second would otherwise
             -- come back in an arbitrary order, and the user could delete
             -- a different invoice from the one highlighted in the table.
             ORDER BY p.date DESC, p.id DESC
         """
-        purchases = self.db.fetch_all(query)
+        purchases = self.db.fetch_all(query, tuple(params))
         if not fill_table(self.table, len(purchases), "لا توجد فواتير مسجلة بعد"):
             self.purchases_total_label.setText("")
             fit_table_height(self.table)
@@ -391,12 +464,13 @@ class PurchaseModule(QWidget):
             date_item = QTableWidgetItem(str(p['date']))
             date_item.setData(Qt.ItemDataRole.UserRole, (p['id'], p['journal_entry_id']))
             self.table.setItem(row, 0, date_item)
-            self.table.setItem(row, 1, QTableWidgetItem(CATEGORY_LABELS.get(p['category'] or 'raw_material', p['category'] or "")))
-            self.table.setItem(row, 2, QTableWidgetItem(p['supplier_name'] or "مصروف عام"))
-            self.table.setItem(row, 3, QTableWidgetItem(p['description'] or ""))
-            self.table.setItem(row, 4, money_item(p['total_amount']))
-            self.table.setItem(row, 5, money_item(p['vat_amount']))
-            self.table.setItem(row, 6, QTableWidgetItem(label_for(PAYMENT_STATUS_LABELS, p['payment_status'])))
+            self.table.setItem(row, 1, QTableWidgetItem(p['branch_name'] or ""))
+            self.table.setItem(row, 2, QTableWidgetItem(CATEGORY_LABELS.get(p['category'] or 'raw_material', p['category'] or "")))
+            self.table.setItem(row, 3, QTableWidgetItem(p['supplier_name'] or "مصروف عام"))
+            self.table.setItem(row, 4, QTableWidgetItem(p['description'] or ""))
+            self.table.setItem(row, 5, money_item(p['total_amount']))
+            self.table.setItem(row, 6, money_item(p['vat_amount']))
+            self.table.setItem(row, 7, QTableWidgetItem(label_for(PAYMENT_STATUS_LABELS, p['payment_status'])))
 
         total = sum((p['total_amount'] or 0) for p in purchases)
         vat = sum((p['vat_amount'] or 0) for p in purchases)
@@ -406,6 +480,18 @@ class PurchaseModule(QWidget):
             f"     |     منها ضريبة: {money(vat)} ريال"
         )
         fit_table_height(self.table)
+
+    def _clear_purchase_filters(self):
+        self.filter_branch.blockSignals(True)
+        self.filter_supplier.blockSignals(True)
+        self.filter_status.blockSignals(True)
+        self.filter_branch.setCurrentIndex(0)
+        self.filter_supplier.setCurrentIndex(0)
+        self.filter_status.setCurrentIndex(0)
+        self.filter_branch.blockSignals(False)
+        self.filter_supplier.blockSignals(False)
+        self.filter_status.blockSignals(False)
+        self.load_purchases()
 
     def save_purchase_return(self):
         try:
