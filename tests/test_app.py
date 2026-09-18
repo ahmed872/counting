@@ -2536,6 +2536,25 @@ def main():
     check("HR and Purchases pick up a branch added after the page was already built",
           new_branch_becomes_selectable_in_hr_and_purchases_without_a_restart)
 
+    def sales_return_branch_dropdown_picks_up_a_new_branch_without_a_restart():
+        """refresh_on_show() in sales_entry_module.py refreshed branch_input
+        and history_branch_filter when a branch was added after the page was
+        already built, but not return_branch_input (the "مرتجعات المبيعات"
+        branch dropdown) - the same class of staleness already fixed above
+        for HR and Purchases, just missed in this one spot of Sales."""
+        branch_id = db.insert_and_return_id(
+            "INSERT INTO branches (name, location) VALUES (?, ?)", ("فرع اختبار مرتجعات المبيعات", ""))
+        s = window.sales
+        assert s.return_branch_input.findData(branch_id) < 0, \
+            "sanity check: the new branch should not be in the sales-return dropdown yet"
+
+        s.refresh_on_show()
+
+        assert s.return_branch_input.findData(branch_id) >= 0, \
+            "the sales-return branch dropdown did not pick up a branch added after the page was built"
+    check("the sales-return branch dropdown picks up a branch added after the page was already built",
+          sales_return_branch_dropdown_picks_up_a_new_branch_without_a_restart)
+
     def saving_without_a_branch_selected_is_refused_everywhere():
         """Nothing validated that a branch was actually chosen before saving
         - reachable through the stale-dropdown bug above (deselecting to -1

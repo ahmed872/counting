@@ -696,6 +696,18 @@ class SalesEntryModule(QWidget):
             if idx >= 0:
                 self.branch_input.setCurrentIndex(idx)
 
+        # Same gap as branch_input above used to have: a branch added after
+        # this page was already built never reached the "مرتجعات المبيعات"
+        # branch dropdown without an app restart.
+        selected_return_branch = self.return_branch_input.currentData()
+        self.return_branch_input.clear()
+        for branch in self.db.fetch_all("SELECT id, name FROM branches ORDER BY id"):
+            self.return_branch_input.addItem(branch["name"], branch["id"])
+        if selected_return_branch is not None:
+            idx = self.return_branch_input.findData(selected_return_branch)
+            if idx >= 0:
+                self.return_branch_input.setCurrentIndex(idx)
+
         if self.history_branch_filter is not None:
             selected_filter = self.history_branch_filter.currentData()
             self.history_branch_filter.blockSignals(True)
