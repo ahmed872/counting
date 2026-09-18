@@ -701,9 +701,16 @@ def main():
                     tabs.setCurrentIndex(i)
             # An unposted month: the current month was already posted by an
             # earlier check, and a posted month shows its frozen snapshot,
-            # not these employees created just now.
-            hr.payroll_month.setCurrentIndex(hr.payroll_month.findData(9))
-            hr.payroll_year.setText("2026")
+            # not these employees created just now. Relative to today
+            # rather than a fixed date - a hardcoded "future" month
+            # eventually becomes today's actual current month and collides
+            # with it, exactly as September 2026 just did here.
+            target = QDate.currentDate().addMonths(3)
+            month, year = target.month(), target.year()
+            assert not window.hr_logic.is_payroll_posted(month, year), \
+                "test setup collision - this month/year is already posted by another test"
+            hr.payroll_month.setCurrentIndex(hr.payroll_month.findData(month))
+            hr.payroll_year.setText(str(year))
             hr.refresh_payroll()
             for _ in range(3):
                 app.processEvents()
