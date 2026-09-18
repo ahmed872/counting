@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QTableWidget,
 from PyQt6.QtCore import QDate, Qt
 from PyQt6.QtGui import QPixmap, QTextDocument, QPageLayout
 from PyQt6.QtPrintSupport import QPrinter, QPrintDialog
-from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height, warn_if_would_overdraw
+from ui.common_widgets import create_stat_card, page_header, fill_table, fit_table_height, pin_height, warn_if_would_overdraw, caution_button
 from ui.formatting import money_item, money
 from logic.money import parse_money
 from logic.accounting import AccountingLogic
@@ -151,18 +151,25 @@ class HRModule(QWidget):
         hire_date_wrapper = QWidget()
         hire_date_wrapper.setLayout(hire_date_row)
 
+        employee_form.addRow(self._section_label("البيانات الأساسية"))
         employee_form.addRow("الاسم:", self.name_input)
         employee_form.addRow("الوظيفة:", self.job_input)
         employee_form.addRow("الفرع:", self.branch_input)
         employee_form.addRow("تاريخ التعيين:", hire_date_wrapper)
+
+        employee_form.addRow(self._section_label("الراتب والبدلات"))
         employee_form.addRow("الراتب الأساسي:", self.salary_input)
         employee_form.addRow("البدلات:", self.allowance_input)
+        employee_form.addRow("مدد (يُحوَّل بنكياً من صافي الراتب):", self.madad_input)
+
+        employee_form.addRow(self._section_label("الوثائق الرسمية"))
         employee_form.addRow("رقم الإقامة وتاريخ الانتهاء:", self._document_row(self.iqama_input, self.iqama_expiry))
         employee_form.addRow("رقم الجواز وتاريخ الانتهاء:", self._document_row(self.passport_input, self.passport_expiry))
         employee_form.addRow("رقم تصريح العمل وتاريخ الانتهاء:", self._document_row(self.work_permit_input, self.work_permit_expiry))
         employee_form.addRow("رقم البطاقة الصحية وتاريخ الانتهاء:", self._document_row(self.work_card_input, self.work_card_expiry))
         employee_form.addRow("رقم التأمين الطبي وتاريخ الانتهاء:", self._document_row(self.medical_insurance_input, self.medical_insurance_expiry))
-        employee_form.addRow("مدد (يُحوَّل بنكياً من صافي الراتب):", self.madad_input)
+
+        employee_form.addRow(self._section_label("الرسوم"))
         employee_form.addRow("رسوم الجوازات:", self.passport_fee_input)
         employee_form.addRow("رسوم مكتب العمل:", self.labor_office_fee_input)
         employee_form.addRow("رسوم التأمين الطبي:", self.medical_insurance_fee_input)
@@ -318,7 +325,11 @@ class HRModule(QWidget):
         buttons_row = QHBoxLayout()
         payroll_btn = QPushButton("حساب الرواتب (معاينة)")
         payroll_btn.clicked.connect(self.refresh_payroll)
-        post_payroll_btn = QPushButton("ترحيل الرواتب للمحاسبة")
+        # Orange, not the plain default like the preview button beside it -
+        # this one actually posts to the ledger (account 2200) and is hard
+        # to undo, so it should not look as low-stakes as a re-runnable
+        # preview.
+        post_payroll_btn = caution_button("ترحيل الرواتب للمحاسبة")
         post_payroll_btn.clicked.connect(self.post_payroll)
         buttons_row.addWidget(payroll_btn)
         buttons_row.addWidget(post_payroll_btn)
@@ -497,6 +508,18 @@ class HRModule(QWidget):
         self._update_report_period_enabled()
 
         self.load_employees()
+
+    def _section_label(self, text):
+        """A small caption spanning the whole form width, breaking up the one
+        long uninterrupted column of fields inside "بيانات العامل" into named
+        groups (بيانات أساسية / راتب وبدلات / وثائق رسمية / رسوم) - reported
+        as reading like a single undifferentiated list, hard to scan for a
+        specific field."""
+        label = QLabel(text)
+        label.setStyleSheet(
+            "color:#1f3b57; font-weight:700; font-size:12.5px;"
+            " margin-top:10px; padding-bottom:2px; border-bottom:1px solid #dbe2ea;")
+        return label
 
     def _document_row(self, number_field, date_field):
         wrapper = QWidget()

@@ -143,17 +143,54 @@ def danger_button(text):
     return btn
 
 
+def caution_button(text):
+    """A solid orange fill for an action that is real and hard to undo -
+    posting payroll to the ledger, restoring a backup over live data - next
+    to a plain/blue button for the safe, repeatable preview beside it. Same
+    orange already used for "استعادة نسخة" in settings_module.py; kept here
+    as a shared helper so every such button reads the same way."""
+    btn = QPushButton(text)
+    btn.setStyleSheet(
+        "QPushButton { background-color:#e67e22; color:#ffffff; border:1px solid #cf711f;"
+        "  border-radius: 8px; padding: 7px 14px; font-weight: 700; }"
+        "QPushButton:hover { background-color:#cf711f; border:1px solid #b45309; }"
+        "QPushButton:pressed { background-color:#b45309; }"
+    )
+    return btn
+
+
+_FILTER_ACTIVE_STYLE = (
+    "QComboBox { border: 1.5px solid #4f78a8; border-radius: 8px;"
+    " background-color: #eef6ff; }"
+)
+
+
 def all_combo(label, items, on_change=None):
     """A QComboBox for filtering a table by one column - not searching it.
     Always starts with an "الكل"/"all" entry (data=None) so the default view
     stays exactly what it already was (everything, unfiltered) and a filter
     is something the user opts into, never something that hides data by
     default. `items` is [(display_text, value), ...]; `label` is what shows
-    for the "no filter" choice, e.g. "كل الفروع" or "كل الموردين"."""
+    for the "no filter" choice, e.g. "كل الفروع" or "كل الموردين".
+
+    Removing the separate "الفرع:" caption next to each filter (to fit the
+    app's own minimum window width - see filter_bar) left an active filter
+    with no visual difference from its own resting "كل ..." state, and a
+    long branch/supplier name with no way to see it in full once picked.
+    Both are handled here, once, so every filter built with this function
+    gets them automatically: a light blue highlight while anything other
+    than "الكل" is selected, and a tooltip carrying the full current text."""
     combo = QComboBox()
     combo.addItem(label, None)
     for text, value in items:
         combo.addItem(text, value)
+
+    def _refresh_appearance():
+        combo.setStyleSheet(_FILTER_ACTIVE_STYLE if combo.currentData() is not None else "")
+        combo.setToolTip(combo.currentText())
+
+    combo.currentIndexChanged.connect(_refresh_appearance)
+    _refresh_appearance()
     if on_change is not None:
         combo.currentIndexChanged.connect(on_change)
     return combo
