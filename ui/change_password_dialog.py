@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton, QMessageBox
 
 from logic.auth import AuthLogic
+from ui.common_widgets import add_password_visibility_toggle
 
 
 class ChangePasswordDialog(QDialog):
@@ -40,17 +41,17 @@ class ChangePasswordDialog(QDialog):
 
         layout.addWidget(self._field_label("كلمة المرور الحالية"))
         self.old_password = QLineEdit()
-        self.old_password.setEchoMode(QLineEdit.EchoMode.Password)
+        add_password_visibility_toggle(self.old_password)
         layout.addWidget(self.old_password)
 
         layout.addWidget(self._field_label("كلمة المرور الجديدة"))
         self.new_password = QLineEdit()
-        self.new_password.setEchoMode(QLineEdit.EchoMode.Password)
+        add_password_visibility_toggle(self.new_password)
         layout.addWidget(self.new_password)
 
         layout.addWidget(self._field_label("تأكيد كلمة المرور الجديدة"))
         self.confirm_password = QLineEdit()
-        self.confirm_password.setEchoMode(QLineEdit.EchoMode.Password)
+        add_password_visibility_toggle(self.confirm_password)
         self.confirm_password.returnPressed.connect(self.try_save)
         layout.addWidget(self.confirm_password)
 

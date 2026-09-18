@@ -5489,6 +5489,36 @@ def main():
     check("the login dialog groups each field tightly with its own label, not evenly spaced",
           login_dialog_groups_each_label_tightly_with_its_own_field)
 
+    def password_fields_have_a_working_show_hide_toggle():
+        """Requested live: a way to check what was actually typed into a
+        password box before submitting it. Every password field app-wide
+        goes through the shared add_password_visibility_toggle helper -
+        checked here on the login dialog's own password field, and that the
+        clicking the eye action actually flips EchoMode both ways, not just
+        that an action exists."""
+        from PyQt6.QtWidgets import QLineEdit
+        from ui.login_dialog import LoginDialog
+        dialog = LoginDialog(db)
+        try:
+            field = dialog.password_field
+            assert field.echoMode() == QLineEdit.EchoMode.Password, \
+                "a password field must start hidden"
+            actions = field.actions()
+            assert len(actions) == 1, "the password field has no show/hide action"
+            toggle = actions[0]
+
+            toggle.trigger()
+            assert field.echoMode() == QLineEdit.EchoMode.Normal, \
+                "clicking the eye icon did not reveal the password"
+
+            toggle.trigger()
+            assert field.echoMode() == QLineEdit.EchoMode.Password, \
+                "clicking the eye icon again did not hide the password again"
+        finally:
+            dialog.close()
+    check("password fields have a working show/hide toggle",
+          password_fields_have_a_working_show_hide_toggle)
+
     def change_password_notice_is_never_clipped_after_switching_pages():
         """Reported live: switching from the login page to the forced
         change-password page left the temporary-password notice looking cut

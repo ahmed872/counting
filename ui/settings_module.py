@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 from logic.money import parse_money
 from logic.auth import AuthLogic, ROLE_ADMIN, ROLE_CASHIER, ROLE_LABELS, ASSIGNABLE_ROLES
 from logic.audit import AuditLogger
+from ui.common_widgets import add_password_visibility_toggle
 
 OPENING_ENTRY_KEY = "opening_balance_entry_id"
 
@@ -174,7 +175,7 @@ class SettingsModule(QWidget):
         self.new_username = QLineEdit()
         self.new_display_name = QLineEdit()
         self.new_password = QLineEdit()
-        self.new_password.setEchoMode(QLineEdit.EchoMode.Password)
+        add_password_visibility_toggle(self.new_password)
         self.new_role = QComboBox()
         for role in ASSIGNABLE_ROLES:
             self.new_role.addItem(ROLE_LABELS[role], role)

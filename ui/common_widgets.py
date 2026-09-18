@@ -1,8 +1,50 @@
 from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QIcon, QPixmap, QPainter, QPen, QColor
 from PyQt6.QtWidgets import (
     QFrame, QVBoxLayout, QHBoxLayout, QGridLayout, QLabel, QWidget, QPushButton,
-    QTableWidget, QSizePolicy, QScrollArea, QComboBox,
+    QTableWidget, QSizePolicy, QScrollArea, QComboBox, QLineEdit,
 )
+
+
+def _eye_icon(crossed):
+    """A small eye glyph, drawn with QPainter rather than an icon file, so
+    it never depends on one being found or bundled - same reasoning as the
+    combobox arrow in ui/theme.py. `crossed` (a line through it) means
+    "the password is currently visible, click to hide it again"."""
+    pixmap = QPixmap(20, 20)
+    pixmap.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+    pen = QPen(QColor("#64748b"))
+    pen.setWidth(2)
+    painter.setPen(pen)
+    painter.drawEllipse(2, 6, 16, 8)
+    painter.setBrush(QColor("#64748b"))
+    painter.drawEllipse(8, 8, 4, 4)
+    if crossed:
+        painter.drawLine(3, 16, 17, 4)
+    painter.end()
+    return QIcon(pixmap)
+
+
+def add_password_visibility_toggle(field: QLineEdit):
+    """Requested live: a way to check what was actually typed into a
+    password box before submitting it. Adds a click-to-reveal eye icon
+    inside the field itself (QLineEdit's own trailing action, not a
+    separate button next to it - so it drops into any password field
+    already built without touching that screen's own layout/spacing)."""
+    field.setEchoMode(QLineEdit.EchoMode.Password)
+    action = field.addAction(_eye_icon(False), QLineEdit.ActionPosition.TrailingPosition)
+    action.setToolTip("إظهار كلمة المرور")
+
+    def toggle():
+        showing = field.echoMode() == QLineEdit.EchoMode.Normal
+        field.setEchoMode(QLineEdit.EchoMode.Password if showing else QLineEdit.EchoMode.Normal)
+        action.setIcon(_eye_icon(not showing))
+        action.setToolTip("إخفاء كلمة المرور" if not showing else "إظهار كلمة المرور")
+
+    action.triggered.connect(toggle)
+    return action
 
 
 def page_header(title, subtitle=None):

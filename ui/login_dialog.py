@@ -23,6 +23,7 @@ from PyQt6.QtWidgets import (
 )
 
 from logic.auth import AuthLogic
+from ui.common_widgets import add_password_visibility_toggle
 
 # One spacing scale, used everywhere below instead of ad-hoc numbers -
 # a login screen assembled from whatever margin "looked about right" in
@@ -151,7 +152,7 @@ class LoginDialog(QDialog):
             "}"
             "QLineEdit:focus { border: 1.5px solid #2c5a82; }")
         if password:
-            field.setEchoMode(QLineEdit.EchoMode.Password)
+            add_password_visibility_toggle(field)
         if on_enter:
             field.returnPressed.connect(on_enter)
         layout.addWidget(field)
